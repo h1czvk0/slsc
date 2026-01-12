@@ -310,7 +310,6 @@
         "Shelf_wooden_WOOD": "e26497902e15123985d3ce3964211351.webp",
         "Shelves": "00e4464f0e24bdd112d0515ba1740ab9.webp",
         "Shelves_Metal": "0203af1763c497f45f0f861c8a54cb58.webp",
-        "Shelves_WOOD": "0203af1763c497f45f0f861c8a54cb58.webp",
         "ShlefX_METAL": "05b40a75c13be7d54c8473dff786e93d.webp",
         "Side_table_C_WOOD": "8d8d9b6b21de9c64276b731dae737e77.webp",
         "Side_table_X": "6355a8e48578a84a1d71c7384549e78a.webp",
@@ -509,6 +508,7 @@
         "whiteboardX": "0ab04ee0855f49d4bf835bcdd2c889ec.webp",
         "winderBlocker": "39abb6853057fae72ba50975fbe61ff1.webp",
         "wood_fence_type_X_A_post_LOD0": "c8b6b7fbc6998b59737cc117b718bcfd.webp",
-        "wood_table_WOOD": "9aacd2bc9dad917f7c08d235f2acebbc.webp"
+        "wood_table_WOOD": "9aacd2bc9dad917f7c08d235f2acebbc.webp",
+        "Shelves_WOOD": "87422383624cf8ec10662e15bd6d5c91.webp"
     }
 }
