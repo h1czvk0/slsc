@@ -16,6 +16,8 @@ import json
 import concurrent.futures
 import subprocess
 import queue
+import random
+import socket
 from datetime import datetime
 from tkinter import *
 from tkinter import ttk, scrolledtext, Menu, messagebox
@@ -166,6 +168,79 @@ DEBUG_BATTERY_LOG = False
 BATTERY_DEBOUNCE_SECONDS = 0.5
 PENDING_TIMEOUT_SECONDS = 20.0
 PENDING_ASSOCIATE_WINDOW_SECONDS = 20.0
+DEFAULT_SPONSOR_PROXY_PORT = 8080
+COMMON_ACCELERATOR_PORTS = (7890, 7891, 9090, 1080, 10808, 10080)
+
+
+def _parse_port(value):
+    try:
+        port = int(str(value).strip())
+    except Exception:
+        return None
+    if 1 <= port <= 65535:
+        return port
+    return None
+
+
+def _parse_port_from_proxy_server(proxy_server):
+    text = str(proxy_server or "").strip()
+    if not text:
+        return None
+
+    if "=" in text:
+        for part in text.split(";"):
+            if "http=" in part or "https=" in part:
+                _, value = part.split("=", 1)
+                text = value.strip()
+                break
+
+    if "://" in text:
+        text = text.split("://", 1)[1]
+    if "@" in text:
+        text = text.rsplit("@", 1)[-1]
+    if "/" in text:
+        text = text.split("/", 1)[0]
+
+    if text.startswith("[") and "]" in text:
+        _, _, rest = text.partition("]")
+        if rest.startswith(":"):
+            return _parse_port(rest[1:])
+        return None
+
+    if ":" not in text:
+        return None
+    return _parse_port(text.rsplit(":", 1)[1])
+
+
+def _is_local_port_available(port):
+    parsed = _parse_port(port)
+    if not parsed:
+        return False
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", parsed))
+        return True
+    except OSError:
+        return False
+
+
+def _build_sponsor_proxy_port_candidates():
+    candidates = [DEFAULT_SPONSOR_PROXY_PORT, 18080, 28080, 38080, 48080, 58080]
+    candidates.extend(range(20000, 20120))
+
+    rng = random.Random((int(datetime.now().timestamp() * 1000) ^ os.getpid()) & 0xFFFFFFFF)
+    for _ in range(120):
+        candidates.append(rng.randint(20000, 60999))
+
+    ordered = []
+    seen = set()
+    for item in candidates:
+        port = _parse_port(item)
+        if not port or port in seen:
+            continue
+        seen.add(port)
+        ordered.append(port)
+    return ordered
 
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -351,6 +426,7 @@ class SlashCoMonitorCN:
         self._is_shutting_down = False
         self._log_queue_after_id = None
         self._pending_tick_after_id = None
+        self._sponsor_op_lock = threading.Lock()
 
 
         # 设置窗口图标
@@ -865,6 +941,55 @@ class SlashCoMonitorCN:
         except Exception as e:
             self.log(f"保存赞助者设置失败: {e}")
 
+    def _select_sponsor_proxy_port(self):
+        blocked = set(COMMON_ACCELERATOR_PORTS)
+        try:
+            proxy_settings = sponsor_caddy._get_proxy_settings()
+        except Exception:
+            proxy_settings = {}
+
+        if proxy_settings and proxy_settings.get("ProxyEnable") == 1:
+            upstream_port = _parse_port_from_proxy_server(proxy_settings.get("ProxyServer"))
+            if upstream_port:
+                blocked.add(upstream_port)
+
+        for port in _build_sponsor_proxy_port_candidates():
+            if port in blocked:
+                continue
+            if _is_local_port_available(port):
+                return port
+
+        current_default = _parse_port(getattr(sponsor_caddy, "PROXY_PORT", DEFAULT_SPONSOR_PROXY_PORT))
+        return current_default or DEFAULT_SPONSOR_PROXY_PORT
+
+    def _prepare_sponsor_proxy_port(self):
+        selected_port = self._select_sponsor_proxy_port()
+        current_port = _parse_port(getattr(sponsor_caddy, "PROXY_PORT", DEFAULT_SPONSOR_PROXY_PORT))
+        sponsor_caddy.PROXY_PORT = selected_port
+        if selected_port != current_port:
+            self.log(f"代理端口预设为: {selected_port}")
+        return selected_port
+
+    def _force_cleanup_sponsor_proxy(self):
+        if not HAS_SPONSOR_PROXY:
+            return
+
+        try:
+            force_cleanup = getattr(sponsor_caddy, "force_cleanup", None)
+            if callable(force_cleanup):
+                force_cleanup(log_func=None)
+                return
+        except Exception:
+            pass
+
+        for fn_name in ("_restore_proxy", "_stop_mitmdump", "_cleanup_old_caddy_residuals"):
+            try:
+                fn = getattr(sponsor_caddy, fn_name, None)
+                if callable(fn):
+                    fn(log_func=None)
+            except Exception:
+                pass
+
     def _on_sponsor_toggle_new(self):
         """开关切换事件"""
         try:
@@ -882,41 +1007,63 @@ class SlashCoMonitorCN:
 
     def _start_sponsor_server(self):
         """使用 Caddy 启动赞助者名单覆盖"""
-        name = self.sponsor_name.get().strip()
-        if not name:
-            self._ui_after(messagebox.showwarning, "提示", "请先输入显示名称")
-            self._ui_after(self.sponsor_enabled.set, False)
+        if not self._sponsor_op_lock.acquire(blocking=False):
+            self.log("赞助覆盖操作进行中，已忽略本次启动请求")
             return
+        name = self.sponsor_name.get().strip()
+        try:
+            if not name:
+                self._ui_after(messagebox.showwarning, "提示", "请先输入显示名称")
+                self._ui_after(self.sponsor_enabled.set, False)
+                return
 
-        self._ui_after(self._update_sponsor_status, "正在启动...", "#f39c12")
+            self._ui_after(self._update_sponsor_status, "正在启动...", "#f39c12")
+            self._prepare_sponsor_proxy_port()
 
-        def _log_to_ui(msg):
-            self.log(msg)
+            def _log_to_ui(msg):
+                self.log(msg)
 
-        success, message = sponsor_caddy.start_sponsor_override(name, log_func=_log_to_ui)
+            success, message = sponsor_caddy.start_sponsor_override(name, log_func=_log_to_ui)
 
-        if success:
-            self._ui_after(self._update_sponsor_status, "运行中 ✓", "#27ae60")
-        else:
-            self._ui_after(self._update_sponsor_status, f"失败: {message}", "red")
-            self._ui_after(self.sponsor_enabled.set, False)
+            if success:
+                self._ui_after(self._update_sponsor_status, "运行中 ✓", "#27ae60")
+            else:
+                self._ui_after(self._update_sponsor_status, f"失败: {message}", "red")
+                self._ui_after(self.sponsor_enabled.set, False)
+        finally:
+            self._sponsor_op_lock.release()
 
     def _stop_sponsor_server(self):
         """停止赞助者名单覆盖"""
-        self._ui_after(self.log, "正在停止赞助者名单覆盖...")
+        if not self._sponsor_op_lock.acquire(blocking=False):
+            self.log("赞助覆盖操作进行中，已忽略本次停止请求")
+            return
         try:
+            self._ui_after(self.log, "正在停止赞助者名单覆盖...")
             log_func = None if self._is_shutting_down else self.log
             sponsor_caddy.stop_sponsor_override(log_func=log_func)
             self._ui_after(self._update_sponsor_status, "已停止", "gray")
         except Exception as e:
             self._ui_after(self.log, f"停止失败: {e}")
+        finally:
+            self._sponsor_op_lock.release()
 
     def _force_stop_sponsor_process(self):
         """关闭时兜底终止 mitmdump 进程，避免阻塞主线程。"""
         try:
+            try:
+                self._force_cleanup_sponsor_proxy()
+            except Exception:
+                pass
+
             proc = getattr(sponsor_caddy, "_mitm_process", None)
             if not proc:
                 return
+            pid = None
+            try:
+                pid = proc.pid
+            except Exception:
+                pass
             if proc.poll() is None:
                 try:
                     proc.terminate()
@@ -929,6 +1076,16 @@ class SlashCoMonitorCN:
                         proc.kill()
                     except Exception:
                         pass
+            if os.name == "nt" and pid:
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(pid)],
+                        capture_output=True,
+                        timeout=5,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -938,7 +1095,8 @@ class SlashCoMonitorCN:
 
         def _worker():
             try:
-                self._stop_sponsor_server()
+                with self._sponsor_op_lock:
+                    sponsor_caddy.stop_sponsor_override(log_func=None)
             finally:
                 done.set()
 
@@ -946,6 +1104,10 @@ class SlashCoMonitorCN:
         done.wait(timeout_seconds)
         if not done.is_set():
             self._force_stop_sponsor_process()
+        try:
+            self._force_cleanup_sponsor_proxy()
+        except Exception:
+            pass
 
     def _update_sponsor_status(self, text, color):
         """更新状态标签"""
@@ -1806,19 +1968,13 @@ class SlashCoMonitorCN:
         # 停止监控循环
         self.is_monitoring = False
 
-        # 清理赞助者覆盖服务器（配置开启或实际在运行都尝试停止）
-        should_stop_sponsor = False
         if HAS_SPONSOR_PROXY:
             try:
-                is_running_fn = getattr(sponsor_caddy, "is_running", None)
-                sponsor_running = bool(is_running_fn()) if callable(is_running_fn) else False
+                self._stop_sponsor_server_with_timeout(timeout_seconds=1.8)
             except Exception:
-                sponsor_running = False
-            should_stop_sponsor = self.sponsor_enabled.get() or sponsor_running
-
-        if should_stop_sponsor:
+                pass
             try:
-                self._stop_sponsor_server_with_timeout(timeout_seconds=1.5)
+                self._force_cleanup_sponsor_proxy()
             except Exception:
                 pass
 
@@ -1883,3 +2039,7 @@ if __name__ == "__main__":
     # 接管窗口关闭事件
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
+    try:
+        app._force_cleanup_sponsor_proxy()
+    except Exception:
+        pass

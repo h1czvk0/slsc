@@ -20,6 +20,8 @@ import queue
 import threading
 import shutil
 import subprocess
+import random
+import socket
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
@@ -50,6 +52,84 @@ def resource_path(relative_path):
     if hasattr(sys, "_MEIPASS"):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+
+
+DEFAULT_SPONSOR_PROXY_PORT = 8080
+COMMON_ACCELERATOR_PORTS = (7890, 7891, 9090, 1080, 10808, 10080)
+
+
+def _parse_port(value):
+    try:
+        port = int(str(value).strip())
+    except Exception:
+        return None
+    if 1 <= port <= 65535:
+        return port
+    return None
+
+
+def _parse_port_from_proxy_server(proxy_server):
+    text = str(proxy_server or "").strip()
+    if not text:
+        return None
+
+    # ProxyServer could be:
+    # 1) 127.0.0.1:7890
+    # 2) http=127.0.0.1:7890;https=127.0.0.1:7890
+    if "=" in text:
+        for part in text.split(";"):
+            if "http=" in part or "https=" in part:
+                _, value = part.split("=", 1)
+                text = value.strip()
+                break
+
+    if "://" in text:
+        text = text.split("://", 1)[1]
+    if "@" in text:
+        text = text.rsplit("@", 1)[-1]
+    if "/" in text:
+        text = text.split("/", 1)[0]
+
+    if text.startswith("[") and "]" in text:
+        _, _, rest = text.partition("]")
+        if rest.startswith(":"):
+            return _parse_port(rest[1:])
+        return None
+
+    if ":" not in text:
+        return None
+    return _parse_port(text.rsplit(":", 1)[1])
+
+
+def _is_local_port_available(port):
+    parsed = _parse_port(port)
+    if not parsed:
+        return False
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", parsed))
+        return True
+    except OSError:
+        return False
+
+
+def _build_port_candidates():
+    candidates = [DEFAULT_SPONSOR_PROXY_PORT, 18080, 28080, 38080, 48080, 58080]
+    candidates.extend(range(20000, 20120))
+
+    rng = random.Random((int(datetime.now().timestamp() * 1000) ^ os.getpid()) & 0xFFFFFFFF)
+    for _ in range(120):
+        candidates.append(rng.randint(20000, 60999))
+
+    ordered = []
+    seen = set()
+    for item in candidates:
+        port = _parse_port(item)
+        if not port or port in seen:
+            continue
+        seen.add(port)
+        ordered.append(port)
+    return ordered
 
 
 class SponsorStandaloneApp:
@@ -248,6 +328,53 @@ class SponsorStandaloneApp:
         except Exception:
             return False
 
+    def _select_sponsor_proxy_port(self):
+        blocked = set(COMMON_ACCELERATOR_PORTS)
+
+        try:
+            proxy_settings = sponsor_mitm._get_proxy_settings()
+        except Exception:
+            proxy_settings = {}
+
+        if proxy_settings and proxy_settings.get("ProxyEnable") == 1:
+            upstream_port = _parse_port_from_proxy_server(proxy_settings.get("ProxyServer"))
+            if upstream_port:
+                blocked.add(upstream_port)
+
+        for port in _build_port_candidates():
+            if port in blocked:
+                continue
+            if _is_local_port_available(port):
+                return port
+
+        current_default = _parse_port(getattr(sponsor_mitm, "PROXY_PORT", DEFAULT_SPONSOR_PROXY_PORT))
+        return current_default or DEFAULT_SPONSOR_PROXY_PORT
+
+    def _prepare_sponsor_proxy_port(self):
+        selected_port = self._select_sponsor_proxy_port()
+        current_port = _parse_port(getattr(sponsor_mitm, "PROXY_PORT", DEFAULT_SPONSOR_PROXY_PORT))
+        sponsor_mitm.PROXY_PORT = selected_port
+        if selected_port != current_port:
+            self.log(f"代理端口预设为: {selected_port}")
+        return selected_port
+
+    def _force_cleanup_sponsor_proxy(self):
+        try:
+            force_cleanup = getattr(sponsor_mitm, "force_cleanup", None)
+            if callable(force_cleanup):
+                force_cleanup(log_func=None)
+                return
+        except Exception:
+            pass
+
+        for fn_name in ("_restore_proxy", "_stop_mitmdump", "_cleanup_old_caddy_residuals"):
+            try:
+                fn = getattr(sponsor_mitm, fn_name, None)
+                if callable(fn):
+                    fn(log_func=None)
+            except Exception:
+                pass
+
     def _on_save_clicked(self):
         self._save_config(with_log=True)
 
@@ -277,6 +404,7 @@ class SponsorStandaloneApp:
                 return
 
             self._ui_after(self._update_sponsor_status, "正在启动...", "#f39c12")
+            self._prepare_sponsor_proxy_port()
             success, message = sponsor_mitm.start_sponsor_override(name, log_func=self.log)
             if success:
                 self._ui_after(self._update_sponsor_status, "运行中 ✓", "#27ae60")
@@ -307,6 +435,11 @@ class SponsorStandaloneApp:
 
     def _force_stop_sponsor_process(self):
         try:
+            try:
+                self._force_cleanup_sponsor_proxy()
+            except Exception:
+                pass
+
             proc = getattr(sponsor_mitm, "_mitm_process", None)
             if not proc:
                 return
@@ -354,6 +487,10 @@ class SponsorStandaloneApp:
         done.wait(timeout_seconds)
         if not done.is_set():
             self._force_stop_sponsor_process()
+        try:
+            self._force_cleanup_sponsor_proxy()
+        except Exception:
+            pass
 
     def on_close(self):
         if self._is_shutting_down:
@@ -366,12 +503,14 @@ class SponsorStandaloneApp:
         except Exception:
             pass
 
-        should_stop = self.sponsor_enabled.get() or self._safe_is_running()
-        if should_stop:
-            try:
-                self._stop_sponsor_with_timeout(timeout_seconds=1.5)
-            except Exception:
-                pass
+        try:
+            self._stop_sponsor_with_timeout(timeout_seconds=1.8)
+        except Exception:
+            pass
+        try:
+            self._force_cleanup_sponsor_proxy()
+        except Exception:
+            pass
 
         if self._log_queue_after_id:
             try:
@@ -404,6 +543,10 @@ def main():
     app = SponsorStandaloneApp(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
+    try:
+        app._force_cleanup_sponsor_proxy()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
