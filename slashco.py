@@ -1,0 +1,1885 @@
+import os
+import sys
+
+# Admin task handler removed - handled by external tool
+
+
+import os
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR) # 优先加载同目录模块（如 sounddevice.py）
+import time
+import re
+import threading
+import glob
+import ctypes
+import json
+import concurrent.futures
+import subprocess
+import queue
+from datetime import datetime
+from tkinter import *
+from tkinter import ttk, scrolledtext, Menu, messagebox
+
+
+
+from PIL import Image, ImageTk
+HAS_PIL = True
+
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
+
+
+
+
+# 赞助者名单覆盖 (mitmproxy 方案)
+try:
+    import sponsor_mitm as sponsor_caddy  # 保持变量名兼容
+    HAS_SPONSOR_PROXY = True
+except ImportError:
+    HAS_SPONSOR_PROXY = False
+
+
+
+
+
+def resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(SCRIPT_DIR, relative_path)
+
+
+# =====================
+# 画廊窗口 (多图显示)
+# =====================
+class GalleryWindow:
+    """显示多张图片的画廊窗口"""
+    
+    def __init__(self, parent, title, image_paths, cn_name=""):
+        self.top = Toplevel(parent)
+        self.top.title(f"图片预览 - {cn_name or title}")
+        self.top.transient(parent)
+        self.top.grab_set()
+        
+        # 计算窗口大小和布局
+        num_images = len(image_paths)
+        if num_images == 1:
+            cols = 1
+        elif num_images <= 4:
+            cols = 2
+        else:
+            cols = 3
+        rows = (num_images + cols - 1) // cols
+        
+        # 窗口尺寸
+        cell_size = 350 # 每个图片单元格大小
+        win_width = min(cols * cell_size + 40, 1200)
+        win_height = min(rows * cell_size + 80, 800)
+        
+        # 居中显示
+        screen_w = parent.winfo_screenwidth()
+        screen_h = parent.winfo_screenheight()
+        x = (screen_w - win_width) // 2
+        y = (screen_h - win_height) // 2
+        self.top.geometry(f"{win_width}x{win_height}+{x}+{y}")
+        
+        # 顶部信息栏
+        top_bar = Frame(self.top)
+        top_bar.pack(fill=X, padx=10, pady=10)
+        Label(top_bar, text=f"📍 {cn_name or title}", font=("微软雅黑", 12, "bold")).pack(side=LEFT)
+        ttk.Button(top_bar, text="✖ 关闭", command=self.top.destroy).pack(side=RIGHT)
+        
+        # 滚动画布
+        canvas_frame = Frame(self.top)
+        canvas_frame.pack(fill=BOTH, expand=True, padx=10, pady=(0, 10))
+        
+        canvas = Canvas(canvas_frame, bg="#f0f0f0")
+        scrollbar = ttk.Scrollbar(canvas_frame, orient=VERTICAL, command=canvas.yview)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # 内部Frame放置图片
+        inner_frame = Frame(canvas, bg="#f0f0f0")
+        canvas.create_window((0, 0), window=inner_frame, anchor=NW)
+        
+        # 保持图片引用防止GC
+        self.photo_refs = []
+        
+        # 加载并显示图片
+        for i, path in enumerate(image_paths):
+            row = i // cols
+            col = i % cols
+            
+            try:
+                img = Image.open(path)
+                # 按比例缩放适应单元格
+                max_size = cell_size - 20
+                img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                self.photo_refs.append(photo)
+                
+                cell = Frame(inner_frame, bd=1, relief=SOLID, bg="white")
+                cell.grid(row=row, column=col, padx=5, pady=5)
+                
+                lbl = Label(cell, image=photo, bg="white")
+                lbl.pack(padx=5, pady=5)
+                
+                # 显示文件名
+                fname = os.path.basename(path)
+                Label(cell, text=fname[:20], font=("Consolas", 8), fg="#666", bg="white").pack()
+            except Exception:
+                pass
+        
+        # 更新滚动区域
+        inner_frame.update_idletasks()
+        canvas.config(scrollregion=canvas.bbox("all"))
+        
+        # 绑定鼠标滚轮
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-1*(e.delta//120), "units"))
+        
+        # ESC 关闭
+        self.top.bind("<Escape>", lambda e: self.top.destroy())
+
+# =====================
+# 配置
+# =====================
+DEFAULT_OSC_PORT = 9000
+PLAYER_ITEM_ID_THRESHOLD = 29
+IMAGE_FILENAME = resource_path("cover.png")
+ICON_FILENAME = resource_path("icon.ico")
+
+APP_NAME = "SlashCoMonitor"
+if os.name == 'nt': # Windows
+    # 通常是 C:\Users\用户名\AppData\Local\SlashCoMonitor
+    DATA_DIR = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), APP_NAME)
+else: # Mac/Linux 备用
+    DATA_DIR = os.path.join(os.path.expanduser('~'), '.local', 'share', APP_NAME)
+
+LOCAL_JSON_FILENAME = os.path.join(DATA_DIR, "locations.json")
+
+REMOTE_TRANSLATION_URL = "https://gitee.com/hiczvko/translated_locations/raw/master/locations.json"
+
+DEBUG_BATTERY_LOG = False
+BATTERY_DEBOUNCE_SECONDS = 0.5
+PENDING_TIMEOUT_SECONDS = 20.0
+PENDING_ASSOCIATE_WINDOW_SECONDS = 20.0
+
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+ITEM_TRANSLATION = {
+    "Proxy-Locator": "便携式探测设备",
+    "Master Lock 607": "607型主锁",
+    "MasterLock": "607型主锁",
+    "Royal Burger": "皇家汉堡",
+    "Cookie": "曲奇",
+    "Beer Keg": "啤酒桶",
+    "Mayonnaise": "蛋黄酱",
+    "Orange Jello": "橙味果冻",
+    "Costco Frozen Pizza": "Costco速冻披萨",
+    "Airport Jungle Juice": "烈性酒",
+    "Rhino Pill": "犀牛丸",
+    "The Rock": "岩石",
+    "LabMeat": "人造肉",
+    "Pocket Sand": "沙袋",
+    "The Baby": "巫毒娃娃",
+    "Newport Menthols": "纽波特薄荷",
+    "B-GONE Soda": "B-GONE苏打水",
+    "Red 40 Vial": "40号红色染剂",
+    "Red40": "40号红色染剂",
+    "Milk Jug": "桶装牛奶",
+    "Pot of Greed": "贪婪之壶",
+    "Deathward": "不死图腾",
+    "Evil Jonkler Cart": "邪恶的琼克尔·卡特",
+    "25 Gram Benadryl": "25g苯海拉明",
+    "FlintWater": "弗林特密歇根自来水",
+    "Balkan Boost": "巴尔干激素",
+    "Fuel": "燃料",
+    "Battery": "电池",
+    "Glass Bottle": "玻璃瓶",
+}
+
+CUSTOM_ITEM_COLORS = {
+    # 607型主锁
+    "Master Lock 607": "#9F883C", "MasterLock": "#9F883C", "607型主锁": "#9F883C",
+    # 皇家汉堡
+    "Royal Burger": "#9D4C1F", "皇家汉堡": "#9D4C1F",
+    # 曲奇
+    "Cookie": "#B08149", "曲奇": "#B08149",
+    # 啤酒桶
+    "Beer Keg": "#382413", "啤酒桶": "#382413",
+    # 蛋黄酱
+    "Mayonnaise": "#CDC938", "蛋黄酱": "#CDC938",
+    # 橙味果冻
+    "Orange Jello": "#C47044", "橙味果冻": "#C47044",
+    # Costco速冻披萨
+    "Costco Frozen Pizza": "#006AC4", "Costco速冻披萨": "#006AC4",
+    # 烈性酒
+    "Airport Jungle Juice": "#E05AC8", "烈性酒": "#E05AC8",
+    # 犀牛丸
+    "Rhino Pill": "#958B69", "犀牛丸": "#958B69",
+    # 岩石
+    "The Rock": "#786A4C", "岩石": "#786A4C",
+    # 人造肉
+    "LabMeat": "#82630D", "人造肉": "#82630D",
+    # 沙袋
+    "Pocket Sand": "#ACA38A", "沙袋": "#ACA38A",
+    # 巫毒娃娃
+    "The Baby": "#8B733D", "巫毒娃娃": "#8B733D",
+    # 纽波特薄荷
+    "Newport Menthols": "#00847E", "纽波特薄荷": "#00847E",
+    # B-GONE苏打水
+    "B-GONE Soda": "#A2B3BB", "B-GONE苏打水": "#A2B3BB",
+    # 40号红色染剂
+    "Red 40 Vial": "#FE3619", "Red40": "#FE3619", "40号红色染剂": "#FE3619",
+    # 桶装牛奶
+    "Milk Jug": "#9B9C9C", "桶装牛奶": "#9B9C9C",
+    # 贪婪之壶
+    "Pot of Greed": "#34432F", "贪婪之壶": "#34432F",
+    # 不死图腾
+    "Deathward": "#413938", "不死图腾": "#413938",
+    # 弗林特密歇根自来水
+    "FlintWater": "#A5A4A4", "弗林特密歇根自来水": "#A5A4A4",
+    # 巴尔干激素
+    "Balkan Boost": "#B90C1A", "巴尔干激素": "#B90C1A"
+}
+
+
+LOCATION_TRANSLATION = {}
+
+def load_translations():
+    global LOCATION_TRANSLATION
+    try:
+        # 1. 尝试从 exe 同级目录加载 (外部自定义)
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            
+        external_json = os.path.join(base_dir, 'locations.json')
+        
+        # 2. 尝试从 PyInstaller 临时目录加载 (内部默认)
+        internal_json = None
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            internal_json = os.path.join(sys._MEIPASS, 'locations.json')
+        
+        target_path = None
+        source_type = ""
+
+        if os.path.exists(external_json):
+            target_path = external_json
+            source_type = "外部文件"
+        elif internal_json and os.path.exists(internal_json):
+            target_path = internal_json
+            source_type = "内置资源"
+        elif os.path.exists(os.path.join(SCRIPT_DIR, 'locations.json')): # 开发环境 fallback
+            target_path = os.path.join(SCRIPT_DIR, 'locations.json')
+            source_type = "开发文件"
+
+        if target_path:
+            with open(target_path, 'r', encoding='utf-8') as f:
+                LOCATION_TRANSLATION = json.load(f)
+            print(f"成功加载 locations.json ({source_type}): {len(LOCATION_TRANSLATION)} 条翻译")
+        else:
+            print("警告: 未找到任何 locations.json，位置翻译将不可用")
+            
+    except Exception as e:
+        print(f"加载 locations.json 失败: {e}")
+
+load_translations()
+
+
+# === 图片系统配置 ===
+REMOTE_IMG_ROOT = ""  # 请在此填入 GitHub Raw 加速地址，例如 https://raw.gh.fake/User/Repo/main
+IMG_DIR = "img_assets"
+IMG_JSON = "images.json"
+
+PATTERNS = {
+    "map_landing": re.compile(r"Selected landing spot on map\s+(.+)", re.IGNORECASE),
+    "map_slashco": re.compile(r"Logging all doors for map\s+(.+)", re.IGNORECASE),
+    "fuel_base": re.compile(r"For a game of \d+ players, (\d+) will be spawned", re.IGNORECASE),
+    "fuel_extra": re.compile(r"(\d+) extra fuel cans will appear in sealed rooms", re.IGNORECASE),
+    "item_outside": re.compile(r"(\d+) items will spawn outside sealed rooms", re.IGNORECASE),
+    "item_inside": re.compile(r"(\d+) items will spawn INside sealed rooms", re.IGNORECASE),
+    "item_collision": re.compile(r"\((SC_?Item\d+)\) collided with:\s+(.+?)\s+\(UnityEngine\.GameObject\)", re.IGNORECASE),
+    "fuel": re.compile(r"Gas fueled to (SC_generator\d+)", re.IGNORECASE),
+    "battery_progress": re.compile(r"(SC_generator\d+)\s+Progress check\..*updated\s+HAS_BATTERY\s+value:\s*(True|False)", re.IGNORECASE),
+    "battery_fixing": re.compile(r"Battery for\s+(SC_generator\d+)\s+improperly set\.\s+FIXING NOW\.", re.IGNORECASE),
+    "battery_skillcheck_failed": re.compile(r"Generator Battery skillcheck failed", re.IGNORECASE),
+    "item": re.compile(r"Assigning item (SC_?Item\d+) as:\s+(.+)", re.IGNORECASE),
+    "game_end": re.compile(r"(SLASHCO Game Master End\.|SLASHCO Client STOP GAME|Returning to Lobby|Match Ended|All players extracted|All players died)", re.IGNORECASE),
+    "game_setup": re.compile(r"SLASHCO Game setup", re.IGNORECASE),
+    "map_spawns": re.compile(r"Getting Map Spawnpoints", re.IGNORECASE),
+    "map_flags": re.compile(r"Establishing Map Flags", re.IGNORECASE),
+    "slashco_loading": re.compile(r"SLASHCO now loading data", re.IGNORECASE),
+    "player_headstart": re.compile(r"Players in-game:\s*(\d+).*?(\d+)\s+fuel will be given for free", re.IGNORECASE),
+    "rooms_sealed": re.compile(r"(\d+)\s+Rooms will be SEALED", re.IGNORECASE),
+}
+
+def normalize_item_id(raw_id: str) -> str:
+    raw_id = raw_id.strip()
+    m = re.match(r"SC_?Item(\d+)", raw_id, re.IGNORECASE)
+    if not m: return raw_id
+    return f"SC_Item{m.group(1)}"
+
+def item_numeric_id(iid: str) -> int:
+    m = re.match(r"SC_Item(\d+)", iid, re.IGNORECASE)
+    if not m: return -1
+    try: return int(m.group(1))
+    except Exception: return -1
+
+class SlashCoMonitorCN:
+    def __init__(self, root: Tk):
+        if getattr(sys, 'frozen', False):
+            self.base_dir = os.path.dirname(sys.executable)
+        else:
+            self.base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        self.root = root
+        self.root.title("SlashCoSense")
+        self.root.geometry("1300x900")
+
+        # 关闭流程状态
+        self._is_shutting_down = False
+        self._log_queue_after_id = None
+        self._pending_tick_after_id = None
+
+
+        # 设置窗口图标
+        try:
+            icon_path = os.path.join(self.base_dir, 'icon.ico')
+            if hasattr(sys, '_MEIPASS'):
+                icon_path = os.path.join(sys._MEIPASS, 'icon.ico')
+            
+            if os.path.exists(icon_path):
+                self.root.iconbitmap(icon_path)
+        except Exception:
+            pass
+
+        self.log_dir = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\VRChat\VRChat")
+        self.is_monitoring = True
+        self.current_click_col = None
+
+        self.gens = {
+            "SC_generator1": {"fuel": 0.0, "battery": False, "battery_pending": False, "pending_since": 0.0},
+            "SC_generator2": {"fuel": 0.0, "battery": False, "battery_pending": False, "pending_since": 0.0},
+        }
+
+        self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": 0}
+        self.map_var = StringVar(value="通用(默认)") # 新增：地图选择变量
+        self.game_info = {"location": "通用(默认)", "difficulty": "未知", "slasher": "未知"} # 修改默认 location
+        self.item_records = {}
+        self.group_order = {"地图": [], "玩家": [], "未知": []}
+        self.groups = {"地图": {}, "玩家": {}, "未知": {}}
+
+        # 设置 AppUserModelID 以修复任务栏图标
+        try:
+            from ctypes import windll
+            myappid = 'slashco.monitor.cn.v1'
+            windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except:
+            pass
+
+        self.last_reset_time = 0.0
+        self.last_battery_event = {"SC_generator1": 0.0, "SC_generator2": 0.0}
+        self.last_pending_gid = None
+        self.last_pending_time = 0.0
+        self.last_game_end_time = 0.0
+        self.GAME_END_DEBOUNCE_SECONDS = 2.0
+
+        # 房主检测和OCR触发标志
+        self.is_host = False
+        self.ocr_triggered_this_round = False
+
+        self.wildcard_patterns = []
+        self.compile_wildcard_patterns()
+        self.untranslated_locations = set()
+
+        # UI 拖动变量
+        self.current_row_height = 24
+        self.drag_start_y = 0
+        self.start_row_height_on_drag = 24
+
+
+        # 加载赞助者配置（UI 需要这些变量）
+        self._load_sponsor_config()
+
+        self.setup_ui()
+
+        # 日志队列 (线程安全) —— 必须在所有线程启动之前初始化!
+        self._log_queue = queue.Queue()
+        self._process_log_queue()
+
+        # 启动更新检查线程
+        threading.Thread(target=self.check_and_update_translations, daemon=True).start()
+
+        self._pending_tick_after_id = self.root.after(1000, self.pending_timeout_tick)
+        self.monitor_thread = threading.Thread(target=self.monitor_loop, daemon=True)
+        self.monitor_thread.start()
+
+        # 图片系统初始化
+        self.img_mappings = {}
+        self.img_notes = {}  # 图片备注
+        self.img_dir = os.path.join(self.base_dir, IMG_DIR)
+        self.img_json_path = os.path.join(self.base_dir, IMG_JSON)
+        self.tooltip_window = None
+        self.tooltip_label = None
+        self.tooltip_img = None
+        self.last_tooltip_row = None
+        
+        if not os.path.exists(self.img_dir):
+            try: os.makedirs(self.img_dir)
+            except: pass
+
+        self.setup_image_system()
+        threading.Thread(target=self.start_image_sync, daemon=True).start()
+
+        # 启动赞助者覆盖 (延迟到 mainloop 启动后)
+        if HAS_SPONSOR_PROXY and self.sponsor_enabled.get():
+            self.root.after(500, self._deferred_start_sponsor)
+
+
+
+    def _ui_after(self, callback, *args):
+        """安全投递到主线程：关闭中或窗口无效时直接丢弃。"""
+        if self._is_shutting_down:
+            return None
+        try:
+            if not self.root.winfo_exists():
+                return None
+            return self.root.after(0, callback, *args)
+        except Exception:
+            return None
+
+    def check_and_update_translations(self):
+
+        if os.path.exists(LOCAL_JSON_FILENAME):
+            try:
+                with open(LOCAL_JSON_FILENAME, 'r', encoding='utf-8') as f:
+                    local_data = json.load(f)
+                    LOCATION_TRANSLATION.update(local_data)
+                    self.compile_wildcard_patterns()
+                    self._ui_after(self.log, "已加载本地翻译缓存")
+            except Exception as e:
+                err_msg = str(e)
+                self._ui_after(self.log, f"本地翻译缓存加载失败: {err_msg}")
+
+        if HAS_REQUESTS and REMOTE_TRANSLATION_URL:
+            try:
+                self._ui_after(self.log, "正在检查在线翻译更新...")
+                resp = requests.get(REMOTE_TRANSLATION_URL, timeout=5)
+                if resp.status_code == 200:
+                    online_data = resp.json()
+                    LOCATION_TRANSLATION.update(online_data)
+                    self.compile_wildcard_patterns()
+
+                    if not os.path.exists(DATA_DIR):
+                        os.makedirs(DATA_DIR, exist_ok=True)
+
+                    with open(LOCAL_JSON_FILENAME, 'w', encoding='utf-8') as f:
+                        json.dump(online_data, f, ensure_ascii=False, indent=2)
+
+                    self._ui_after(self.log, "翻译库已在线更新")
+                else:
+                    status = resp.status_code
+                    self._ui_after(self.log, f"在线更新失败: HTTP {status}")
+            except Exception as e:
+                err_msg = str(e)
+                self._ui_after(self.log, f"在线更新失败: {err_msg}")
+        elif not HAS_REQUESTS:
+            self._ui_after(self.log, "未安装 requests 库，跳过在线更新")
+
+    def compile_wildcard_patterns(self):
+        self.wildcard_patterns = []
+        for key, trans_value in LOCATION_TRANSLATION.items():
+            if 'X' in key:
+                escaped_key = re.escape(key)
+                pattern_str = "^" + escaped_key.replace("X", r"([A-Z0-9]+)") + "$"
+                try:
+                    pattern = re.compile(pattern_str, re.IGNORECASE)
+                    self.wildcard_patterns.append((pattern, trans_value, key))
+                except re.error:
+                    pass
+        
+        # 按键长度降序排序（确保更具体的规则如 "DeskX_WOOD" 优先于 "X_WOOD"）
+        self.wildcard_patterns.sort(key=lambda x: len(x[2]), reverse=True)
+
+    def setup_ui(self):
+        self.style = ttk.Style()
+        self.style.configure("Treeview", rowheight=self.current_row_height)
+
+        self.paned = PanedWindow(self.root, orient=HORIZONTAL)
+        self.paned.pack(fill=BOTH, expand=True)
+
+        self.left_p = Frame(self.paned)
+        self.right_p = Frame(self.paned)
+
+        self.paned.add(self.left_p, width=600)
+        self.paned.add(self.right_p)
+
+        top_bar = Frame(self.left_p)
+        top_bar.pack(fill=X, padx=5, pady=5)
+        
+        # 新增：任务地点选择
+        ttk.Label(top_bar, text="任务地点：").pack(side=LEFT)
+        self.map_combo = ttk.Combobox(top_bar, textvariable=self.map_var, state="readonly", width=25)
+        self.map_combo['values'] = ["通用(默认)", "旧SlashCo总部", "马龙家的农场", "菲利普斯·韦斯特伍德高中", "伊斯特伍德综合医院", "德尔塔科研机构"]
+        self.map_combo.pack(side=LEFT, padx=(0, 10))
+        self.map_combo.bind("<<ComboboxSelected>>", self.on_map_changed)
+
+        ttk.Button(top_bar, text="导出未翻译位置", command=self.export_untranslated).pack(side=LEFT)
+
+        ttk.Button(top_bar, text="强制重置数据", command=self.force_reset).pack(side=RIGHT)
+
+        gen_frame = ttk.LabelFrame(self.left_p, text="发电机 (每桶油+25%)", padding=5)
+        gen_frame.pack(fill=X, padx=5, pady=5)
+
+        self.ui_gens = {}
+        for gid in ["SC_generator1", "SC_generator2"]:
+            row = ttk.Frame(gen_frame)
+            row.pack(fill=X, pady=2)
+            ttk.Label(row, text=gid.replace("SC_", "").capitalize(), width=12, font=("Consolas", 9)).pack(side=LEFT)
+            pb = ttk.Progressbar(row, length=200, maximum=100)
+            pb.pack(side=LEFT, padx=5, fill=X, expand=True)
+            lbl = ttk.Label(row, text="0%", width=5, font=("Consolas", 9))
+            lbl.pack(side=LEFT)
+            bat = ttk.Label(row, text="[缺电池]", foreground="red", width=10, font=("微软雅黑", 9))
+            bat.pack(side=LEFT)
+            self.ui_gens[gid] = {"pb": pb, "pct": lbl, "bat": bat}
+
+        stats_frame = ttk.LabelFrame(self.left_p, text="对局输出统计", padding=5)
+        stats_frame.pack(fill=X, padx=5, pady=2)
+
+        # 取消左右分栏，直接垂直排列
+        
+        # 1. 油桶
+        self.lbl_stats_fuel = ttk.Label(stats_frame, text="油桶：等待检测...", font=("微软雅黑", 12, "bold"), foreground="#d35400")
+        self.lbl_stats_fuel.pack(anchor=W, pady=2)
+
+        # 2. 物品
+        self.lbl_stats_item = ttk.Label(stats_frame, text="物品：等待检测...", font=("微软雅黑", 12, "bold"), foreground="#2980b9")
+        self.lbl_stats_item.pack(anchor=W, pady=2)
+
+        # 3. 封锁房间
+        self.lbl_stats_sealed = ttk.Label(stats_frame, text="", font=("微软雅黑", 12, "bold"), foreground="#8e44ad")
+        self.lbl_stats_sealed.pack(anchor=W, pady=2)
+
+        # 4. 玩家优惠（可少加油）
+        self.lbl_stats_headstart = ttk.Label(stats_frame, text="", font=("微软雅黑", 12, "bold"), foreground="#27ae60")
+        self.lbl_stats_headstart.pack(anchor=W, pady=2)
+
+
+
+
+        
+        # 赞助者名单覆盖设置
+        if HAS_SPONSOR_PROXY:
+            sponsor_frame = ttk.LabelFrame(self.left_p, text="赞助者名单覆盖", padding=5)
+            sponsor_frame.pack(fill=X, padx=5, pady=2)
+            
+            row1 = ttk.Frame(sponsor_frame)
+            row1.pack(fill=X, pady=2)
+            self.chk_sponsor = ttk.Checkbutton(
+                row1, text="启用赞助者名单覆盖",
+                variable=self.sponsor_enabled,
+                command=self._on_sponsor_toggle_new
+            )
+            self.chk_sponsor.pack(side=LEFT)
+            self.lbl_sponsor_status = ttk.Label(row1, text="", foreground="gray", font=("\u5fae\u8f6f\u96c5\u9ed1", 8))
+            self.lbl_sponsor_status.pack(side=RIGHT)
+            
+            row2 = ttk.Frame(sponsor_frame)
+            row2.pack(fill=X, pady=2)
+            ttk.Label(row2, text="\u663e\u793a\u540d\u79f0\uff1a").pack(side=LEFT)
+            self.entry_sponsor_name = ttk.Entry(row2, textvariable=self.sponsor_name, width=20)
+            self.entry_sponsor_name.pack(side=LEFT, padx=(0, 5), fill=X, expand=True)
+            ttk.Button(row2, text="\u4fdd\u5b58", command=self._save_sponsor_config, width=6).pack(side=RIGHT)
+
+        # 参考图折叠区域
+        self.img_visible = False
+        self.btn_toggle_img = ttk.Button(self.left_p, text="显示参考图 ▼", command=self.toggle_reference_image)
+        self.btn_toggle_img.pack(fill=X, padx=5, pady=(5, 0))
+
+        self.img_container = Frame(self.left_p, bg="black")
+        # 默认不显示 img_container
+        # self.img_container.pack(fill=X, padx=5, pady=2)
+
+        self.lbl_image = Label(self.img_container, text="Loading...", bg="black", fg="white")
+        self.lbl_image.pack(anchor=CENTER)
+
+        self.load_fixed_height_image()
+
+        log_frame = ttk.LabelFrame(self.left_p, text="系统日志", padding=5)
+        log_frame.pack(fill=BOTH, expand=True, padx=5, pady=5)
+        self.txt_log = scrolledtext.ScrolledText(log_frame, height=5, font=("Consolas", 8))
+        self.txt_log.pack(fill=BOTH, expand=True)
+
+        item_frame = ttk.LabelFrame(self.right_p, text="本局物品清单", padding=5)
+        item_frame.pack(fill=BOTH, expand=True, padx=5, pady=5)
+
+        # 全屏画廊覆盖层 (初始隐藏)
+        self.gallery_overlay = None
+        self.gallery_photo_refs = []
+
+        self.resize_bar = Frame(item_frame, height=3, cursor="sb_v_double_arrow", bg="#F0F0F0")
+        self.resize_bar.pack(fill=X, side=TOP, pady=(0, 2))
+
+        self.resize_bar.bind("<ButtonPress-1>", self.on_resize_press)
+        self.resize_bar.bind("<B1-Motion>", self.on_resize_motion)
+        self.resize_bar.bind("<ButtonRelease-1>", self.on_resize_release)
+        self.resize_bar.bind("<Enter>", lambda e: self.resize_bar.configure(bg="#A0A0A0"))
+        self.resize_bar.bind("<Leave>", lambda e: self.resize_bar.configure(bg="#F0F0F0"))
+
+        # 恢复默认 Treeview 样式，保持整体 UI 协调
+        self.style.configure("Treeview", rowheight=self.current_row_height, font=("微软雅黑", 9))
+        # 修改：移除选中时的背景色映射，仅保留前景色的变化（如果需要），或者完全移除映射以保持原色
+        # 这里我们将 map 置空，这样选中时就不会改变背景色
+        self.style.map('Treeview', background=[], foreground=[])
+        
+        cols = ("ID", "NameCN", "Pos")
+        self.tree = ttk.Treeview(item_frame, columns=cols, show="headings")
+
+        self.tree.heading("ID", text="ID")
+        self.tree.column("ID", width=120, minwidth=50, stretch=False)
+        self.tree.heading("NameCN", text="中文名称")
+        self.tree.column("NameCN", width=180, minwidth=100, stretch=True)
+        self.tree.heading("Pos", text="位置")
+        self.tree.column("Pos", width=250, minwidth=100, stretch=True)
+
+        self.tree.bind("<Button-3>", self.show_context_menu)
+        self.tree.bind("<Motion>", self.on_tree_motion)
+        self.tree.bind("<Leave>", self.on_tree_leave)
+        self.tree.bind("<<TreeviewSelect>>", self.on_tree_select) # 新增：绑定选中事件
+        self.context_menu = Menu(self.root, tearoff=0)
+        self.context_menu.add_command(label="复制当前单元格", command=self.copy_selected_cell)
+        self.context_menu.add_command(label="复制原名", command=self.copy_original_name)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="复制完整列 (去重)", command=self.copy_current_column)
+
+        self.tree.tag_configure("section", background="#f0f0f0", foreground="black", font=("微软雅黑", 9, "bold"))
+        self.tree.tag_configure("blank", background="#ffffff")
+        
+        # 注册自定义颜色标签 (智能背景)
+        self.register_custom_tags()
+
+        sc = ttk.Scrollbar(item_frame, orient=VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscroll=sc.set)
+        self.tree.pack(side=LEFT, fill=BOTH, expand=True)
+        sc.pack(side=RIGHT, fill=Y)
+
+    def is_light_color(self, hex_color):
+        """判断颜色是否为浅色"""
+        hex_color = hex_color.replace('#', '')
+        try:
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+            # 计算亮度 (Luma)
+            yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000
+            return yiq >= 128
+        except:
+            return True
+
+    def register_custom_tags(self):
+        seen_colors = set()
+        for hex_color in CUSTOM_ITEM_COLORS.values():
+            if hex_color not in seen_colors:
+                tag_name = f"color_{hex_color.replace('#', '')}"
+                
+                # 新思路：修改背景颜色 (background)
+                # 根据背景色的深浅，自动选择文字颜色 (foreground) 以保证可读性
+                if self.is_light_color(hex_color):
+                    # 浅色背景 -> 黑色文字
+                    text_color = "black"
+                else:
+                    # 深色背景 -> 白色文字
+                    text_color = "white"
+                
+                self.tree.tag_configure(tag_name, background=hex_color, foreground=text_color, font=("微软雅黑", 9, "bold"))
+                
+                seen_colors.add(hex_color)
+
+    def on_resize_press(self, event):
+        self.drag_start_y = event.y_root
+        try:
+            current = self.style.lookup("Treeview", "rowheight")
+            self.start_row_height_on_drag = int(current)
+        except:
+            self.start_row_height_on_drag = 25
+
+    def on_resize_motion(self, event):
+        delta = event.y_root - self.drag_start_y
+        new_height = self.start_row_height_on_drag + delta
+        if new_height < 15: new_height = 15
+        if new_height > 120: new_height = 120
+        self.style.configure("Treeview", rowheight=new_height)
+
+    def on_resize_release(self, event):
+        try:
+            self.current_row_height = self.style.lookup("Treeview", "rowheight")
+        except Exception:
+            pass
+
+    def show_context_menu(self, event):
+        self.current_click_col = self.tree.identify_column(event.x)
+        item = self.tree.identify_row(event.y)
+        if item:
+            self.tree.selection_set(item)
+        if self.current_click_col:
+            self.context_menu.post(event.x_root, event.y_root)
+
+    def copy_selected_cell(self):
+        selection = self.tree.selection()
+        if not selection or not self.current_click_col: return
+        try:
+            col_idx = int(self.current_click_col.replace("#", "")) - 1
+            item = selection[0]
+            vals = self.tree.item(item, "values")
+            if vals and len(vals) > col_idx:
+                text = str(vals[col_idx])
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+                self.log(f"已复制: {text}")
+        except Exception:
+            pass
+
+    def copy_original_name(self):
+        selection = self.tree.selection()
+        if not selection: return
+        item_id = selection[0]
+        # 检查是否是对应的 item_record
+        if item_id in self.item_records:
+            rec = self.item_records[item_id]
+            target_text = rec["en"]  # 默认物品英文名
+            
+            # 如果点击的是位置列（第3列）
+            if self.current_click_col == "#3":
+                target_text = rec.get("pos_raw", "") or rec.get("pos", "")
+                
+            if target_text:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(target_text)
+                self.log(f"已复制原名: {target_text}")
+
+    def toggle_reference_image(self):
+        self.img_visible = not self.img_visible
+        if self.img_visible:
+            self.img_container.pack(fill=X, padx=5, pady=2, after=self.btn_toggle_img)
+            self.btn_toggle_img.configure(text="隐藏参考图 ▲")
+        else:
+            self.img_container.pack_forget()
+            self.btn_toggle_img.configure(text="显示参考图 ▼")
+
+    def copy_current_column(self):
+        if not self.current_click_col: return
+        try:
+            col_idx = int(self.current_click_col.replace("#", "")) - 1
+        except Exception:
+            return
+        data_list = []
+        seen = set()
+        for item in self.tree.get_children():
+            tags = self.tree.item(item, "tags")
+            if "section" in tags or "blank" in tags:
+                continue
+            vals = self.tree.item(item, "values")
+            if vals and len(vals) > col_idx:
+                val = str(vals[col_idx]).strip()
+                if val and val not in seen:
+                    data_list.append(val)
+                    seen.add(val)
+        if data_list:
+            text = "\n".join(data_list)
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.log(f"已复制列数据 ({len(data_list)} 条)")
+
+
+    def export_untranslated(self):
+        if not self.untranslated_locations:
+            self.log("没有检测到新的未翻译位置")
+            return
+
+        filename = "untranslated_locations.txt"
+        filepath = os.path.join(self.base_dir, filename)
+
+        try:
+            existing = set()
+            if os.path.exists(filepath):
+                with open(filepath, "r", encoding="utf-8") as f:
+                    for line in f:
+                        existing.add(line.strip())
+
+            to_write = sorted(list(existing.union(self.untranslated_locations)))
+
+            with open(filepath, "w", encoding="utf-8") as f:
+                for loc in to_write:
+                    if loc.strip():
+                        f.write(f"{loc}\n")
+
+            self.log(f"已导出 {len(self.untranslated_locations)} 个新位置到: {filename}")
+            self.untranslated_locations.clear()
+            messagebox.showinfo("导出成功", f"未翻译位置已保存至:\n{filepath}")
+
+        except Exception as e:
+            self.log(f"导出失败: {e}")
+            messagebox.showerror("错误", f"导出文件失败: {e}")
+
+    # =========================================================
+    # 赞助者名单覆盖 (Caddy 方案)
+    # =========================================================
+    def _load_sponsor_config(self):
+        """加载赞助者配置"""
+        self.sponsor_enabled = BooleanVar(value=False)
+        self.sponsor_name = StringVar(value="")
+        
+        config_path = os.path.join(self.base_dir, "sponsor_config.json")
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    cfg = json.load(f)
+                self.sponsor_enabled.set(cfg.get("enabled", False))
+                self.sponsor_name.set(cfg.get("name", ""))
+        except Exception:
+            pass
+
+    def _save_sponsor_config(self):
+        """保存赞助者配置"""
+        config_path = os.path.join(self.base_dir, "sponsor_config.json")
+        cfg = {
+            "enabled": self.sponsor_enabled.get(),
+            "name": self.sponsor_name.get().strip(),
+        }
+        try:
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+            self.log(f"赞助者设置已保存 (名称: {cfg['name'] or '未设置'})")
+        except Exception as e:
+            self.log(f"保存赞助者设置失败: {e}")
+
+    def _on_sponsor_toggle_new(self):
+        """开关切换事件"""
+        try:
+            is_enabled = self.sponsor_enabled.get()
+            self._save_sponsor_config()
+            if is_enabled:
+                threading.Thread(target=self._start_sponsor_server, daemon=True).start()
+            else:
+                # 放入线程防止卡死 UI
+                threading.Thread(target=self._stop_sponsor_server, daemon=True).start()
+        except Exception as e:
+            self.log(f"Toggle error: {e}")
+
+    # --- 赞助者名单覆盖: Caddy 集成 ---
+
+    def _start_sponsor_server(self):
+        """使用 Caddy 启动赞助者名单覆盖"""
+        name = self.sponsor_name.get().strip()
+        if not name:
+            self._ui_after(messagebox.showwarning, "提示", "请先输入显示名称")
+            self._ui_after(self.sponsor_enabled.set, False)
+            return
+
+        self._ui_after(self._update_sponsor_status, "正在启动...", "#f39c12")
+
+        def _log_to_ui(msg):
+            self.log(msg)
+
+        success, message = sponsor_caddy.start_sponsor_override(name, log_func=_log_to_ui)
+
+        if success:
+            self._ui_after(self._update_sponsor_status, "运行中 ✓", "#27ae60")
+        else:
+            self._ui_after(self._update_sponsor_status, f"失败: {message}", "red")
+            self._ui_after(self.sponsor_enabled.set, False)
+
+    def _stop_sponsor_server(self):
+        """停止赞助者名单覆盖"""
+        self._ui_after(self.log, "正在停止赞助者名单覆盖...")
+        try:
+            log_func = None if self._is_shutting_down else self.log
+            sponsor_caddy.stop_sponsor_override(log_func=log_func)
+            self._ui_after(self._update_sponsor_status, "已停止", "gray")
+        except Exception as e:
+            self._ui_after(self.log, f"停止失败: {e}")
+
+    def _force_stop_sponsor_process(self):
+        """关闭时兜底终止 mitmdump 进程，避免阻塞主线程。"""
+        try:
+            proc = getattr(sponsor_caddy, "_mitm_process", None)
+            if not proc:
+                return
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=0.8)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _stop_sponsor_server_with_timeout(self, timeout_seconds=1.5):
+        """限时停止赞助者覆盖，超时后执行兜底终止，保证关窗快速返回。"""
+        done = threading.Event()
+
+        def _worker():
+            try:
+                self._stop_sponsor_server()
+            finally:
+                done.set()
+
+        threading.Thread(target=_worker, daemon=True).start()
+        done.wait(timeout_seconds)
+        if not done.is_set():
+            self._force_stop_sponsor_process()
+
+    def _update_sponsor_status(self, text, color):
+        """更新状态标签"""
+        if hasattr(self, 'lbl_sponsor_status'):
+            self.lbl_sponsor_status.configure(text=text, foreground=color)
+
+
+    def load_fixed_height_image(self):
+        if not os.path.exists(IMAGE_FILENAME):
+            self.lbl_image.configure(text=f"图片文件 {IMAGE_FILENAME} 不存在")
+            return
+
+        try:
+            self.tk_img = PhotoImage(file=IMAGE_FILENAME)
+            self.lbl_image.configure(image=self.tk_img, text="")
+        except Exception as e:
+            self.lbl_image.configure(text=f"图片加载失败: {e}\n(请确保图片已手动调整为高度550像素)")
+
+
+
+    def log(self, msg: str):
+        if self._is_shutting_down:
+            return
+        ts = datetime.now().strftime("%H:%M:%S")
+        formatted = f"[{ts}] {msg}\n"
+        if threading.current_thread() is threading.main_thread():
+            try:
+                self.txt_log.insert(END, formatted)
+                self.txt_log.see(END)
+            except Exception:
+                pass
+        else:
+            # 从非主线程: 放入队列，由主线程轮询处理
+            self._log_queue.put(formatted)
+
+    def _process_log_queue(self):
+        """主线程定时轮询日志队列"""
+        if self._is_shutting_down:
+            self._log_queue_after_id = None
+            return
+        try:
+            while True:
+                msg = self._log_queue.get_nowait()
+                self.txt_log.insert(END, msg)
+                self.txt_log.see(END)
+        except queue.Empty:
+            pass
+        if self._is_shutting_down:
+            self._log_queue_after_id = None
+            return
+        try:
+            self._log_queue_after_id = self.root.after(100, self._process_log_queue)
+        except Exception:
+            self._log_queue_after_id = None
+
+    def _deferred_start_sponsor(self):
+        """在 mainloop 启动后异步启动覆盖"""
+        if self._is_shutting_down:
+            return
+        threading.Thread(target=self._start_sponsor_server, daemon=True).start()
+
+    def force_reset(self):
+        self.reset_game(force=True, reason="手动强制重置")
+
+    def reset_game(self, force=False, reason=""):
+        now = time.time()
+        if not force and (now - self.last_reset_time < 5):
+            return
+        self.last_reset_time = now
+        self.log(f"=== {reason if reason else '正在重置对局状态'} ===")
+        self.item_records.clear()
+        self.group_order = {"地图": [], "玩家": [], "未知": []}
+        self.groups = {"地图": {}, "玩家": {}, "未知": {}}
+        self.rebuild_item_tree()
+        self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": 0}
+        self.update_stats_ui()
+        for gid in self.gens:
+            self.gens[gid] = {"fuel": 0.0, "battery": False, "battery_pending": False, "pending_since": 0.0}
+            self.last_battery_event[gid] = 0.0
+            self.update_gen_ui(gid)
+        self.last_pending_gid = None
+        self.last_pending_time = 0.0
+
+    def on_map_changed(self, event):
+        """处理任务地点变更"""
+        new_map = self.map_var.get()
+        self.game_info["location"] = new_map
+        self.log(f"任务地点已手动切换为: {new_map}")
+        
+
+
+
+
+
+    def update_gen_ui(self, gid: str):
+        data = self.gens[gid]
+        ui = self.ui_gens[gid]
+        ui["pb"]["value"] = data["fuel"]
+        ui["pct"].configure(text=f"{int(data['fuel'])}%")
+        if data.get("battery_pending", False) and not data.get("battery", False):
+            ui["bat"].configure(text="[安装中]", foreground="orange")
+            return
+        if data["battery"]:
+            ui["bat"].configure(text="[有电池]", foreground="green")
+        else:
+            ui["bat"].configure(text="[缺电池]", foreground="red")
+
+    def add_fuel(self, gid: str):
+        if gid not in self.gens: return
+        self.gens[gid]["fuel"] = min(100.0, self.gens[gid]["fuel"] + 25.0)
+        self.update_gen_ui(gid)
+        self.log(f"{gid} 加油! 当前: {self.gens[gid]['fuel']}%")
+
+    def set_battery_pending(self, gid: str, reason: str = ""):
+        if gid not in self.gens: return
+        if self.gens[gid].get("battery", False): return
+        self.gens[gid]["battery_pending"] = True
+        self.gens[gid]["pending_since"] = time.time()
+        self.last_pending_gid = gid
+        self.last_pending_time = time.time()
+        self.update_gen_ui(gid)
+        self.log(f"{gid} 电池安装中 {reason}".strip())
+
+    def set_battery_state(self, gid: str, state: bool, reason: str = ""):
+        if gid not in self.gens: return
+        now = time.time()
+        old_state = self.gens[gid]["battery"]
+        if (old_state == state) and (now - self.last_battery_event.get(gid, 0.0) < BATTERY_DEBOUNCE_SECONDS):
+            return
+        self.last_battery_event[gid] = now
+        self.gens[gid]["battery"] = state
+        self.gens[gid]["battery_pending"] = False
+        self.gens[gid]["pending_since"] = 0.0
+        self.update_gen_ui(gid)
+        self.log(f"{gid} 电池状态 => {state} {reason}".strip())
+
+    def fail_pending_battery_if_any(self, reason: str = ""):
+        now = time.time()
+        if self.last_pending_gid and (now - self.last_pending_time <= PENDING_ASSOCIATE_WINDOW_SECONDS):
+            gid = self.last_pending_gid
+            if self.gens.get(gid, {}).get("battery_pending", False):
+                self.set_battery_state(gid, False, reason=reason)
+            return
+        for gid in self.gens:
+            if self.gens[gid].get("battery_pending", False):
+                self.set_battery_state(gid, False, reason=reason)
+                return
+
+    def pending_timeout_tick(self):
+        if self._is_shutting_down:
+            self._pending_tick_after_id = None
+            return
+        now = time.time()
+        for gid in self.gens:
+            if self.gens[gid].get("battery_pending", False):
+                if now - self.gens[gid].get("pending_since", 0.0) > PENDING_TIMEOUT_SECONDS:
+                    self.gens[gid]["battery_pending"] = False
+                    self.gens[gid]["pending_since"] = 0.0
+                    self.update_gen_ui(gid)
+                    self.log(f"{gid} 电池安装中超时，已自动清理。")
+        if self._is_shutting_down:
+            self._pending_tick_after_id = None
+            return
+        try:
+            self._pending_tick_after_id = self.root.after(1000, self.pending_timeout_tick)
+        except Exception:
+            self._pending_tick_after_id = None
+
+    def update_stats_ui(self):
+        base = self.game_stats["fuel_base"]
+        extra = self.game_stats["fuel_extra"]
+        if base > 0 or extra > 0:
+            total = base + extra
+            self.lbl_stats_fuel.configure(text=f"油桶：共有 {total} 桶，其中 {extra} 桶在上锁的房间")
+        else:
+            self.lbl_stats_fuel.configure(text="油桶：等待检测...")
+        out_n = self.game_stats["item_out"]
+        in_n = self.game_stats["item_in"]
+        if out_n > 0 or in_n > 0:
+            total = out_n + in_n
+            self.lbl_stats_item.configure(text=f"物品：共有 {total} 个，其中 {in_n} 个在上锁的房间")
+        else:
+            self.lbl_stats_item.configure(text="物品：等待检测...")
+        
+        # 显示封锁房间数
+        sealed = self.game_stats["sealed_rooms"]
+        if sealed > 0:
+            self.lbl_stats_sealed.configure(text=f"有 {sealed} 个门被锁上")
+        else:
+            self.lbl_stats_sealed.configure(text="")
+        
+        # 显示玩家优惠（只有检测到可少加油时才显示）
+        players = self.game_stats["players"]
+        free_fuel = self.game_stats["free_fuel"]
+        if free_fuel > 0:
+            self.lbl_stats_headstart.configure(text=f"局内有 {players} 名玩家，可少加 {free_fuel} 桶油")
+        else:
+            self.lbl_stats_headstart.configure(text="")
+
+    def classify_source(self, iid_norm: str) -> str:
+        num = item_numeric_id(iid_norm)
+        if num < 0: return "未知"
+        return "玩家" if num >= PLAYER_ITEM_ID_THRESHOLD else "地图"
+
+    def add_item_record(self, iid_norm: str, cn: str, en: str):
+        if iid_norm in self.item_records: return
+        source = self.classify_source(iid_norm)
+        group_key = en
+        self.item_records[iid_norm] = {"cn": cn, "en": en, "source": source, "group": group_key, "pos": "", "pos_raw": ""}
+        if group_key not in self.groups[source]:
+            self.groups[source][group_key] = []
+            self.group_order[source].append(group_key)
+        self.groups[source][group_key].append(iid_norm)
+
+    def get_sort_key(self, iid):
+        rec = self.item_records.get(iid)
+        if not rec: return (100, 0)
+        
+        # 优先级：油桶 > 电池 > 607型主锁 > 玻璃瓶 > 其他
+        name = rec["en"]
+        cn_name = rec["cn"]
+        
+        prio = 10  # 默认其他
+        if "Fuel" in name or "燃料" in cn_name: prio = 0
+        elif "Battery" in name or "电池" in cn_name: prio = 1
+        elif "Master" in name and "Lock" in name: prio = 2 # Master Lock 607 / MasterLock
+        elif name == "MasterLock": prio = 2
+        elif "Glass" in name and "Bottle" in name: prio = 3
+        
+        # 提取ID数字 SC_Item123 -> 123
+        num_id = item_numeric_id(iid)
+        
+        return (prio, num_id)
+
+    def update_item_position(self, iid_norm: str, pos_name: str):
+        clean_pos = re.sub(r'\s*\(\d+\)$', '', pos_name)
+        clean_pos = re.sub(r'(?i)_?collider_?', '', clean_pos)
+        clean_pos = clean_pos.strip(" _")
+        clean_pos = clean_pos.replace("__", "_")
+        final_pos = clean_pos
+
+        is_translated = False
+        if clean_pos in LOCATION_TRANSLATION:
+            final_pos = LOCATION_TRANSLATION[clean_pos]
+            is_translated = True
+        else:
+            for pattern, trans_template, _ in self.wildcard_patterns:
+                match = pattern.match(clean_pos)
+                if match:
+                    groups = match.groups()
+                    result = trans_template
+                    for g in groups:
+                        result = result.replace("X", g, 1)
+                    final_pos = result
+                    is_translated = True
+                    break
+
+        if not is_translated and clean_pos.strip():
+            if clean_pos not in self.untranslated_locations:
+                self.untranslated_locations.add(clean_pos)
+                self.log(f"[未翻译] 发现新位置: {clean_pos}")
+
+        if iid_norm in self.item_records:
+            self.item_records[iid_norm]["pos"] = final_pos
+            self.item_records[iid_norm]["pos_raw"] = clean_pos  # 保存原始位置名
+            for child in self.tree.get_children():
+                vals = self.tree.item(child, "values")
+                if vals and vals[0] == iid_norm:
+                    new_vals = (vals[0], vals[1], final_pos)
+                    self.tree.item(child, values=new_vals)
+                    break
+
+    def rebuild_item_tree(self):
+        for it in self.tree.get_children():
+            self.tree.delete(it)
+        def insert_section(title: str):
+            self.tree.insert("", END, values=("", title, ""), tags=("section",))
+        def insert_blank():
+            self.tree.insert("", END, values=("", "", ""), tags=("blank",))
+            
+        insert_section("【地图物品】")
+        
+        # 获取并排序地图物品
+        map_items = []
+        if "地图" in self.groups:
+            for g in self.groups["地图"].values():
+                map_items.extend(g)
+        
+        map_items.sort(key=self.get_sort_key)
+        
+        for iid in map_items:
+            rec = self.item_records.get(iid)
+            if not rec: continue
+            
+            tags = []
+            # 应用颜色（仅限地图物品）
+            color_hex = CUSTOM_ITEM_COLORS.get(rec["en"])
+            if not color_hex:
+                color_hex = CUSTOM_ITEM_COLORS.get(rec["cn"])
+            
+            if color_hex:
+                tag_name = f"color_{color_hex.replace('#', '')}"
+                tags.append(tag_name)
+                
+            self.tree.insert("", END, iid=iid, values=(iid, rec["cn"], rec["pos"]), tags=tuple(tags))
+            
+        insert_blank()
+        insert_section("【玩家物品】")
+        
+        # 获取并排序玩家物品（按ID排序）
+        player_items = []
+        if "玩家" in self.groups:
+            for g in self.groups["玩家"].values():
+                player_items.extend(g)
+        
+        player_items.sort(key=lambda x: item_numeric_id(x))
+        
+        for iid in player_items:
+            rec = self.item_records.get(iid)
+            if not rec: continue
+            # 玩家物品保持默认颜色，不添加特别的 tags
+            self.tree.insert("", END, iid=iid, values=(iid, rec["cn"], rec["pos"]), tags=())
+
+    def process_line(self, line: str):
+        line = line.strip()
+        if not line: return
+        m_item = PATTERNS["item"].search(line)
+        if m_item:
+            iid_raw, raw_name = m_item.groups()
+            iid = normalize_item_id(iid_raw)
+            cn_name = ITEM_TRANSLATION.get(raw_name.strip(), raw_name.strip())
+            if iid not in self.item_records:
+                self.add_item_record(iid, cn_name, raw_name.strip())
+                self.rebuild_item_tree()
+                self.log(f"发现: {cn_name} ({iid})")
+            return
+        m_pos = PATTERNS["item_collision"].search(line)
+        if m_pos:
+            iid = normalize_item_id(m_pos.group(1))
+            pos_name = m_pos.group(2).strip()
+            self.update_item_position(iid, pos_name)
+            return
+        m_base = PATTERNS["fuel_base"].search(line)
+        if m_base:
+            self.game_stats["fuel_base"] = int(m_base.group(1))
+            self.update_stats_ui()
+            return
+        m_extra = PATTERNS["fuel_extra"].search(line)
+        if m_extra:
+            self.game_stats["fuel_extra"] = int(m_extra.group(1))
+            self.update_stats_ui()
+            return
+        m_out = PATTERNS["item_outside"].search(line)
+        if m_out:
+            self.game_stats["item_out"] = int(m_out.group(1))
+            self.update_stats_ui()
+            return
+        m_in = PATTERNS["item_inside"].search(line)
+        if m_in:
+            self.game_stats["item_in"] = int(m_in.group(1))
+            self.update_stats_ui()
+            return
+
+        # 检测地图加载
+        m_map_landing = PATTERNS["map_landing"].search(line)
+        m_map_slashco = PATTERNS["map_slashco"].search(line)
+        
+        if m_map_landing:
+            map_name = m_map_landing.group(1).strip()
+            self.reset_game(force=True, reason=f"新地图加载: {map_name}")
+            # OCR 已改为通过 game_end 后的轮询机制触发，此处不再单独启动
+            return
+        
+        if m_map_slashco:
+            map_name = m_map_slashco.group(1).strip()
+            if "Lobby" in map_name:
+                self.reset_game(force=True, reason="返回大厅")
+            else:
+                self.log(f"检测到地图数据加载: {map_name}")
+            return
+        m_fuel = PATTERNS["fuel"].search(line)
+        if m_fuel:
+            self.add_fuel(m_fuel.group(1))
+            return
+        m_bp = PATTERNS["battery_progress"].search(line)
+        if m_bp:
+            self.set_battery_state(m_bp.group(1), m_bp.group(2).lower() == "true", reason="(ProgressCheck)")
+            return
+        if PATTERNS["battery_skillcheck_failed"].search(line):
+            self.fail_pending_battery_if_any(reason="(SkillcheckFailed)")
+            return
+        m_fix = PATTERNS["battery_fixing"].search(line)
+        if m_fix:
+            self.set_battery_pending(m_fix.group(1), reason="(FixingNow)")
+            return
+        m_end = PATTERNS["game_end"].search(line)
+        if m_end:
+            now = time.time()
+            if now - self.last_game_end_time >= self.GAME_END_DEBOUNCE_SECONDS:
+                self.last_game_end_time = now
+                self.reset_game(force=True, reason=f"检测到结束信号: {m_end.group(1)}")
+            return
+
+        # 检测玩家人数和免费油桶
+        m_headstart = PATTERNS["player_headstart"].search(line)
+        if m_headstart:
+            self.game_stats["players"] = int(m_headstart.group(1))
+            self.game_stats["free_fuel"] = int(m_headstart.group(2))
+            self.update_stats_ui()
+            self.log(f"局内 {self.game_stats['players']} 名玩家，可少加 {self.game_stats['free_fuel']} 桶油")
+            return
+        
+        # 检测封锁房间数
+        m_sealed = PATTERNS["rooms_sealed"].search(line)
+        if m_sealed:
+            self.game_stats["sealed_rooms"] = int(m_sealed.group(1))
+            self.update_stats_ui()
+            self.log(f"检测到 {self.game_stats['sealed_rooms']} 个门被锁上")
+            return
+
+        # 检测 SLASHCO 数据加载 - 仅记录日志，OCR由音频匹配触发
+        if PATTERNS["slashco_loading"].search(line):
+            self.log("检测到数据加载 (SLASHCO now loading data)")
+            # OCR现在由音频匹配触发，不再使用日志触发
+            return
+
+    def get_latest_log_file(self):
+        try:
+            files = glob.glob(os.path.join(self.log_dir, "output_log_*.txt"))
+            if not files: return None
+            return max(files, key=os.path.getctime)
+        except Exception:
+            return None
+
+    def monitor_loop(self):
+        current_file_path = None
+        f = None
+        self.log("正在扫描 VRChat 日志文件...")
+        while self.is_monitoring:
+            try:
+                latest = self.get_latest_log_file()
+                if latest and latest != current_file_path:
+                    if os.path.exists(latest) and os.path.getsize(latest) > 0:
+                        if f: f.close()
+                        current_file_path = latest
+                        self.log(f"锁定日志: {os.path.basename(current_file_path)}")
+                        try:
+                            f = open(current_file_path, "r", encoding="utf-8", errors="ignore")
+                            self._ui_after(self.reset_game, True, "新日志文件加载")
+                            f.seek(0, 0)
+                        except Exception:
+                            f = None
+                            time.sleep(1)
+                            continue
+                if f:
+                    line = f.readline()
+                    while line:
+                        self._ui_after(self.process_line, line)
+                        line = f.readline()
+                    time.sleep(0.1)
+                else:
+                    time.sleep(1)
+            except Exception as e:
+                self.log(f"监控异常: {e}")
+                time.sleep(2)
+        if f:
+            try:
+                f.close()
+            except Exception:
+                pass
+
+
+    # === 图片系统实现 ===
+    GITHUB_BASE_URL = "https://github.com/h1czvk0/slsc/raw/refs/heads/main"
+    GH_PROXIES = [
+        "https://gh-proxy.org/",
+        "https://hk.gh-proxy.org/",
+        "https://cdn.gh-proxy.org/",
+        "https://edgeone.gh-proxy.org/",
+        "" # 最后尝试直连
+    ]
+
+    def setup_image_system(self):
+        try:
+            # 2. 加载 images.json (优先加载 base_dir 下的，因为刚可能被释放了)
+            target_json = self.img_json_path
+            if os.path.exists(target_json):
+                with open(target_json, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.img_mappings = data.get("mappings", {})
+                    self.img_notes = data.get("notes", {})
+            else:
+                self.log(f"未找到图片映射文件: {target_json}")
+        except Exception as e:
+            self.log(f"本地图片映射加载失败: {e}")
+
+    def _download_file_with_proxy(self, relative_path, best_proxy=None):
+        """尝试使用代理下载文件，返回 (content, worked_proxy)"""
+        url_suffix = f"{self.GITHUB_BASE_URL}/{relative_path}"
+        
+        # 如果有确定的最佳代理，优先尝试
+        proxies_to_try = self.GH_PROXIES.copy()
+        if best_proxy in proxies_to_try:
+            proxies_to_try.remove(best_proxy)
+            proxies_to_try.insert(0, best_proxy)
+            
+        for proxy in proxies_to_try:
+            try:
+                full_url = f"{proxy}{url_suffix}"
+                # self.log(f"尝试下载: {full_url}") # 调试用
+                resp = requests.get(full_url, timeout=5) # 5秒超时测速
+                if resp.status_code == 200:
+                    return resp.content, proxy
+            except:
+                continue
+        return None, None
+
+    def start_image_sync(self):
+        if not HAS_REQUESTS:
+            self.log("未安装 requests 库，跳过图片同步")
+            return
+
+        try:
+            self.log("正在检查图片更新...")
+            
+            # 1. 下载 images.json 并确定最佳代理
+            content, best_proxy = self._download_file_with_proxy(IMG_JSON)
+            if not content:
+                self.log("无法连接到图片服务器 (images.json 下载失败)")
+                return
+            
+            # self.log(f"连接成功，使用代理: {best_proxy if best_proxy else '直连'}")
+            
+            remote_data = json.loads(content.decode('utf-8'))
+            remote_mappings = remote_data.get("mappings", {})
+            remote_notes = remote_data.get("notes", {})
+            
+            # 2. 更新本地映射
+            self.img_mappings.update(remote_mappings)
+            if isinstance(remote_notes, dict):
+                self.img_notes.update(remote_notes)
+            with open(self.img_json_path, 'w', encoding='utf-8') as f:
+                json.dump({"mappings": self.img_mappings, "notes": self.img_notes}, f, ensure_ascii=False, indent=4)
+            
+            # 3. 计算差异 (支持 list 类型的值)
+            needed_files = set()
+            for val in self.img_mappings.values():
+                if isinstance(val, list):
+                    for v in val:
+                        if v and isinstance(v, str): needed_files.add(v)
+                elif isinstance(val, str) and val:
+                    needed_files.add(val)
+
+            local_files = set()
+            if os.path.exists(self.img_dir):
+                local_files = set(os.listdir(self.img_dir))
+                
+            # 清理废弃图片
+            for f in local_files:
+                if f not in needed_files:
+                    try: os.remove(os.path.join(self.img_dir, f))
+                    except: pass
+            
+            files_to_download = [f for f in needed_files if f not in local_files]
+            
+            if not files_to_download:
+                self.log("图片已是最新")
+                return
+
+            self.log(f"发现 {len(files_to_download)} 张新图片，开始同步...")
+            
+            # 4. 并行下载
+            self.download_completed_count = 0
+            self.download_total_count = len(files_to_download)
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                futures = []
+                for fname in files_to_download:
+                    local_path = os.path.join(self.img_dir, fname)
+                    futures.append(executor.submit(self._download_image_worker, fname, local_path, best_proxy))
+                
+                # 监控进度
+                completed = 0
+                for f in concurrent.futures.as_completed(futures):
+                    completed += 1
+                    if completed % 5 == 0 or completed == self.download_total_count:
+                        self._ui_after(self.log, f"图片同步进度: {completed}/{self.download_total_count}")
+            
+            self.log("图片同步完成")
+                
+        except Exception as e:
+            self._ui_after(self.log, f"同步流程错误: {e}")
+
+    def _download_image_worker(self, fname, local_path, best_proxy):
+        try:
+            content, _ = self._download_file_with_proxy(f"{IMG_DIR}/{fname}", best_proxy)
+            if content:
+                with open(local_path, 'wb') as f:
+                    f.write(content)
+        except:
+            pass
+
+    def _get_image_path_for_item(self, item_id):
+        """公共方法：根据 Item ID 和当前地图获取第一张图片路径"""
+        paths = self._get_all_image_paths_for_item(item_id)
+        return paths[0] if paths else None
+
+    def _get_all_image_paths_for_item(self, item_id):
+        """获取某个 Item 的所有关联图片路径列表"""
+        if item_id not in self.item_records:
+            return []
+
+        rec = self.item_records[item_id]
+        pos_raw = rec.get("pos_raw", "")
+        
+        # 获取当前地图名称
+        current_map = self.game_info.get("location", "通用(默认)")
+        if "等待" in current_map or "未知" in current_map: 
+             current_map = self.game_info.get("location", "通用(默认)")
+
+        # 1. 优先尝试查找特定地图的图片 KEY: "位置原名|地图名"
+        img_names = self.img_mappings.get(f"{pos_raw}|{current_map}")
+        
+        # 2. 如果没找到，尝试查找通用的图片 KEY: "位置原名"
+        if not img_names:
+            img_names = self.img_mappings.get(pos_raw)
+        
+        # 3. 如果还没找到，尝试 Wildcard 匹配
+        if not img_names:
+            for pattern, _, w_key in self.wildcard_patterns:
+                if pattern.match(pos_raw):
+                    img_names = self.img_mappings.get(f"{w_key}|{current_map}")
+                    if not img_names:
+                        img_names = self.img_mappings.get(w_key)
+                    if img_names:
+                        break
+        
+        if not img_names:
+            return []
+        
+        # 兼容: 字符串转列表
+        if isinstance(img_names, str):
+            img_names = [img_names]
+        
+        # 构建完整路径并过滤不存在的文件
+        result = []
+        for name in img_names:
+            path = os.path.join(self.img_dir, name)
+            if os.path.exists(path):
+                result.append(path)
+        
+        return result
+
+    def on_tree_motion(self, event):
+        try:
+            item_id = self.tree.identify_row(event.y)
+            col = self.tree.identify_column(event.x)
+            
+            # 判断是否应该显示：
+            # 1. 悬停在第3列 ("位置"列)
+            # 2. 或者悬停的行就是当前选中的行 (无论哪一列)
+            selection = self.tree.selection()
+            is_selected_row = (selection and selection[0] == item_id)
+            
+            if not item_id or (col != "#3" and not is_selected_row):
+                self.hide_img_tooltip()
+                self.last_tooltip_row = None
+                return
+
+            if item_id == self.last_tooltip_row:
+                return 
+            self.last_tooltip_row = item_id
+
+            # 使用提取的公共逻辑查找图片
+            img_path = self._get_image_path_for_item(item_id)
+            
+            if img_path:
+                self.show_img_tooltip(img_path, event.x_root, event.y_root)
+                return
+            
+            self.hide_img_tooltip()
+        except:
+            pass
+
+
+    def on_tree_leave(self, event):
+        self.hide_img_tooltip()
+        self.last_tooltip_row = None
+
+    def on_tree_select(self, event):
+        """处理列表选中逻辑：有图片时显示全屏画廊覆盖层"""
+        selection = self.tree.selection()
+        if not selection: 
+            return
+
+        item_id = selection[0]
+        
+        # 更新记录，让 hover 逻辑知道这是选中行
+        if hasattr(self, 'last_tooltip_row') and self.last_tooltip_row != item_id:
+             self.last_tooltip_row = None
+        
+        # 获取所有图片路径
+        img_paths = self._get_all_image_paths_for_item(item_id)
+        
+        if not img_paths:
+            self.hide_img_tooltip()
+            return
+        
+        # 隐藏 tooltip
+        self.hide_img_tooltip()
+        
+        # 显示全屏画廊覆盖层
+        rec = self.item_records.get(item_id, {})
+        cn_name = rec.get("cn", "")
+        pos_raw = rec.get("pos_raw", "")
+        self.show_gallery_overlay(img_paths, pos_raw, cn_name)
+
+    def show_gallery_overlay(self, img_paths, pos_raw, cn_name):
+        """显示全屏画廊覆盖层"""
+        # 先销毁旧的覆盖层
+        self.hide_gallery_overlay()
+        
+        # 创建覆盖层 Frame，覆盖整个 paned 区域
+        self.gallery_overlay = Frame(self.root, bg="#f5f5f5")
+        self.gallery_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        
+        # 顶部栏：标题和返回按钮
+        top_bar = Frame(self.gallery_overlay, bg="#ffffff", height=50)
+        top_bar.pack(fill=X, side=TOP)
+        top_bar.pack_propagate(False)
+        
+        title = cn_name if cn_name else pos_raw
+        Label(top_bar, text=f"📍 {title} ({len(img_paths)}张图片)", 
+              font=("微软雅黑", 14, "bold"), bg="#ffffff").pack(side=LEFT, padx=20, pady=10)
+        
+        ttk.Button(top_bar, text="← 返回", command=self.hide_gallery_overlay).pack(side=RIGHT, padx=20, pady=10)
+        
+        # 图片展示区域 (可滚动)
+        canvas_frame = Frame(self.gallery_overlay, bg="#f5f5f5")
+        canvas_frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
+        
+        canvas = Canvas(canvas_frame, bg="#f5f5f5", highlightthickness=0)
+        v_scroll = ttk.Scrollbar(canvas_frame, orient=VERTICAL, command=canvas.yview)
+        h_scroll = ttk.Scrollbar(canvas_frame, orient=HORIZONTAL, command=canvas.xview)
+        canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+        
+        v_scroll.pack(side=RIGHT, fill=Y)
+        h_scroll.pack(side=BOTTOM, fill=X)
+        canvas.pack(fill=BOTH, expand=True)
+        
+        inner = Frame(canvas, bg="#f5f5f5")
+        canvas.create_window((0, 0), window=inner, anchor=NW)
+        
+        # 计算网格布局
+        num = len(img_paths)
+        if num == 1:
+            cols = 1
+        elif num <= 4:
+            cols = 2
+        else:
+            cols = 3
+        
+        # 加载并显示图片
+        self.gallery_photo_refs = []
+        max_size = 350
+        
+        for i, path in enumerate(img_paths):
+            row = i // cols
+            col = i % cols
+            try:
+                img = Image.open(path)
+                img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                self.gallery_photo_refs.append(photo)
+                
+                cell = Frame(inner, bd=2, relief=SOLID, bg="white")
+                cell.grid(row=row, column=col, padx=10, pady=10)
+                
+                lbl = Label(cell, image=photo, bg="white")
+                lbl.pack(padx=5, pady=5)
+                
+                # 显示文件名
+                fname = os.path.basename(path)
+                Label(cell, text=fname[:25], font=("Consolas", 8), fg="#666", bg="white").pack()
+                
+                # 显示备注（如果有）
+                note = getattr(self, 'img_notes', {}).get(fname, "")
+                if note:
+                    Label(cell, text=f"📝 {note}", font=("微软雅黑", 9), fg="#333", bg="#fffacd", 
+                          wraplength=max_size-20).pack(fill=X, padx=3, pady=3)
+            except Exception:
+                pass
+        
+        # 更新滚动区域
+        inner.update_idletasks()
+        canvas.config(scrollregion=canvas.bbox("all"))
+        
+        # 绑定鼠标滚轮
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-1*(e.delta//120), "units"))
+        
+        # ESC 返回
+        self.gallery_overlay.bind("<Escape>", lambda e: self.hide_gallery_overlay())
+        self.gallery_overlay.focus_set()
+
+    def hide_gallery_overlay(self):
+        """隐藏全屏画廊覆盖层"""
+        if self.gallery_overlay:
+            self.gallery_overlay.destroy()
+            self.gallery_overlay = None
+        self.gallery_photo_refs.clear()
+
+
+    def show_img_tooltip(self, img_path, x, y):
+        # 销毁旧窗口
+        self.hide_img_tooltip()
+        
+        self.tooltip_window = Toplevel(self.root)
+        self.tooltip_window.wm_overrideredirect(True)
+        self.tooltip_window.wm_geometry(f"+{x+20}+{y+20}")
+        self.tooltip_window.attributes("-topmost", True)
+        
+        try:
+            pil_img = Image.open(img_path)
+            # 限制大小，例如最大高度300
+            max_h = 300
+            if pil_img.height > max_h:
+                ratio = max_h / pil_img.height
+                new_w = int(pil_img.width * ratio)
+                pil_img = pil_img.resize((new_w, max_h), Image.Resampling.LANCZOS)
+            
+            self.tooltip_img = ImageTk.PhotoImage(pil_img)
+            lbl = Label(self.tooltip_window, image=self.tooltip_img, bg="#333333", bd=1, relief="solid")
+            lbl.pack()
+        except Exception:
+            self.hide_img_tooltip()
+
+    def hide_img_tooltip(self):
+        if self.tooltip_window:
+            try: self.tooltip_window.destroy()
+            except: pass
+        self.tooltip_window = None
+
+
+
+    def on_close(self):
+        """窗口关闭处理 - 优雅退出并释放资源"""
+        if self._is_shutting_down:
+            return
+        self._is_shutting_down = True
+
+        # 先隐藏窗口，给用户即时关闭反馈
+        try:
+            self.root.withdraw()
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
+        # 停止监控循环
+        self.is_monitoring = False
+
+        # 清理赞助者覆盖服务器（配置开启或实际在运行都尝试停止）
+        should_stop_sponsor = False
+        if HAS_SPONSOR_PROXY:
+            try:
+                is_running_fn = getattr(sponsor_caddy, "is_running", None)
+                sponsor_running = bool(is_running_fn()) if callable(is_running_fn) else False
+            except Exception:
+                sponsor_running = False
+            should_stop_sponsor = self.sponsor_enabled.get() or sponsor_running
+
+        if should_stop_sponsor:
+            try:
+                self._stop_sponsor_server_with_timeout(timeout_seconds=1.5)
+            except Exception:
+                pass
+
+        # 取消周期性 after 任务
+        for attr in ("_log_queue_after_id", "_pending_tick_after_id"):
+            after_id = getattr(self, attr, None)
+            if after_id:
+                try:
+                    self.root.after_cancel(after_id)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+
+        # 清理悬浮层/tooltip
+        try:
+            self.hide_gallery_overlay()
+        except Exception:
+            pass
+        try:
+            self.hide_img_tooltip()
+        except Exception:
+            pass
+
+        # 正常退出 Tk 循环
+        try:
+            self.root.quit()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+if __name__ == "__main__":
+    # 支持在打包后运行脚本 (用于 admin_helper.py 等子进程调用)
+    # 当作为 frozen exe 运行时，sys.executable 是 exe 本身。
+    # 如果 argv[1] 是 .py 文件，则尝试执行它。
+    if getattr(sys, 'frozen', False) and len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
+        script_path = sys.argv[1]
+        # 调整 argv，让脚本看到的 argv[0] 是脚本路径
+        sys.argv = sys.argv[1:]
+        try:
+            import runpy
+            # 使用 run_path 执行脚本
+            runpy.run_path(script_path, run_name="__main__")
+        except Exception as e:
+            print(f"Error running script {script_path}: {e}")
+        sys.exit(0)
+
+    try:
+        # 设置高DPI感知
+        if os.name == 'nt':
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            except:
+                ctypes.windll.user32.SetProcessDPIAware()
+    except:
+        pass
+
+    root = Tk()
+    app = SlashCoMonitorCN(root)
+    # 接管窗口关闭事件
+    root.protocol("WM_DELETE_WINDOW", app.on_close)
+    root.mainloop()

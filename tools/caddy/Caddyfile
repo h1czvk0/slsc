@@ -1,0 +1,20 @@
+{
+    auto_https disable_redirects
+    admin off
+    log {
+        output file E:/program/slashco/tools/caddy/caddy.log
+        level WARN
+    }
+}
+
+https://pastebin.com {
+    tls internal
+    handle /raw/2WVJpW1N {
+        root * E:/program/slashco/tools/caddy
+        rewrite * /sponsors_modified.txt
+        file_server
+        header Content-Type "text/plain; charset=utf-8"
+        header Access-Control-Allow-Origin "*"
+    }
+    respond * "Not Found" 404
+}

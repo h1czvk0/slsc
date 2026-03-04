@@ -1,0 +1,32 @@
+[
+  {
+    "Name": "vEthernet (Default Switch)",
+    "Index": 29,
+    "DNS": ""
+  },
+  {
+    "Name": "\u672c\u5730\u8fde\u63a5",
+    "Index": 21,
+    "DNS": ""
+  },
+  {
+    "Name": "WLAN",
+    "Index": 19,
+    "DNS": "192.168.1.1"
+  },
+  {
+    "Name": "VMware Network Adapter VMnet8",
+    "Index": 15,
+    "DNS": "127.0.0.1"
+  },
+  {
+    "Name": "VMware Network Adapter VMnet1",
+    "Index": 14,
+    "DNS": "127.0.0.1"
+  },
+  {
+    "Name": "VirtualBox Host-Only Network",
+    "Index": 2,
+    "DNS": "127.0.0.1"
+  }
+]
