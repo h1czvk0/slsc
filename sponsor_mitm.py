@@ -99,6 +99,7 @@ WRONG_SEPARATORS = ["\u2634", "\u2734"]  # 旧代码使用的错误分隔符
 # 配置文件和临时文件放在数据目录 (可写)
 MODIFIED_CONTENT_FILE = os.path.join(_get_data_dir(), "sponsors.dat")
 ADDON_SCRIPT_FILE = os.path.join(_get_data_dir(), "tools", "mitm_addon.py")
+HIT_LOG_FILE = os.path.join(_get_data_dir(), "tools", "sponsor_override_hits.log")
 CA_INSTALLED_FLAG = os.path.join(_get_data_dir(), "tools", ".mitm_ca_trusted")
 CA_CERT_FILE = os.path.join(os.path.expanduser("~"), ".mitmproxy", "mitmproxy-ca-cert.cer")
 
@@ -231,42 +232,75 @@ def build_modified_content(original, names):
 
 
 # ==================== mitmproxy Addon 生成 ====================
-def _generate_addon_script(content_file_path):
+def _generate_addon_script(content_file_path, hit_log_file=None):
     """生成 mitmproxy addon 脚本"""
     # 使用 正斜杠 路径 避免转义问题
     safe_path = content_file_path.replace("\\", "/")
+    safe_log_path = (hit_log_file or HIT_LOG_FILE).replace("\\", "/")
 
     addon_code = f'''# -*- coding: utf-8 -*-
 # Auto-generated mitmproxy addon for sponsor list override
 from mitmproxy import http
+import os
+import time
 
 CONTENT_FILE = r"{safe_path}"
+HIT_LOG_FILE = r"{safe_log_path}"
+TARGETS = (
+    ("pastebin.com", "/raw/2WVJpW1N"),
+    ("www.pastebin.com", "/raw/2WVJpW1N"),
+)
+
+def _clean_path(path: str) -> str:
+    path = path.split("?", 1)[0]
+    path = path.rstrip("/")
+    return path or "/"
+
+def _is_target(host: str, path: str) -> bool:
+    for target_host, target_path in TARGETS:
+        if host == target_host and path == target_path:
+            return True
+    return False
+
+def _append_hit_log(message: str):
+    try:
+        os.makedirs(os.path.dirname(HIT_LOG_FILE), exist_ok=True)
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(HIT_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{{ts}}] {{message}}\\n")
+    except Exception:
+        pass
 
 class SponsorOverrideAddon:
+    def request(self, flow: http.HTTPFlow):
+        host = flow.request.host.lower()
+        path = _clean_path(flow.request.path)
+        if not _is_target(host, path):
+            return
+
+        try:
+            with open(CONTENT_FILE, "r", encoding="utf-8") as f:
+                modified = f.read()
+            flow.response = http.Response.make(
+                200,
+                modified.encode("utf-8"),
+                {{
+                    "Content-Type": "text/plain; charset=utf-8",
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                }},
+            )
+            _append_hit_log(f"OVERRIDE {{host}}{{path}} len={{len(modified)}}")
+        except Exception as e:
+            _append_hit_log(f"OVERRIDE_ERROR {{host}}{{path}} {{e}}")
+
     def response(self, flow: http.HTTPFlow):
-        if (flow.request.pretty_host == "pastebin.com" and
-                "/raw/2WVJpW1N" in flow.request.path):
-            try:
-                with open(CONTENT_FILE, "r", encoding="utf-8") as f:
-                    modified = f.read()
-                flow.response.headers["content-type"] = "text/plain; charset=utf-8"
-                flow.response.headers["content-length"] = str(len(flow.response.content))
-                # 先删除编码头，防止干扰
-                if "content-encoding" in flow.response.headers:
-                    del flow.response.headers["content-encoding"]
-                
-                # 使用 .text 赋值，mitmproxy 会自动处理编码和压缩
-                flow.response.text = modified
-                
-                # 显式设置 Content-Type
-                flow.response.headers["content-type"] = "text/plain; charset=utf-8"
-                
-                # 禁用缓存
-                flow.response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-                flow.response.headers["Pragma"] = "no-cache"
-                flow.response.headers["Expires"] = "0"
-            except Exception:
-                pass
+        host = flow.request.host.lower()
+        path = _clean_path(flow.request.path)
+        if _is_target(host, path):
+            body_len = len(flow.response.content or b"")
+            _append_hit_log(f"RESP {{host}}{{path}} status={{flow.response.status_code}} body={{body_len}}")
 
 addons = [SponsorOverrideAddon()]
 '''
@@ -430,6 +464,55 @@ def _set_global_proxy(proxy_port, log_func=None):
         return False
 
 
+def _self_test_override(proxy_port, expected_names, log_func=None):
+    """通过本地代理访问目标 URL，验证是否返回替换后的名单"""
+    expected_markers = []
+    for n in expected_names or ():
+        name = str(n or "").strip()
+        if name:
+            expected_markers.append(SEPARATOR + name)
+    if not expected_markers:
+        return True
+
+    try:
+        import ssl
+        import urllib.request
+    except Exception as e:
+        _log(f"代理自检失败: 无法导入 urllib ({e})", log_func)
+        return False
+
+    proxy = f"http://127.0.0.1:{int(proxy_port)}"
+    insecure_ctx = ssl._create_unverified_context()
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
+        urllib.request.HTTPSHandler(context=insecure_ctx),
+    )
+
+    for idx in range(1, 5):
+        try:
+            req = urllib.request.Request(
+                f"{PASTEBIN_URL}?_ts={int(time.time() * 1000)}",
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                },
+            )
+            with opener.open(req, timeout=10) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+            if any(marker in body for marker in expected_markers):
+                _log(f"代理自检通过 (第 {idx} 次尝试)", log_func)
+                return True
+            _log(f"代理自检未命中替换内容 (第 {idx} 次)", log_func)
+        except Exception as e:
+            _log(f"代理自检请求失败 (第 {idx} 次): {e}", log_func)
+        time.sleep(0.6)
+
+    if os.path.exists(HIT_LOG_FILE):
+        _log(f"可查看命中日志: {HIT_LOG_FILE}", log_func)
+    return False
+
+
 def _restore_proxy(log_func=None):
     """恢复原始代理设置"""
     global _original_proxy_settings
@@ -528,7 +611,7 @@ def _start_mitmdump(addon_path, listen_port, upstream_proxy=None, log_func=None)
         "--ssl-insecure",                 # 不验证上游证书
         "--set", "flow_detail=0",         # 减少日志
         # 仅拦截 pastebin.com，其他站点走直通隧道，避免影响正常网页访问。
-        "--ignore-hosts", r"^(?!(?:www\.)?pastebin\.com(?::443)?$).*",
+        "--ignore-hosts", r"^(?!(?:www\.)?pastebin\.com(?::\d+)?$).*",
         "-s", addon_path,                 # addon 脚本
         "--quiet",                        # 安静模式
     ]
@@ -762,11 +845,16 @@ def start_sponsor_override(name, log_func=None):
         if not _trust_ca(log_func):
             return False, "CA 证书安装失败 (需要管理员权限)"
 
-    # 5. 启动 mitmproxy (自动检测上游代理)
-    _log("步骤 5/5: 启动代理服务...", log_func)
+    # 4. 启动 mitmproxy (自动检测上游代理)
+    _log("步骤 4/5: 启动代理服务...", log_func)
     
     # 重新生成最新的 addon 脚本
-    addon_path = _generate_addon_script(MODIFIED_CONTENT_FILE)
+    try:
+        if os.path.exists(HIT_LOG_FILE):
+            os.remove(HIT_LOG_FILE)
+    except Exception:
+        pass
+    addon_path = _generate_addon_script(MODIFIED_CONTENT_FILE, HIT_LOG_FILE)
     
     _original_proxy_settings = _get_proxy_settings()
     upstream = None
@@ -812,6 +900,14 @@ def start_sponsor_override(name, log_func=None):
     # 双重保险: 等待 1 秒后再次静默刷新
     time.sleep(1.0)
     _set_global_proxy(selected_port, None)
+
+    # 5. 自检代理链路
+    _log("步骤 5/5: 验证拦截链路...", log_func)
+    if not _self_test_override(selected_port, name_list, log_func):
+        _restore_proxy(log_func)
+        _stop_mitmdump(log_func)
+        _active_proxy_port = None
+        return False, "代理已启动但拦截未生效（请检查加速器代理模式/浏览器直连设置）"
 
     with _lock:
         _running = True
