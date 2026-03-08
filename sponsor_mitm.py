@@ -607,11 +607,12 @@ def _start_mitmdump(addon_path, listen_port, upstream_proxy=None, log_func=None)
 
     cmd = [
         mitmdump,
+        "--listen-host", "127.0.0.1",
         "--listen-port", str(int(listen_port)),
         "--ssl-insecure",                 # 不验证上游证书
         "--set", "flow_detail=0",         # 减少日志
-        # 仅拦截 pastebin.com，其他站点走直通隧道，避免影响正常网页访问。
-        "--ignore-hosts", r"^(?!(?:www\.)?pastebin\.com(?::\d+)?$).*",
+        # 仅允许 pastebin.com 流量进入 mitm 处理，行为与 fish 版本保持一致。
+        "--allow-hosts", r"^(?:www\.)?pastebin\.com(?::\d+)?$",
         "-s", addon_path,                 # addon 脚本
         "--quiet",                        # 安静模式
     ]
