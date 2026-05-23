@@ -170,6 +170,12 @@ PENDING_TIMEOUT_SECONDS = 20.0
 PENDING_ASSOCIATE_WINDOW_SECONDS = 20.0
 DEFAULT_SPONSOR_PROXY_PORT = 8080
 COMMON_ACCELERATOR_PORTS = (7890, 7891, 9090, 1080, 10808, 10080)
+LOG_TAIL_SCAN_BYTES = 20 * 1024 * 1024
+LOG_TAIL_READ_BLOCK_BYTES = 1024 * 1024
+LOG_PROCESS_BATCH_SIZE = 200
+LOG_PROCESS_BATCH_DELAY_MS = 1
+TREE_REBUILD_DELAY_MS = 50
+IMAGE_SYNC_START_DELAY_MS = 2000
 
 
 def _parse_port(value):
@@ -492,6 +498,9 @@ class SlashCoMonitorCN:
 
         # 日志队列 (线程安全) —— 必须在所有线程启动之前初始化!
         self._log_queue = queue.Queue()
+        self._pending_log_lines = queue.Queue()
+        self._log_lines_after_id = None
+        self._tree_rebuild_after_id = None
         self._process_log_queue()
 
         # 启动更新检查线程
@@ -516,7 +525,7 @@ class SlashCoMonitorCN:
             except: pass
 
         self.setup_image_system()
-        threading.Thread(target=self.start_image_sync, daemon=True).start()
+        self.root.after(IMAGE_SYNC_START_DELAY_MS, self._start_image_sync_thread)
 
         # 启动赞助者覆盖 (延迟到 mainloop 启动后)
         if HAS_SPONSOR_PROXY and self.sponsor_enabled.get():
@@ -534,6 +543,11 @@ class SlashCoMonitorCN:
             return self.root.after(0, callback, *args)
         except Exception:
             return None
+
+    def _start_image_sync_thread(self):
+        if self._is_shutting_down:
+            return
+        threading.Thread(target=self.start_image_sync, daemon=True).start()
 
     def check_and_update_translations(self):
 
@@ -1178,6 +1192,12 @@ class SlashCoMonitorCN:
             return
         self.last_reset_time = now
         self.log(f"=== {reason if reason else '正在重置对局状态'} ===")
+        if self._tree_rebuild_after_id:
+            try:
+                self.root.after_cancel(self._tree_rebuild_after_id)
+            except Exception:
+                pass
+            self._tree_rebuild_after_id = None
         self.item_records.clear()
         self.group_order = {"地图": [], "玩家": [], "未知": []}
         self.groups = {"地图": {}, "玩家": {}, "未知": {}}
@@ -1431,6 +1451,21 @@ class SlashCoMonitorCN:
             # 玩家物品保持默认颜色，不添加特别的 tags
             self.tree.insert("", END, iid=iid, values=(iid, rec["cn"], rec["pos"]), tags=())
 
+    def _flush_rebuild_item_tree(self):
+        self._tree_rebuild_after_id = None
+        if self._is_shutting_down:
+            return
+        self.rebuild_item_tree()
+
+    def _schedule_rebuild_item_tree(self):
+        if self._is_shutting_down or self._tree_rebuild_after_id:
+            return
+        try:
+            self._tree_rebuild_after_id = self.root.after(TREE_REBUILD_DELAY_MS, self._flush_rebuild_item_tree)
+        except Exception:
+            self._tree_rebuild_after_id = None
+            self.rebuild_item_tree()
+
     def process_line(self, line: str):
         line = line.strip()
         if not line: return
@@ -1441,7 +1476,7 @@ class SlashCoMonitorCN:
             cn_name = ITEM_TRANSLATION.get(raw_name.strip(), raw_name.strip())
             if iid not in self.item_records:
                 self.add_item_record(iid, cn_name, raw_name.strip())
-                self.rebuild_item_tree()
+                self._schedule_rebuild_item_tree()
                 self.log(f"发现: {cn_name} ({iid})")
             return
         m_pos = PATTERNS["item_collision"].search(line)
@@ -1542,6 +1577,128 @@ class SlashCoMonitorCN:
         except Exception:
             return None
 
+    def _is_round_start_line(self, line: str) -> bool:
+        for key in ("map_landing", "game_setup", "map_spawns", "map_flags", "slashco_loading"):
+            if PATTERNS[key].search(line):
+                return True
+        return False
+
+    def _is_round_end_line(self, line: str) -> bool:
+        if PATTERNS["game_end"].search(line):
+            return True
+        m_map_slashco = PATTERNS["map_slashco"].search(line)
+        return bool(m_map_slashco and "lobby" in m_map_slashco.group(1).lower())
+
+    def _line_might_affect_state(self, line: str) -> bool:
+        return any(pattern.search(line) for pattern in PATTERNS.values())
+
+    def _read_log_tail_text(self, path: str):
+        try:
+            file_size = os.path.getsize(path)
+            if file_size <= 0:
+                return "", 0, file_size
+
+            read_size = min(file_size, LOG_TAIL_SCAN_BYTES)
+            start_offset = file_size - read_size
+            chunks = []
+            remaining = read_size
+            with open(path, "rb") as bf:
+                bf.seek(start_offset)
+                while remaining > 0:
+                    chunk = bf.read(min(LOG_TAIL_READ_BLOCK_BYTES, remaining))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+
+            data = b"".join(chunks)
+            if start_offset > 0:
+                first_newline = data.find(b"\n")
+                if first_newline >= 0:
+                    data = data[first_newline + 1:]
+            return data.decode("utf-8", errors="ignore"), start_offset, file_size
+        except Exception as e:
+            self.log(f"读取日志尾部失败: {e}")
+            return "", 0, 0
+
+    def _get_active_round_recovery_lines(self, path: str):
+        text, start_offset, file_size = self._read_log_tail_text(path)
+        if not text:
+            return []
+
+        last_start_pos = None
+        last_end_pos = None
+        pos = 0
+        for raw_line in text.splitlines(True):
+            line = raw_line.strip()
+            if line:
+                if self._is_round_start_line(line):
+                    last_start_pos = pos
+                if self._is_round_end_line(line):
+                    last_end_pos = pos
+            pos += len(raw_line)
+
+        if last_start_pos is None:
+            self.log("尾部扫描未找到当前回合开始点，已从日志末尾开始监听")
+            return []
+        if last_end_pos is not None and last_end_pos > last_start_pos:
+            self.log("尾部扫描显示最近回合已结束，已从日志末尾开始监听")
+            return []
+
+        active_text = text[last_start_pos:]
+        lines = [line for line in active_text.splitlines() if self._line_might_affect_state(line)]
+        scanned_mb = min(file_size, LOG_TAIL_SCAN_BYTES) / (1024 * 1024)
+        if start_offset > 0:
+            self.log(f"已从日志尾部 {scanned_mb:.1f}MB 内定位当前回合，恢复 {len(lines)} 行")
+        else:
+            self.log(f"已从日志尾部定位当前回合，恢复 {len(lines)} 行")
+        return lines
+
+    def _enqueue_log_lines(self, lines):
+        if self._is_shutting_down or not lines:
+            return
+        for line in lines:
+            self._pending_log_lines.put(line)
+        if self._log_lines_after_id is None:
+            self._log_lines_after_id = self._ui_after(self._process_pending_log_lines)
+
+    def _clear_pending_log_lines(self):
+        try:
+            while True:
+                self._pending_log_lines.get_nowait()
+        except queue.Empty:
+            pass
+
+    def _process_pending_log_lines(self):
+        if self._is_shutting_down:
+            self._log_lines_after_id = None
+            return
+        self._log_lines_after_id = None
+
+        processed = 0
+        start = time.perf_counter()
+        while processed < LOG_PROCESS_BATCH_SIZE:
+            try:
+                line = self._pending_log_lines.get_nowait()
+            except queue.Empty:
+                break
+            self.process_line(line)
+            processed += 1
+            if time.perf_counter() - start > 0.01:
+                break
+
+        if self._is_shutting_down:
+            self._log_lines_after_id = None
+            return
+        if not self._pending_log_lines.empty():
+            try:
+                self._log_lines_after_id = self.root.after(
+                    LOG_PROCESS_BATCH_DELAY_MS,
+                    self._process_pending_log_lines,
+                )
+            except Exception:
+                self._log_lines_after_id = None
+
     def monitor_loop(self):
         current_file_path = None
         f = None
@@ -1555,18 +1712,28 @@ class SlashCoMonitorCN:
                         current_file_path = latest
                         self.log(f"锁定日志: {os.path.basename(current_file_path)}")
                         try:
+                            self._clear_pending_log_lines()
+                            recovery_lines = self._get_active_round_recovery_lines(current_file_path)
                             f = open(current_file_path, "r", encoding="utf-8", errors="ignore")
                             self._ui_after(self.reset_game, True, "新日志文件加载")
-                            f.seek(0, 0)
+                            f.seek(0, os.SEEK_END)
+                            self._enqueue_log_lines(recovery_lines)
                         except Exception:
+                            current_file_path = None
                             f = None
                             time.sleep(1)
                             continue
                 if f:
+                    pending_lines = []
                     line = f.readline()
                     while line:
-                        self._ui_after(self.process_line, line)
+                        if self._line_might_affect_state(line):
+                            pending_lines.append(line)
+                            if len(pending_lines) >= LOG_PROCESS_BATCH_SIZE:
+                                self._enqueue_log_lines(pending_lines)
+                                pending_lines = []
                         line = f.readline()
+                    self._enqueue_log_lines(pending_lines)
                     time.sleep(0.1)
                 else:
                     time.sleep(1)
@@ -1979,7 +2146,7 @@ class SlashCoMonitorCN:
                 pass
 
         # 取消周期性 after 任务
-        for attr in ("_log_queue_after_id", "_pending_tick_after_id"):
+        for attr in ("_log_queue_after_id", "_log_lines_after_id", "_pending_tick_after_id", "_tree_rebuild_after_id"):
             after_id = getattr(self, attr, None)
             if after_id:
                 try:
