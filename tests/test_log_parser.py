@@ -63,6 +63,11 @@ class LogParserTests(unittest.TestCase):
                 ("SC_Item1",),
             ),
             (
+                "Fuel(SC_Item10) collided with: SC_generator2 (UnityEngine.GameObject)",
+                "fuel_generator_collision",
+                ("SC_Item10", "SC_generator2"),
+            ),
+            (
                 "Battery(SC_Item12) collided with: SC_generator2 (UnityEngine.GameObject)",
                 "battery_inserted",
                 ("SC_Item12", "SC_generator2"),

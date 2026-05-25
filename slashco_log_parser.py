@@ -19,6 +19,11 @@ PATTERNS = {
         r"with reason:\s*Generator\s*\|\s*PouringCanInsert",
         re.IGNORECASE,
     ),
+    "fuel_generator_collision": re.compile(
+        r"Fuel\s*\((SC_?Item\d+)\)\s+collided with:\s+(SC_generator\d+)\s+"
+        r"\(UnityEngine\.GameObject\)",
+        re.IGNORECASE,
+    ),
     "battery_inserted": re.compile(
         r"Battery\s*\((SC_?Item\d+)\)\s+collided with:\s+(SC_generator\d+)\s+"
         r"\(UnityEngine\.GameObject\)",
@@ -99,6 +104,7 @@ def parse_log_line(line: str):
 
     ordered_patterns = (
         "item",
+        "fuel_generator_collision",
         "battery_inserted",
         "item_collision",
         "fuel_base",

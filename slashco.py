@@ -460,6 +460,8 @@ class SlashCoMonitorCN:
         self.last_pending_gid = None
         self.last_pending_time = 0.0
         self.last_game_end_time = 0.0
+        self.consumed_fuel_items = set()
+        self.installed_battery_items = set()
         self.GAME_END_DEBOUNCE_SECONDS = 2.0
 
         # 房主检测和OCR触发标志
@@ -1302,6 +1304,8 @@ class SlashCoMonitorCN:
         self.rebuild_item_tree()
         self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": 0}
         self.update_stats_ui()
+        self.consumed_fuel_items.clear()
+        self.installed_battery_items.clear()
         for gid in self.gens:
             self.gens[gid] = {"fuel": 0.0, "battery": False, "battery_pending": False, "pending_since": 0.0}
             self.last_battery_event[gid] = 0.0
@@ -1339,13 +1343,27 @@ class SlashCoMonitorCN:
         self.update_gen_ui(gid)
         self.log(f"{gid} 加油! 当前: {self.gens[gid]['fuel']}%")
 
-    def add_fuel_unknown_generator(self):
-        available = [gid for gid, data in self.gens.items() if data.get("fuel", 0.0) < 100.0]
-        if not available:
+    def add_fuel_from_item(self, iid_norm: str, gid: str | None = None):
+        if iid_norm in self.consumed_fuel_items:
             return
-        gid = available[0]
+        if gid is None:
+            available = [gen_id for gen_id, data in self.gens.items() if data.get("fuel", 0.0) < 100.0]
+            if not available:
+                return
+            gid = available[0]
+            self.log("加油日志未包含发电机编号，已记录到下一个未满发电机")
+        self.consumed_fuel_items.add(iid_norm)
+        gen_match = re.match(r"(?i)^SC_generator(\d+)$", gid)
+        pos_name = f"已加油到发电机 {gen_match.group(1)}" if gen_match else "已加油"
+        self.update_item_position(iid_norm, pos_name)
         self.add_fuel(gid)
-        self.log("加油日志未包含发电机编号，已记录到下一个未满发电机")
+
+    def set_battery_inserted_from_item(self, iid_norm: str, gid: str):
+        if iid_norm in self.installed_battery_items and self.gens.get(gid, {}).get("battery", False):
+            return
+        self.installed_battery_items.add(iid_norm)
+        self.update_item_position(iid_norm, gid)
+        self.set_battery_state(gid, True, reason="(BatteryInserted)")
 
     def set_battery_pending(self, gid: str, reason: str = ""):
         if gid not in self.gens: return
@@ -1361,7 +1379,7 @@ class SlashCoMonitorCN:
         if gid not in self.gens: return
         now = time.time()
         old_state = self.gens[gid]["battery"]
-        if (old_state == state) and (now - self.last_battery_event.get(gid, 0.0) < BATTERY_DEBOUNCE_SECONDS):
+        if old_state == state:
             return
         self.last_battery_event[gid] = now
         self.gens[gid]["battery"] = state
@@ -1477,7 +1495,7 @@ class SlashCoMonitorCN:
 
         is_translated = False
         gen_match = re.match(r"(?i)^SC_generator(\d+)$", clean_pos)
-        if clean_pos == "已加油":
+        if clean_pos == "已加油" or clean_pos.startswith("已加油到发电机"):
             is_translated = True
         elif gen_match:
             final_pos = f"已安装到发电机 {gen_match.group(1)}"
@@ -1638,13 +1656,15 @@ class SlashCoMonitorCN:
             return
 
         if event.kind == "fuel_inserted":
-            self.update_item_position(normalize_item_id(event.groups[0]), "已加油")
-            self.add_fuel_unknown_generator()
+            self.add_fuel_from_item(normalize_item_id(event.groups[0]))
+            return
+
+        if event.kind == "fuel_generator_collision":
+            self.add_fuel_from_item(normalize_item_id(event.groups[0]), event.groups[1])
             return
 
         if event.kind == "battery_inserted":
-            self.update_item_position(normalize_item_id(event.groups[0]), event.groups[1])
-            self.set_battery_state(event.groups[1], True, reason="(BatteryInserted)")
+            self.set_battery_inserted_from_item(normalize_item_id(event.groups[0]), event.groups[1])
             return
 
         if event.kind == "battery_progress":
