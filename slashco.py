@@ -1641,6 +1641,10 @@ class SlashCoMonitorCN:
                 self.log(f"检测到地图数据加载: {map_name}")
             return
 
+        if event.kind == "game_setup":
+            self.reset_game(force=True, reason="新回合开始")
+            return
+
         if event.kind == "fuel":
             self.add_fuel(event.groups[0])
             return

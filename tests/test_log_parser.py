@@ -66,6 +66,7 @@ class LogParserTests(unittest.TestCase):
             ("Drop object: 'SC_Item10, was equipped = True' ForceDrop", "drop_item", ("SC_Item10",)),
             ("Holstering SC_Item10", "holster_item", ("SC_Item10",)),
             ("Hibernating item SC_Item10, (Fuel)", "item_hibernated", ("SC_Item10", "Fuel")),
+            ("SLASHCO Game setup.", "game_setup", ()),
             (
                 "SC_generator2 Progress check. updated HAS_BATTERY value: True",
                 "battery_progress",

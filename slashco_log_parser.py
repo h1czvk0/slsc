@@ -121,6 +121,7 @@ def parse_log_line(line: str):
         "item_inside",
         "map_landing",
         "map_slashco",
+        "game_setup",
         "fuel",
         "fuel_inserted",
         "battery_progress",
