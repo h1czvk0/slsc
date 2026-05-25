@@ -1339,6 +1339,14 @@ class SlashCoMonitorCN:
         self.update_gen_ui(gid)
         self.log(f"{gid} 加油! 当前: {self.gens[gid]['fuel']}%")
 
+    def add_fuel_unknown_generator(self):
+        available = [gid for gid, data in self.gens.items() if data.get("fuel", 0.0) < 100.0]
+        if not available:
+            return
+        gid = available[0]
+        self.add_fuel(gid)
+        self.log("加油日志未包含发电机编号，已记录到下一个未满发电机")
+
     def set_battery_pending(self, gid: str, reason: str = ""):
         if gid not in self.gens: return
         if self.gens[gid].get("battery", False): return
@@ -1468,7 +1476,13 @@ class SlashCoMonitorCN:
         final_pos = clean_pos
 
         is_translated = False
-        if clean_pos in LOCATION_TRANSLATION:
+        gen_match = re.match(r"(?i)^SC_generator(\d+)$", clean_pos)
+        if clean_pos == "已加油":
+            is_translated = True
+        elif gen_match:
+            final_pos = f"已安装到发电机 {gen_match.group(1)}"
+            is_translated = True
+        elif clean_pos in LOCATION_TRANSLATION:
             final_pos = LOCATION_TRANSLATION[clean_pos]
             is_translated = True
         else:
@@ -1621,6 +1635,16 @@ class SlashCoMonitorCN:
 
         if event.kind == "fuel":
             self.add_fuel(event.groups[0])
+            return
+
+        if event.kind == "fuel_inserted":
+            self.update_item_position(normalize_item_id(event.groups[0]), "已加油")
+            self.add_fuel_unknown_generator()
+            return
+
+        if event.kind == "battery_inserted":
+            self.update_item_position(normalize_item_id(event.groups[0]), event.groups[1])
+            self.set_battery_state(event.groups[1], True, reason="(BatteryInserted)")
             return
 
         if event.kind == "battery_progress":

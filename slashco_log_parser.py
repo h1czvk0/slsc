@@ -14,6 +14,16 @@ PATTERNS = {
         re.IGNORECASE,
     ),
     "fuel": re.compile(r"Gas fueled to (SC_generator\d+)", re.IGNORECASE),
+    "fuel_inserted": re.compile(
+        r"Calling to Hibernate\s+(SC_?Item\d+)\s+with current ItemType:\s*Fuel\s+"
+        r"with reason:\s*Generator\s*\|\s*PouringCanInsert",
+        re.IGNORECASE,
+    ),
+    "battery_inserted": re.compile(
+        r"Battery\s*\((SC_?Item\d+)\)\s+collided with:\s+(SC_generator\d+)\s+"
+        r"\(UnityEngine\.GameObject\)",
+        re.IGNORECASE,
+    ),
     "battery_progress": re.compile(
         r"(SC_generator\d+)\s+Progress check\..*updated\s+HAS_BATTERY\s+value:\s*(True|False)",
         re.IGNORECASE,
@@ -89,6 +99,7 @@ def parse_log_line(line: str):
 
     ordered_patterns = (
         "item",
+        "battery_inserted",
         "item_collision",
         "fuel_base",
         "fuel_extra",
@@ -97,6 +108,7 @@ def parse_log_line(line: str):
         "map_landing",
         "map_slashco",
         "fuel",
+        "fuel_inserted",
         "battery_progress",
         "battery_skillcheck_failed",
         "battery_fixing",

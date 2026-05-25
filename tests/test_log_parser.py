@@ -58,6 +58,16 @@ class LogParserTests(unittest.TestCase):
             ("3 items will spawn INside sealed rooms", "item_inside", ("3",)),
             ("Gas fueled to SC_generator1", "fuel", ("SC_generator1",)),
             (
+                "Calling to Hibernate SC_Item1 with current ItemType: Fuel with reason: Generator | PouringCanInsert",
+                "fuel_inserted",
+                ("SC_Item1",),
+            ),
+            (
+                "Battery(SC_Item12) collided with: SC_generator2 (UnityEngine.GameObject)",
+                "battery_inserted",
+                ("SC_Item12", "SC_generator2"),
+            ),
+            (
                 "SC_generator2 Progress check. updated HAS_BATTERY value: True",
                 "battery_progress",
                 ("SC_generator2", "True"),
