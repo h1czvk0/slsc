@@ -1837,6 +1837,20 @@ class SlashCoMonitorCN:
         if self._log_lines_after_id is None:
             self._log_lines_after_id = self._ui_after(self._process_pending_log_lines)
 
+    def _process_live_log_lines(self, lines):
+        if self._is_shutting_down:
+            return
+        for line in lines:
+            try:
+                self.process_line(line)
+            except Exception as e:
+                self.log(f"日志解析异常，已跳过该行: {e}")
+
+    def _enqueue_live_log_lines(self, lines):
+        if self._is_shutting_down or not lines:
+            return
+        self._ui_after(self._process_live_log_lines, list(lines))
+
     def _clear_pending_log_lines(self):
         try:
             while True:
@@ -1941,9 +1955,9 @@ class SlashCoMonitorCN:
                         if self._line_might_affect_state(line):
                             pending_lines.append(line)
                             if len(pending_lines) >= LOG_PROCESS_BATCH_SIZE:
-                                self._enqueue_log_lines(pending_lines)
+                                self._enqueue_live_log_lines(pending_lines)
                                 pending_lines = []
-                    self._enqueue_log_lines(pending_lines)
+                    self._enqueue_live_log_lines(pending_lines)
                     time.sleep(0.1)
                 else:
                     time.sleep(1)
