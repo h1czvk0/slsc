@@ -35,6 +35,15 @@ from slashco_log_parser import (
     normalize_item_id,
     parse_log_line,
 )
+from slashco_updater import (
+    APP_VERSION,
+    download_update,
+    fetch_latest_release,
+    get_update_download_path,
+    is_frozen_app,
+    launch_updater_and_exit,
+    parse_update_info,
+)
 
 try:
     import requests
@@ -479,6 +488,8 @@ class SlashCoMonitorCN:
         self._tree_rebuild_after_id = None
         self._process_log_queue()
 
+        threading.Thread(target=self._check_app_update_worker, daemon=True).start()
+
         # 启动更新检查线程
         threading.Thread(target=self.check_and_update_translations, daemon=True).start()
 
@@ -524,6 +535,89 @@ class SlashCoMonitorCN:
         if self._is_shutting_down:
             return
         threading.Thread(target=self.start_image_sync, daemon=True).start()
+
+    def _show_update_frame(self):
+        if self._is_shutting_down or not hasattr(self, "update_frame"):
+            return
+        try:
+            if not self.update_frame.winfo_ismapped():
+                self.update_frame.pack(fill=X, padx=5, pady=2, after=self.update_frame_after_widget)
+        except Exception:
+            pass
+
+    def _set_update_status(self, text, progress=None):
+        if self._is_shutting_down or not hasattr(self, "update_status_var"):
+            return
+        try:
+            self._show_update_frame()
+            self.update_status_var.set(text)
+            if progress is not None:
+                self.update_progress_var.set(max(0, min(100, float(progress))))
+        except Exception:
+            pass
+
+    def _download_update_progress(self, downloaded, total):
+        if total <= 0:
+            return
+        pct = downloaded * 100.0 / total
+        self._ui_after(self._set_update_status, f"正在下载新版本... {pct:.0f}%", pct)
+
+    def _check_app_update_worker(self):
+        if not HAS_REQUESTS:
+            self._ui_after(self.log, "未安装 requests 库，跳过软件更新检查")
+            return
+
+        try:
+            release_data = fetch_latest_release(requests.get)
+            update_info = parse_update_info(release_data, APP_VERSION)
+            if not update_info:
+                return
+
+            self._ui_after(
+                self._set_update_status,
+                f"发现新版本 {update_info.tag_name}，准备下载...",
+                0,
+            )
+            self._ui_after(self.log, f"发现新版本: {update_info.tag_name}")
+
+            if not is_frozen_app():
+                self._ui_after(
+                    self._set_update_status,
+                    f"发现新版本 {update_info.tag_name}（开发模式不自动替换）",
+                    0,
+                )
+                return
+
+            download_path = get_update_download_path()
+            download_update(
+                requests.get,
+                update_info.download_url,
+                download_path,
+                progress_callback=self._download_update_progress,
+            )
+            self._ui_after(self._set_update_status, "下载完成，准备重启更新...", 100)
+            self._ui_after(self._schedule_apply_downloaded_update, download_path)
+        except Exception as e:
+            self._ui_after(self._set_update_status, f"更新检查失败: {e}", 0)
+            self._ui_after(self.log, f"软件更新检查失败: {e}")
+
+    def _schedule_apply_downloaded_update(self, download_path):
+        if self._is_shutting_down:
+            return
+        try:
+            self.root.after(800, self._apply_downloaded_update, download_path)
+        except Exception:
+            self._apply_downloaded_update(download_path)
+
+    def _apply_downloaded_update(self, download_path):
+        if self._is_shutting_down:
+            return
+        try:
+            launch_updater_and_exit(sys.executable, download_path, app_args=sys.argv[1:])
+            self.on_close()
+        except Exception as e:
+            self._set_update_status(f"应用更新失败: {e}", 100)
+            self.log(f"应用更新失败: {e}")
 
     def check_and_update_translations(self):
 
@@ -593,6 +687,7 @@ class SlashCoMonitorCN:
 
         top_bar = Frame(self.left_p)
         top_bar.pack(fill=X, padx=5, pady=5)
+        self.update_frame_after_widget = top_bar
         
         # 新增：任务地点选择
         ttk.Label(top_bar, text="任务地点：").pack(side=LEFT)
@@ -604,6 +699,20 @@ class SlashCoMonitorCN:
         ttk.Button(top_bar, text="导出未翻译位置", command=self.export_untranslated).pack(side=LEFT)
 
         ttk.Button(top_bar, text="强制重置数据", command=self.force_reset).pack(side=RIGHT)
+
+        self.update_status_var = StringVar(value="")
+        self.update_progress_var = DoubleVar(value=0.0)
+        self.update_frame = ttk.LabelFrame(self.left_p, text="软件更新", padding=5)
+        update_row = ttk.Frame(self.update_frame)
+        update_row.pack(fill=X)
+        ttk.Label(update_row, textvariable=self.update_status_var, font=("微软雅黑", 9)).pack(side=LEFT, fill=X, expand=True)
+        self.update_progress = ttk.Progressbar(
+            self.update_frame,
+            maximum=100,
+            variable=self.update_progress_var,
+            mode="determinate",
+        )
+        self.update_progress.pack(fill=X, pady=(4, 0))
 
         gen_frame = ttk.LabelFrame(self.left_p, text="发电机 (每桶油+25%)", padding=5)
         gen_frame.pack(fill=X, padx=5, pady=5)
