@@ -27,6 +27,15 @@ from tkinter import ttk, scrolledtext, Menu, messagebox
 from PIL import Image, ImageTk
 HAS_PIL = True
 
+from slashco_log_parser import (
+    is_round_end_line,
+    is_round_start_line,
+    item_numeric_id,
+    line_might_affect_state,
+    normalize_item_id,
+    parse_log_line,
+)
+
 try:
     import requests
     HAS_REQUESTS = True
@@ -382,40 +391,6 @@ load_translations()
 REMOTE_IMG_ROOT = ""  # 请在此填入 GitHub Raw 加速地址，例如 https://raw.gh.fake/User/Repo/main
 IMG_DIR = "img_assets"
 IMG_JSON = "images.json"
-
-PATTERNS = {
-    "map_landing": re.compile(r"Selected landing spot on map\s+(.+)", re.IGNORECASE),
-    "map_slashco": re.compile(r"Logging all doors for map\s+(.+)", re.IGNORECASE),
-    "fuel_base": re.compile(r"For a game of \d+ players, (\d+) will be spawned", re.IGNORECASE),
-    "fuel_extra": re.compile(r"(\d+) extra fuel cans will appear in sealed rooms", re.IGNORECASE),
-    "item_outside": re.compile(r"(\d+) items will spawn outside sealed rooms", re.IGNORECASE),
-    "item_inside": re.compile(r"(\d+) items will spawn INside sealed rooms", re.IGNORECASE),
-    "item_collision": re.compile(r"\((SC_?Item\d+)\) collided with:\s+(.+?)\s+\(UnityEngine\.GameObject\)", re.IGNORECASE),
-    "fuel": re.compile(r"Gas fueled to (SC_generator\d+)", re.IGNORECASE),
-    "battery_progress": re.compile(r"(SC_generator\d+)\s+Progress check\..*updated\s+HAS_BATTERY\s+value:\s*(True|False)", re.IGNORECASE),
-    "battery_fixing": re.compile(r"Battery for\s+(SC_generator\d+)\s+improperly set\.\s+FIXING NOW\.", re.IGNORECASE),
-    "battery_skillcheck_failed": re.compile(r"Generator Battery skillcheck failed", re.IGNORECASE),
-    "item": re.compile(r"Assigning item (SC_?Item\d+) as:\s+(.+)", re.IGNORECASE),
-    "game_end": re.compile(r"(SLASHCO Game Master End\.|SLASHCO Client STOP GAME|Returning to Lobby|Match Ended|All players extracted|All players died)", re.IGNORECASE),
-    "game_setup": re.compile(r"SLASHCO Game setup", re.IGNORECASE),
-    "map_spawns": re.compile(r"Getting Map Spawnpoints", re.IGNORECASE),
-    "map_flags": re.compile(r"Establishing Map Flags", re.IGNORECASE),
-    "slashco_loading": re.compile(r"SLASHCO now loading data", re.IGNORECASE),
-    "player_headstart": re.compile(r"Players in-game:\s*(\d+).*?(\d+)\s+fuel will be given for free", re.IGNORECASE),
-    "rooms_sealed": re.compile(r"(\d+)\s+Rooms will be SEALED", re.IGNORECASE),
-}
-
-def normalize_item_id(raw_id: str) -> str:
-    raw_id = raw_id.strip()
-    m = re.match(r"SC_?Item(\d+)", raw_id, re.IGNORECASE)
-    if not m: return raw_id
-    return f"SC_Item{m.group(1)}"
-
-def item_numeric_id(iid: str) -> int:
-    m = re.match(r"SC_Item(\d+)", iid, re.IGNORECASE)
-    if not m: return -1
-    try: return int(m.group(1))
-    except Exception: return -1
 
 class SlashCoMonitorCN:
     def __init__(self, root: Tk):
@@ -1467,11 +1442,12 @@ class SlashCoMonitorCN:
             self.rebuild_item_tree()
 
     def process_line(self, line: str):
-        line = line.strip()
-        if not line: return
-        m_item = PATTERNS["item"].search(line)
-        if m_item:
-            iid_raw, raw_name = m_item.groups()
+        event = parse_log_line(line)
+        if not event:
+            return
+
+        if event.kind == "item":
+            iid_raw, raw_name = event.groups
             iid = normalize_item_id(iid_raw)
             cn_name = ITEM_TRANSLATION.get(raw_name.strip(), raw_name.strip())
             if iid not in self.item_records:
@@ -1479,92 +1455,84 @@ class SlashCoMonitorCN:
                 self._schedule_rebuild_item_tree()
                 self.log(f"发现: {cn_name} ({iid})")
             return
-        m_pos = PATTERNS["item_collision"].search(line)
-        if m_pos:
-            iid = normalize_item_id(m_pos.group(1))
-            pos_name = m_pos.group(2).strip()
+
+        if event.kind == "item_collision":
+            iid = normalize_item_id(event.groups[0])
+            pos_name = event.groups[1].strip()
             self.update_item_position(iid, pos_name)
             return
-        m_base = PATTERNS["fuel_base"].search(line)
-        if m_base:
-            self.game_stats["fuel_base"] = int(m_base.group(1))
-            self.update_stats_ui()
-            return
-        m_extra = PATTERNS["fuel_extra"].search(line)
-        if m_extra:
-            self.game_stats["fuel_extra"] = int(m_extra.group(1))
-            self.update_stats_ui()
-            return
-        m_out = PATTERNS["item_outside"].search(line)
-        if m_out:
-            self.game_stats["item_out"] = int(m_out.group(1))
-            self.update_stats_ui()
-            return
-        m_in = PATTERNS["item_inside"].search(line)
-        if m_in:
-            self.game_stats["item_in"] = int(m_in.group(1))
+
+        if event.kind == "fuel_base":
+            self.game_stats["fuel_base"] = int(event.groups[0])
             self.update_stats_ui()
             return
 
-        # 检测地图加载
-        m_map_landing = PATTERNS["map_landing"].search(line)
-        m_map_slashco = PATTERNS["map_slashco"].search(line)
-        
-        if m_map_landing:
-            map_name = m_map_landing.group(1).strip()
+        if event.kind == "fuel_extra":
+            self.game_stats["fuel_extra"] = int(event.groups[0])
+            self.update_stats_ui()
+            return
+
+        if event.kind == "item_outside":
+            self.game_stats["item_out"] = int(event.groups[0])
+            self.update_stats_ui()
+            return
+
+        if event.kind == "item_inside":
+            self.game_stats["item_in"] = int(event.groups[0])
+            self.update_stats_ui()
+            return
+
+        if event.kind == "map_landing":
+            map_name = event.groups[0].strip()
             self.reset_game(force=True, reason=f"新地图加载: {map_name}")
             # OCR 已改为通过 game_end 后的轮询机制触发，此处不再单独启动
             return
-        
-        if m_map_slashco:
-            map_name = m_map_slashco.group(1).strip()
+
+        if event.kind == "map_slashco":
+            map_name = event.groups[0].strip()
             if "Lobby" in map_name:
                 self.reset_game(force=True, reason="返回大厅")
             else:
                 self.log(f"检测到地图数据加载: {map_name}")
             return
-        m_fuel = PATTERNS["fuel"].search(line)
-        if m_fuel:
-            self.add_fuel(m_fuel.group(1))
+
+        if event.kind == "fuel":
+            self.add_fuel(event.groups[0])
             return
-        m_bp = PATTERNS["battery_progress"].search(line)
-        if m_bp:
-            self.set_battery_state(m_bp.group(1), m_bp.group(2).lower() == "true", reason="(ProgressCheck)")
+
+        if event.kind == "battery_progress":
+            self.set_battery_state(event.groups[0], event.groups[1].lower() == "true", reason="(ProgressCheck)")
             return
-        if PATTERNS["battery_skillcheck_failed"].search(line):
+
+        if event.kind == "battery_skillcheck_failed":
             self.fail_pending_battery_if_any(reason="(SkillcheckFailed)")
             return
-        m_fix = PATTERNS["battery_fixing"].search(line)
-        if m_fix:
-            self.set_battery_pending(m_fix.group(1), reason="(FixingNow)")
+
+        if event.kind == "battery_fixing":
+            self.set_battery_pending(event.groups[0], reason="(FixingNow)")
             return
-        m_end = PATTERNS["game_end"].search(line)
-        if m_end:
+
+        if event.kind == "game_end":
             now = time.time()
             if now - self.last_game_end_time >= self.GAME_END_DEBOUNCE_SECONDS:
                 self.last_game_end_time = now
-                self.reset_game(force=True, reason=f"检测到结束信号: {m_end.group(1)}")
+                self.reset_game(force=True, reason=f"检测到结束信号: {event.groups[0]}")
             return
 
-        # 检测玩家人数和免费油桶
-        m_headstart = PATTERNS["player_headstart"].search(line)
-        if m_headstart:
-            self.game_stats["players"] = int(m_headstart.group(1))
-            self.game_stats["free_fuel"] = int(m_headstart.group(2))
+        if event.kind == "player_headstart":
+            self.game_stats["players"] = int(event.groups[0])
+            self.game_stats["free_fuel"] = int(event.groups[1])
             self.update_stats_ui()
             self.log(f"局内 {self.game_stats['players']} 名玩家，可少加 {self.game_stats['free_fuel']} 桶油")
             return
-        
-        # 检测封锁房间数
-        m_sealed = PATTERNS["rooms_sealed"].search(line)
-        if m_sealed:
-            self.game_stats["sealed_rooms"] = int(m_sealed.group(1))
+
+        if event.kind == "rooms_sealed":
+            self.game_stats["sealed_rooms"] = int(event.groups[0])
             self.update_stats_ui()
             self.log(f"检测到 {self.game_stats['sealed_rooms']} 个门被锁上")
             return
 
-        # 检测 SLASHCO 数据加载 - 仅记录日志，OCR由音频匹配触发
-        if PATTERNS["slashco_loading"].search(line):
+        if event.kind == "slashco_loading":
             self.log("检测到数据加载 (SLASHCO now loading data)")
             # OCR现在由音频匹配触发，不再使用日志触发
             return
@@ -1578,19 +1546,13 @@ class SlashCoMonitorCN:
             return None
 
     def _is_round_start_line(self, line: str) -> bool:
-        for key in ("map_landing", "game_setup", "map_spawns", "map_flags", "slashco_loading"):
-            if PATTERNS[key].search(line):
-                return True
-        return False
+        return is_round_start_line(line)
 
     def _is_round_end_line(self, line: str) -> bool:
-        if PATTERNS["game_end"].search(line):
-            return True
-        m_map_slashco = PATTERNS["map_slashco"].search(line)
-        return bool(m_map_slashco and "lobby" in m_map_slashco.group(1).lower())
+        return is_round_end_line(line)
 
     def _line_might_affect_state(self, line: str) -> bool:
-        return any(pattern.search(line) for pattern in PATTERNS.values())
+        return line_might_affect_state(line)
 
     def _read_log_tail_text(self, path: str):
         try:
