@@ -1767,7 +1767,10 @@ class SlashCoMonitorCN:
                 line = self._pending_log_lines.get_nowait()
             except queue.Empty:
                 break
-            self.process_line(line)
+            try:
+                self.process_line(line)
+            except Exception as e:
+                self.log(f"日志解析异常，已跳过该行: {e}")
             processed += 1
             if time.perf_counter() - start > 0.01:
                 break
@@ -1786,43 +1789,70 @@ class SlashCoMonitorCN:
 
     def monitor_loop(self):
         current_file_path = None
-        f = None
+        current_offset = 0
+        partial_line = ""
         last_file_check_time = 0.0
         self.log("正在扫描 VRChat 日志文件...")
         while self.is_monitoring:
             try:
                 latest = None
                 now = time.time()
-                if f is None or now - last_file_check_time >= LOG_FILE_CHECK_INTERVAL_SECONDS:
+                if current_file_path is None or now - last_file_check_time >= LOG_FILE_CHECK_INTERVAL_SECONDS:
                     latest = self.get_latest_log_file()
                     last_file_check_time = now
                 if latest and latest != current_file_path:
                     if os.path.exists(latest) and os.path.getsize(latest) > 0:
-                        if f: f.close()
                         current_file_path = latest
+                        current_offset = 0
+                        partial_line = ""
                         self.log(f"锁定日志: {os.path.basename(current_file_path)}")
                         try:
                             self._clear_pending_log_lines()
                             recovery_lines = self._get_active_round_recovery_lines(current_file_path)
-                            f = open(current_file_path, "r", encoding="utf-8", errors="ignore")
                             self._ui_after(self.reset_game, True, "新日志文件加载")
-                            f.seek(0, os.SEEK_END)
+                            current_offset = os.path.getsize(current_file_path)
                             self._enqueue_log_lines(recovery_lines)
                         except Exception:
                             current_file_path = None
-                            f = None
+                            current_offset = 0
+                            partial_line = ""
                             time.sleep(1)
                             continue
-                if f:
+                if current_file_path:
+                    if not os.path.exists(current_file_path):
+                        current_file_path = None
+                        current_offset = 0
+                        partial_line = ""
+                        time.sleep(1)
+                        continue
+
+                    file_size = os.path.getsize(current_file_path)
+                    if file_size < current_offset:
+                        current_offset = file_size
+                        partial_line = ""
+
                     pending_lines = []
-                    line = f.readline()
-                    while line:
+                    complete_lines = []
+                    if file_size > current_offset:
+                        with open(current_file_path, "rb") as bf:
+                            bf.seek(current_offset)
+                            data = bf.read(file_size - current_offset)
+                        current_offset = file_size
+                        text = partial_line + data.decode("utf-8", errors="ignore")
+                        raw_lines = text.splitlines(True)
+                        if raw_lines and not raw_lines[-1].endswith(("\n", "\r")):
+                            partial_line = raw_lines.pop()
+                        else:
+                            partial_line = ""
+                        complete_lines = raw_lines
+
+                    for line in complete_lines:
+                        line = line.rstrip("\r\n")
                         if self._line_might_affect_state(line):
                             pending_lines.append(line)
                             if len(pending_lines) >= LOG_PROCESS_BATCH_SIZE:
                                 self._enqueue_log_lines(pending_lines)
                                 pending_lines = []
-                        line = f.readline()
                     self._enqueue_log_lines(pending_lines)
                     time.sleep(0.1)
                 else:
@@ -1830,11 +1860,6 @@ class SlashCoMonitorCN:
             except Exception as e:
                 self.log(f"监控异常: {e}")
                 time.sleep(2)
-        if f:
-            try:
-                f.close()
-            except Exception:
-                pass
 
 
     # === 图片系统实现 ===

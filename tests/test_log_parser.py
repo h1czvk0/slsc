@@ -30,6 +30,26 @@ class LogParserTests(unittest.TestCase):
         self.assertEqual(event.kind, "item_collision")
         self.assertEqual(event.groups, ("SC_Item4", "Box_Medium"))
 
+    def test_parse_current_vrchat_prefixed_lines(self):
+        item_line = "2026.05.25 23:37:27 Debug      -  Assigning item SC_Item16 as: Mayonnaise"
+        collision_line = (
+            "2026.05.25 23:37:27 Debug      -  Fuel(SC_Item3) collided with: "
+            "StudentDeskBrokenB_LOD0_WOOD (UnityEngine.GameObject)"
+        )
+
+        item_event = parse_log_line(item_line)
+        self.assertIsNotNone(item_event)
+        self.assertEqual(item_event.kind, "item")
+        self.assertEqual(item_event.groups, ("SC_Item16", "Mayonnaise"))
+
+        collision_event = parse_log_line(collision_line)
+        self.assertIsNotNone(collision_event)
+        self.assertEqual(collision_event.kind, "item_collision")
+        self.assertEqual(collision_event.groups, ("SC_Item3", "StudentDeskBrokenB_LOD0_WOOD"))
+
+        self.assertTrue(line_might_affect_state(item_line))
+        self.assertTrue(line_might_affect_state(collision_line))
+
     def test_parse_generator_and_stats_events(self):
         cases = [
             ("For a game of 4 players, 6 will be spawned", "fuel_base", ("6",)),
@@ -57,6 +77,7 @@ class LogParserTests(unittest.TestCase):
         self.assertTrue(is_round_start_line("Selected landing spot on map Farm"))
         self.assertTrue(is_round_start_line("SLASHCO Game setup"))
         self.assertTrue(is_round_start_line("Getting Map Spawnpoints"))
+        self.assertTrue(is_round_start_line("2026.05.25 23:36:44 Debug      -  SLASHCO now loading data. . ."))
         self.assertTrue(is_round_end_line("Returning to Lobby"))
         self.assertTrue(is_round_end_line("Logging all doors for map Lobby"))
         self.assertFalse(is_round_end_line("Logging all doors for map Farm"))
