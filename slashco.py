@@ -195,6 +195,7 @@ LOG_PROCESS_BATCH_DELAY_MS = 1
 TREE_REBUILD_DELAY_MS = 50
 IMAGE_SYNC_START_DELAY_MS = 2000
 LOG_FILE_CHECK_INTERVAL_SECONDS = 3.0
+FUEL_HIBERNATE_CONFIRM_DELAY_MS = 700
 
 
 def _parse_port(value):
@@ -463,6 +464,7 @@ class SlashCoMonitorCN:
         self.round_active = False
         self.held_items = set()
         self.consumed_fuel_items = set()
+        self.pending_fuel_after_ids = {}
         self.GAME_END_DEBOUNCE_SECONDS = 2.0
 
         # 房主检测和OCR触发标志
@@ -1308,6 +1310,7 @@ class SlashCoMonitorCN:
         self.round_active = False
         self.held_items.clear()
         self.consumed_fuel_items.clear()
+        self._cancel_pending_fuel_hibernations()
         for gid in self.gens:
             self.gens[gid] = {"fuel": 0.0, "battery": False, "battery_pending": False, "pending_since": 0.0}
             self.last_battery_event[gid] = 0.0
@@ -1356,6 +1359,43 @@ class SlashCoMonitorCN:
         self.update_item_position(iid_norm, "已加油")
         self.add_fuel(gid)
         self.log("加油日志未包含发电机编号，已记录到下一个未满发电机")
+
+    def _cancel_pending_fuel_hibernations(self):
+        pending = getattr(self, "pending_fuel_after_ids", None)
+        if not pending:
+            return
+        for after_id in list(pending.values()):
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+        pending.clear()
+
+    def _confirm_fuel_hibernation(self, iid_norm: str):
+        pending = getattr(self, "pending_fuel_after_ids", None)
+        if pending is not None:
+            pending.pop(iid_norm, None)
+        if not getattr(self, "round_active", False):
+            return
+        self.add_fuel_from_consumed_item(iid_norm)
+
+    def _schedule_fuel_hibernation(self, iid_norm: str):
+        if iid_norm in getattr(self, "consumed_fuel_items", set()):
+            return
+        pending = getattr(self, "pending_fuel_after_ids", None)
+        if pending is None:
+            self.pending_fuel_after_ids = {}
+            pending = self.pending_fuel_after_ids
+        if iid_norm in pending:
+            return
+        try:
+            pending[iid_norm] = self.root.after(
+                FUEL_HIBERNATE_CONFIRM_DELAY_MS,
+                self._confirm_fuel_hibernation,
+                iid_norm,
+            )
+        except Exception:
+            self._confirm_fuel_hibernation(iid_norm)
 
     def set_battery_pending(self, gid: str, reason: str = ""):
         if gid not in self.gens: return
@@ -1669,7 +1709,7 @@ class SlashCoMonitorCN:
             iid = normalize_item_id(event.groups[0])
             item_type = event.groups[1].strip().lower()
             if self.round_active and item_type == "fuel":
-                self.add_fuel_from_consumed_item(iid)
+                self._schedule_fuel_hibernation(iid)
             self.held_items.discard(iid)
             return
 

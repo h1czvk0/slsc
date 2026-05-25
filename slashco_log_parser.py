@@ -61,7 +61,7 @@ PATTERNS = {
     "rooms_sealed": re.compile(r"(\d+)\s+Rooms will be SEALED", re.IGNORECASE),
 }
 
-ROUND_START_KEYS = ("map_landing", "game_setup", "map_spawns", "map_flags", "slashco_loading")
+ROUND_START_KEYS = ("map_landing", "game_setup", "map_spawns")
 
 
 @dataclass(frozen=True)
