@@ -16,4 +16,7 @@ tools/mitm_addon.py
 tools/sponsor_override_hits.log
 
 tools/caddy/*.pid
+tools/caddy/*.log
 tools/caddy/_dns_stop
+tools/caddy/_dns_original.json
+tools/caddy/real_ip.txt
