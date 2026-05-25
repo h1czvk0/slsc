@@ -460,6 +460,7 @@ class SlashCoMonitorCN:
         self.last_pending_gid = None
         self.last_pending_time = 0.0
         self.last_game_end_time = 0.0
+        self.round_active = False
         self.held_items = set()
         self.consumed_fuel_items = set()
         self.GAME_END_DEBOUNCE_SECONDS = 2.0
@@ -1304,6 +1305,7 @@ class SlashCoMonitorCN:
         self.rebuild_item_tree()
         self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": 0}
         self.update_stats_ui()
+        self.round_active = False
         self.held_items.clear()
         self.consumed_fuel_items.clear()
         for gid in self.gens:
@@ -1630,6 +1632,7 @@ class SlashCoMonitorCN:
         if event.kind == "map_landing":
             map_name = event.groups[0].strip()
             self.reset_game(force=True, reason=f"新地图加载: {map_name}")
+            self.round_active = True
             # OCR 已改为通过 game_end 后的轮询机制触发，此处不再单独启动
             return
 
@@ -1643,6 +1646,7 @@ class SlashCoMonitorCN:
 
         if event.kind == "game_setup":
             self.reset_game(force=True, reason="新回合开始")
+            self.round_active = True
             return
 
         if event.kind == "fuel":
@@ -1664,7 +1668,7 @@ class SlashCoMonitorCN:
         if event.kind == "item_hibernated":
             iid = normalize_item_id(event.groups[0])
             item_type = event.groups[1].strip().lower()
-            if iid in self.held_items and item_type == "fuel":
+            if self.round_active and item_type == "fuel":
                 self.add_fuel_from_consumed_item(iid)
             self.held_items.discard(iid)
             return
