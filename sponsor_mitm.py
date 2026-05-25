@@ -944,6 +944,30 @@ def stop_sponsor_override(log_func=None):
     _log("✓ 已停止，系统代理已恢复", log_func)
 
 
+def force_cleanup(log_func=None):
+    """强制清理代理、进程和旧方案残留，用于异常退出兜底。"""
+    global _running, _active_proxy_port
+
+    try:
+        _restore_proxy(log_func)
+    except Exception:
+        pass
+
+    try:
+        _stop_mitmdump(log_func)
+    except Exception:
+        pass
+
+    try:
+        _cleanup_old_caddy_residuals(log_func)
+    except Exception:
+        pass
+
+    with _lock:
+        _running = False
+        _active_proxy_port = None
+
+
 def is_running():
     """检查是否正在运行"""
     return _running

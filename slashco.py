@@ -185,6 +185,7 @@ LOG_PROCESS_BATCH_SIZE = 200
 LOG_PROCESS_BATCH_DELAY_MS = 1
 TREE_REBUILD_DELAY_MS = 50
 IMAGE_SYNC_START_DELAY_MS = 2000
+LOG_FILE_CHECK_INTERVAL_SECONDS = 3.0
 
 
 def _parse_port(value):
@@ -1664,10 +1665,15 @@ class SlashCoMonitorCN:
     def monitor_loop(self):
         current_file_path = None
         f = None
+        last_file_check_time = 0.0
         self.log("正在扫描 VRChat 日志文件...")
         while self.is_monitoring:
             try:
-                latest = self.get_latest_log_file()
+                latest = None
+                now = time.time()
+                if f is None or now - last_file_check_time >= LOG_FILE_CHECK_INTERVAL_SECONDS:
+                    latest = self.get_latest_log_file()
+                    last_file_check_time = now
                 if latest and latest != current_file_path:
                     if os.path.exists(latest) and os.path.getsize(latest) > 0:
                         if f: f.close()
