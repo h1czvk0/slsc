@@ -545,6 +545,17 @@ class SlashCoMonitorCN:
         except Exception:
             pass
 
+    def _hide_update_frame(self):
+        if self._is_shutting_down or not hasattr(self, "update_frame"):
+            return
+        try:
+            self.update_status_var.set("")
+            self.update_progress_var.set(0.0)
+            if self.update_frame.winfo_ismapped():
+                self.update_frame.pack_forget()
+        except Exception:
+            pass
+
     def _set_update_status(self, text, progress=None):
         if self._is_shutting_down or not hasattr(self, "update_status_var"):
             return
@@ -564,6 +575,7 @@ class SlashCoMonitorCN:
 
     def _check_app_update_worker(self):
         if not HAS_REQUESTS:
+            self._ui_after(self._hide_update_frame)
             self._ui_after(self.log, "未安装 requests 库，跳过软件更新检查")
             return
 
@@ -571,6 +583,7 @@ class SlashCoMonitorCN:
             release_data = fetch_latest_release(requests.get)
             update_info = parse_update_info(release_data, APP_VERSION)
             if not update_info:
+                self._ui_after(self._hide_update_frame)
                 return
 
             self._ui_after(
@@ -598,7 +611,7 @@ class SlashCoMonitorCN:
             self._ui_after(self._set_update_status, "下载完成，准备重启更新...", 100)
             self._ui_after(self._schedule_apply_downloaded_update, download_path)
         except Exception as e:
-            self._ui_after(self._set_update_status, f"更新检查失败: {e}", 0)
+            self._ui_after(self._hide_update_frame)
             self._ui_after(self.log, f"软件更新检查失败: {e}")
 
     def _schedule_apply_downloaded_update(self, download_path):
