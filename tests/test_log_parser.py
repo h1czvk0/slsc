@@ -62,11 +62,10 @@ class LogParserTests(unittest.TestCase):
                 "fuel_inserted",
                 ("SC_Item1",),
             ),
-            (
-                "Battery(SC_Item12) collided with: SC_generator2 (UnityEngine.GameObject)",
-                "battery_inserted",
-                ("SC_Item12", "SC_generator2"),
-            ),
+            ("Pickup object: 'SC_Item10' equipped = True", "pickup_item", ("SC_Item10",)),
+            ("Drop object: 'SC_Item10, was equipped = True' ForceDrop", "drop_item", ("SC_Item10",)),
+            ("Holstering SC_Item10", "holster_item", ("SC_Item10",)),
+            ("Hibernating item SC_Item10, (Fuel)", "item_hibernated", ("SC_Item10", "Fuel")),
             (
                 "SC_generator2 Progress check. updated HAS_BATTERY value: True",
                 "battery_progress",

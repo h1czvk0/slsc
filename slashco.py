@@ -460,6 +460,8 @@ class SlashCoMonitorCN:
         self.last_pending_gid = None
         self.last_pending_time = 0.0
         self.last_game_end_time = 0.0
+        self.held_items = set()
+        self.consumed_fuel_items = set()
         self.GAME_END_DEBOUNCE_SECONDS = 2.0
 
         # 房主检测和OCR触发标志
@@ -1302,6 +1304,8 @@ class SlashCoMonitorCN:
         self.rebuild_item_tree()
         self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": 0}
         self.update_stats_ui()
+        self.held_items.clear()
+        self.consumed_fuel_items.clear()
         for gid in self.gens:
             self.gens[gid] = {"fuel": 0.0, "battery": False, "battery_pending": False, "pending_since": 0.0}
             self.last_battery_event[gid] = 0.0
@@ -1339,11 +1343,15 @@ class SlashCoMonitorCN:
         self.update_gen_ui(gid)
         self.log(f"{gid} 加油! 当前: {self.gens[gid]['fuel']}%")
 
-    def add_fuel_unknown_generator(self):
+    def add_fuel_from_consumed_item(self, iid_norm: str):
+        if iid_norm in self.consumed_fuel_items:
+            return
         available = [gid for gid, data in self.gens.items() if data.get("fuel", 0.0) < 100.0]
         if not available:
             return
+        self.consumed_fuel_items.add(iid_norm)
         gid = available[0]
+        self.update_item_position(iid_norm, "已加油")
         self.add_fuel(gid)
         self.log("加油日志未包含发电机编号，已记录到下一个未满发电机")
 
@@ -1638,13 +1646,23 @@ class SlashCoMonitorCN:
             return
 
         if event.kind == "fuel_inserted":
-            self.update_item_position(normalize_item_id(event.groups[0]), "已加油")
-            self.add_fuel_unknown_generator()
+            self.add_fuel_from_consumed_item(normalize_item_id(event.groups[0]))
             return
 
-        if event.kind == "battery_inserted":
-            self.update_item_position(normalize_item_id(event.groups[0]), event.groups[1])
-            self.set_battery_state(event.groups[1], True, reason="(BatteryInserted)")
+        if event.kind == "pickup_item":
+            self.held_items.add(normalize_item_id(event.groups[0]))
+            return
+
+        if event.kind in ("drop_item", "holster_item"):
+            self.held_items.discard(normalize_item_id(event.groups[0]))
+            return
+
+        if event.kind == "item_hibernated":
+            iid = normalize_item_id(event.groups[0])
+            item_type = event.groups[1].strip().lower()
+            if iid in self.held_items and item_type == "fuel":
+                self.add_fuel_from_consumed_item(iid)
+            self.held_items.discard(iid)
             return
 
         if event.kind == "battery_progress":
@@ -1656,7 +1674,7 @@ class SlashCoMonitorCN:
             return
 
         if event.kind == "battery_fixing":
-            self.set_battery_pending(event.groups[0], reason="(FixingNow)")
+            self.set_battery_state(event.groups[0], True, reason="(FixingNow)")
             return
 
         if event.kind == "game_end":
