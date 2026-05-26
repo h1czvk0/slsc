@@ -197,6 +197,7 @@ IMAGE_SYNC_START_DELAY_MS = 2000
 LOG_FILE_CHECK_INTERVAL_SECONDS = 3.0
 FUEL_HIBERNATE_CONFIRM_DELAY_MS = 700
 FUEL_REQUIRED_COUNT = 8
+ROUND_TIMEOUT_SECONDS = 25 * 60
 
 
 def _parse_port(value):
@@ -416,6 +417,7 @@ class SlashCoMonitorCN:
         self._is_shutting_down = False
         self._log_queue_after_id = None
         self._pending_tick_after_id = None
+        self._round_timer_after_id = None
         self._sponsor_op_lock = threading.Lock()
 
 
@@ -459,6 +461,8 @@ class SlashCoMonitorCN:
         self.last_pending_time = 0.0
         self.last_game_end_time = 0.0
         self.round_active = False
+        self.round_started_at = None
+        self.round_timed_out = False
         self.held_items = set()
         self.consumed_fuel_items = set()
         self.pending_fuel_after_ids = {}
@@ -756,7 +760,20 @@ class SlashCoMonitorCN:
         stats_frame.pack(fill=X, padx=5, pady=2)
 
         # 取消左右分栏，直接垂直排列
-        
+
+        # 0. 对局计时
+        self.lbl_round_timer = Label(
+            stats_frame,
+            text="对局计时：等待开始",
+            font=("微软雅黑", 12, "bold"),
+            bg="#eeeeee",
+            fg="#555555",
+            anchor=W,
+            padx=8,
+            pady=3,
+        )
+        self.lbl_round_timer.pack(fill=X, pady=(0, 4))
+
         # 1. 油桶
         self.lbl_stats_fuel = ttk.Label(stats_frame, text="油桶：等待检测...", font=("微软雅黑", 12, "bold"), foreground="#d35400")
         self.lbl_stats_fuel.pack(anchor=W, pady=2)
@@ -1293,6 +1310,70 @@ class SlashCoMonitorCN:
     def force_reset(self):
         self.reset_game(force=True, reason="手动强制重置")
 
+    def _format_round_elapsed(self, elapsed_seconds):
+        total = max(0, int(elapsed_seconds))
+        minutes, seconds = divmod(total, 60)
+        return f"{minutes:02d}:{seconds:02d}"
+
+    def _cancel_round_timer_tick(self):
+        after_id = getattr(self, "_round_timer_after_id", None)
+        if after_id:
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+            self._round_timer_after_id = None
+
+    def _set_round_timer_ui(self, text, bg="#eeeeee", fg="#555555"):
+        label = getattr(self, "lbl_round_timer", None)
+        if label:
+            label.configure(text=text, bg=bg, fg=fg)
+
+    def _update_round_timer_ui(self):
+        if not getattr(self, "round_active", False) or self.round_started_at is None:
+            self._set_round_timer_ui("对局计时：等待开始", "#eeeeee", "#555555")
+            return
+
+        elapsed = time.monotonic() - self.round_started_at
+        formatted = self._format_round_elapsed(elapsed)
+        if elapsed >= ROUND_TIMEOUT_SECONDS:
+            self._set_round_timer_ui(f"对局计时：{formatted}  超时", "#d93025", "white")
+            if not self.round_timed_out:
+                self.round_timed_out = True
+                self.log("对局计时已超过 25 分钟。")
+        else:
+            self._set_round_timer_ui(f"对局计时：{formatted}", "#d8f5d0", "#1f6f3a")
+
+    def _round_timer_tick(self):
+        self._round_timer_after_id = None
+        if self._is_shutting_down:
+            return
+        self._update_round_timer_ui()
+        if not getattr(self, "round_active", False):
+            return
+        try:
+            self._round_timer_after_id = self.root.after(1000, self._round_timer_tick)
+        except Exception:
+            self._round_timer_after_id = None
+
+    def start_round_timer(self):
+        self.round_active = True
+        self.round_started_at = time.monotonic()
+        self.round_timed_out = False
+        self._cancel_round_timer_tick()
+        self._update_round_timer_ui()
+        try:
+            self._round_timer_after_id = self.root.after(1000, self._round_timer_tick)
+        except Exception:
+            self._round_timer_after_id = None
+
+    def stop_round_timer(self):
+        self.round_active = False
+        self.round_started_at = None
+        self.round_timed_out = False
+        self._cancel_round_timer_tick()
+        self._update_round_timer_ui()
+
     def reset_game(self, force=False, reason=""):
         now = time.time()
         if not force and (now - self.last_reset_time < 5):
@@ -1314,7 +1395,7 @@ class SlashCoMonitorCN:
         self.free_fuel_explicit = False
         self.update_fuel_ui()
         self.update_stats_ui()
-        self.round_active = False
+        self.stop_round_timer()
         self.held_items.clear()
         self.consumed_fuel_items.clear()
         self._cancel_pending_fuel_hibernations()
@@ -1714,7 +1795,7 @@ class SlashCoMonitorCN:
         if event.kind == "map_landing":
             map_name = event.groups[0].strip()
             self.reset_game(force=True, reason=f"新地图加载: {map_name}")
-            self.round_active = True
+            self.start_round_timer()
             # OCR 已改为通过 game_end 后的轮询机制触发，此处不再单独启动
             return
 
@@ -1728,7 +1809,7 @@ class SlashCoMonitorCN:
 
         if event.kind == "game_setup":
             self.reset_game(force=True, reason="新回合开始")
-            self.round_active = True
+            self.start_round_timer()
             return
 
         if event.kind == "fuel":
@@ -2406,7 +2487,7 @@ class SlashCoMonitorCN:
                 pass
 
         # 取消周期性 after 任务
-        for attr in ("_log_queue_after_id", "_log_lines_after_id", "_pending_tick_after_id", "_tree_rebuild_after_id"):
+        for attr in ("_log_queue_after_id", "_log_lines_after_id", "_pending_tick_after_id", "_tree_rebuild_after_id", "_round_timer_after_id"):
             after_id = getattr(self, attr, None)
             if after_id:
                 try:

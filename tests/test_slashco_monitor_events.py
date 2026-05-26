@@ -6,7 +6,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from slashco import SlashCoMonitorCN  # noqa: E402
+from slashco import ROUND_TIMEOUT_SECONDS, SlashCoMonitorCN  # noqa: E402
 
 
 class FakeRoot:
@@ -28,6 +28,14 @@ class FakeRoot:
         self.callbacks.clear()
         for _after_id, (callback, args) in callbacks:
             callback(*args)
+
+
+class FakeLabel:
+    def __init__(self):
+        self.config = {}
+
+    def configure(self, **kwargs):
+        self.config.update(kwargs)
 
 
 class MonitorEventTests(unittest.TestCase):
@@ -126,6 +134,51 @@ class MonitorEventTests(unittest.TestCase):
         self.assertEqual(monitor.game_stats["players"], 4)
         self.assertEqual(monitor.game_stats["free_fuel"], 0)
         self.assertEqual(SlashCoMonitorCN.get_fuel_count(monitor), 0)
+
+    def make_timer_monitor(self):
+        monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
+        monitor.root = FakeRoot()
+        monitor.lbl_round_timer = FakeLabel()
+        monitor._round_timer_after_id = None
+        monitor._is_shutting_down = False
+        monitor.round_active = False
+        monitor.round_started_at = None
+        monitor.round_timed_out = False
+        monitor.logs = []
+        monitor.log = monitor.logs.append
+        return monitor
+
+    def test_round_timer_starts_green(self):
+        monitor = self.make_timer_monitor()
+
+        SlashCoMonitorCN.start_round_timer(monitor)
+
+        self.assertTrue(monitor.round_active)
+        self.assertEqual(monitor.lbl_round_timer.config["bg"], "#d8f5d0")
+        self.assertIn("对局计时：00:00", monitor.lbl_round_timer.config["text"])
+
+    def test_round_timer_marks_timeout_once(self):
+        monitor = self.make_timer_monitor()
+        monitor.round_active = True
+        monitor.round_started_at = __import__("time").monotonic() - ROUND_TIMEOUT_SECONDS - 1
+
+        SlashCoMonitorCN._update_round_timer_ui(monitor)
+        SlashCoMonitorCN._update_round_timer_ui(monitor)
+
+        self.assertEqual(monitor.lbl_round_timer.config["bg"], "#d93025")
+        self.assertIn("超时", monitor.lbl_round_timer.config["text"])
+        self.assertEqual(monitor.logs, ["对局计时已超过 25 分钟。"])
+
+    def test_round_timer_stops_to_waiting_state(self):
+        monitor = self.make_timer_monitor()
+        SlashCoMonitorCN.start_round_timer(monitor)
+
+        SlashCoMonitorCN.stop_round_timer(monitor)
+
+        self.assertFalse(monitor.round_active)
+        self.assertIsNone(monitor.round_started_at)
+        self.assertEqual(monitor.lbl_round_timer.config["bg"], "#eeeeee")
+        self.assertIn("等待开始", monitor.lbl_round_timer.config["text"])
 
 
 if __name__ == "__main__":
