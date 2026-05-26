@@ -8,7 +8,7 @@ import tempfile
 from dataclasses import dataclass
 
 
-APP_VERSION = "3.6.2"
+APP_VERSION = "3.6.3"
 GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/h1czvk0/slsc/releases/latest"
 GITHUB_PROXY_PREFIXES = (
     "https://gh-proxy.org/",
@@ -177,6 +177,7 @@ def create_updater_bat(current_exe, new_exe, app_args=None):
         f'set "OLD={current_exe}"',
         f'set "NEW={new_exe}"',
         f'set "BAK={backup_exe}"',
+        "for %%I in (\"%OLD%\") do set \"APPDIR=%%~dpI\"",
         "for /l %%i in (1,1,60) do (",
         "  move /Y \"%OLD%\" \"%BAK%\" >nul 2>nul && goto replace",
         "  timeout /t 1 /nobreak >nul",
@@ -188,7 +189,9 @@ def create_updater_bat(current_exe, new_exe, app_args=None):
         "  move /Y \"%BAK%\" \"%OLD%\" >nul 2>nul",
         "  exit /b 1",
         ")",
-        f"start \"\" {relaunch}",
+        "timeout /t 1 /nobreak >nul",
+        "set \"PYINSTALLER_RESET_ENVIRONMENT=1\"",
+        f"start \"\" /D \"%APPDIR%\" {relaunch}",
         "timeout /t 2 /nobreak >nul",
         "del /f /q \"%BAK%\" >nul 2>nul",
         f"del /f /q { _quote_bat(bat_path) } >nul 2>nul",

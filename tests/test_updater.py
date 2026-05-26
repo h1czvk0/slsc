@@ -9,6 +9,8 @@ sys.path.insert(0, str(ROOT))
 from slashco_updater import (  # noqa: E402
     GITHUB_LATEST_RELEASE_API,
     build_github_url_candidates,
+    cleanup_update_temp_dir,
+    create_updater_bat,
     fetch_latest_release,
     is_newer_version,
     parse_update_info,
@@ -83,6 +85,19 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(data["tag_name"], "v3.3.0")
         self.assertEqual(calls[-1], GITHUB_LATEST_RELEASE_API)
         self.assertTrue(calls[0].startswith("https://gh-proxy.org/"))
+
+    def test_updater_bat_resets_pyinstaller_environment_before_relaunch(self):
+        bat_path = create_updater_bat(
+            r"C:\Apps\SLSC\SlashCoSense.exe",
+            r"C:\Users\tester\AppData\Local\Temp\SlashCoSenseUpdate\SlashCoSense.new.exe",
+        )
+        try:
+            content = pathlib.Path(bat_path).read_text(encoding="utf-8")
+        finally:
+            cleanup_update_temp_dir()
+
+        self.assertIn('set "PYINSTALLER_RESET_ENVIRONMENT=1"', content)
+        self.assertIn('start "" /D "%APPDIR%" "C:\\Apps\\SLSC\\SlashCoSense.exe"', content)
 
 
 if __name__ == "__main__":
