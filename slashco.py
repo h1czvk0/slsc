@@ -196,6 +196,7 @@ TREE_REBUILD_DELAY_MS = 50
 IMAGE_SYNC_START_DELAY_MS = 2000
 LOG_FILE_CHECK_INTERVAL_SECONDS = 3.0
 FUEL_HIBERNATE_CONFIRM_DELAY_MS = 700
+FUEL_REQUIRED_COUNT = 8
 
 
 def _parse_port(value):
@@ -437,11 +438,13 @@ class SlashCoMonitorCN:
         self.current_click_col = None
 
         self.gens = {
-            "SC_generator1": {"fuel": 0.0, "battery": False, "battery_pending": False, "pending_since": 0.0},
-            "SC_generator2": {"fuel": 0.0, "battery": False, "battery_pending": False, "pending_since": 0.0},
+            "SC_generator1": {"battery": False, "battery_pending": False, "pending_since": 0.0},
+            "SC_generator2": {"battery": False, "battery_pending": False, "pending_since": 0.0},
         }
 
         self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": 0}
+        self.fuel_added_count = 0
+        self.free_fuel_explicit = False
         self.map_var = StringVar(value="通用(默认)") # 新增：地图选择变量
         self.game_info = {"location": "通用(默认)", "difficulty": "未知", "slasher": "未知"} # 修改默认 location
         self.item_records = {}
@@ -732,7 +735,17 @@ class SlashCoMonitorCN:
         )
         self.update_progress.pack(fill=X, pady=(4, 0))
 
-        gen_frame = ttk.LabelFrame(self.left_p, text="发电机 (每桶油+25%)", padding=5)
+        fuel_frame = ttk.LabelFrame(self.left_p, text="燃油进度", padding=5)
+        fuel_frame.pack(fill=X, padx=5, pady=5)
+        fuel_row = ttk.Frame(fuel_frame)
+        fuel_row.pack(fill=X, pady=2)
+        ttk.Label(fuel_row, text="油桶", width=12, font=("微软雅黑", 9)).pack(side=LEFT)
+        self.fuel_progress = ttk.Progressbar(fuel_row, length=200, maximum=FUEL_REQUIRED_COUNT)
+        self.fuel_progress.pack(side=LEFT, padx=5, fill=X, expand=True)
+        self.lbl_fuel_progress = ttk.Label(fuel_row, text=f"{FUEL_REQUIRED_COUNT}/0", width=8, font=("Consolas", 9))
+        self.lbl_fuel_progress.pack(side=LEFT)
+
+        gen_frame = ttk.LabelFrame(self.left_p, text="电池状态", padding=5)
         gen_frame.pack(fill=X, padx=5, pady=5)
 
         self.ui_gens = {}
@@ -740,13 +753,9 @@ class SlashCoMonitorCN:
             row = ttk.Frame(gen_frame)
             row.pack(fill=X, pady=2)
             ttk.Label(row, text=gid.replace("SC_", "").capitalize(), width=12, font=("Consolas", 9)).pack(side=LEFT)
-            pb = ttk.Progressbar(row, length=200, maximum=100)
-            pb.pack(side=LEFT, padx=5, fill=X, expand=True)
-            lbl = ttk.Label(row, text="0%", width=5, font=("Consolas", 9))
-            lbl.pack(side=LEFT)
             bat = ttk.Label(row, text="[缺电池]", foreground="red", width=10, font=("微软雅黑", 9))
             bat.pack(side=LEFT)
-            self.ui_gens[gid] = {"pb": pb, "pct": lbl, "bat": bat}
+            self.ui_gens[gid] = {"bat": bat}
 
         stats_frame = ttk.LabelFrame(self.left_p, text="对局输出统计", padding=5)
         stats_frame.pack(fill=X, padx=5, pady=2)
@@ -1306,13 +1315,16 @@ class SlashCoMonitorCN:
         self.groups = {"地图": {}, "玩家": {}, "未知": {}}
         self.rebuild_item_tree()
         self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": 0}
+        self.fuel_added_count = 0
+        self.free_fuel_explicit = False
+        self.update_fuel_ui()
         self.update_stats_ui()
         self.round_active = False
         self.held_items.clear()
         self.consumed_fuel_items.clear()
         self._cancel_pending_fuel_hibernations()
         for gid in self.gens:
-            self.gens[gid] = {"fuel": 0.0, "battery": False, "battery_pending": False, "pending_since": 0.0}
+            self.gens[gid] = {"battery": False, "battery_pending": False, "pending_since": 0.0}
             self.last_battery_event[gid] = 0.0
             self.update_gen_ui(gid)
         self.last_pending_gid = None
@@ -1332,8 +1344,6 @@ class SlashCoMonitorCN:
     def update_gen_ui(self, gid: str):
         data = self.gens[gid]
         ui = self.ui_gens[gid]
-        ui["pb"]["value"] = data["fuel"]
-        ui["pct"].configure(text=f"{int(data['fuel'])}%")
         if data.get("battery_pending", False) and not data.get("battery", False):
             ui["bat"].configure(text="[安装中]", foreground="orange")
             return
@@ -1342,23 +1352,57 @@ class SlashCoMonitorCN:
         else:
             ui["bat"].configure(text="[缺电池]", foreground="red")
 
-    def add_fuel(self, gid: str):
-        if gid not in self.gens: return
-        self.gens[gid]["fuel"] = min(100.0, self.gens[gid]["fuel"] + 25.0)
-        self.update_gen_ui(gid)
-        self.log(f"{gid} 加油! 当前: {self.gens[gid]['fuel']}%")
+    def infer_free_fuel_from_players(self, players: int) -> int:
+        if players <= 0:
+            return 0
+        return max(0, min(FUEL_REQUIRED_COUNT, 5 - players))
+
+    def get_fuel_count(self) -> int:
+        free_fuel = int(self.game_stats.get("free_fuel", 0) or 0)
+        added = int(getattr(self, "fuel_added_count", 0) or 0)
+        return max(0, min(FUEL_REQUIRED_COUNT, free_fuel + added))
+
+    def update_fuel_ui(self):
+        current = self.get_fuel_count()
+        if hasattr(self, "fuel_progress"):
+            try:
+                self.fuel_progress["value"] = current
+            except Exception:
+                pass
+        if hasattr(self, "lbl_fuel_progress"):
+            try:
+                self.lbl_fuel_progress.configure(text=f"{FUEL_REQUIRED_COUNT}/{current}")
+            except Exception:
+                pass
+
+    def set_player_fuel_headstart(self, players: int, free_fuel=None, explicit=False):
+        players = max(0, int(players or 0))
+        self.game_stats["players"] = players
+        if free_fuel is None:
+            if explicit:
+                free_fuel = 0
+            else:
+                free_fuel = self.infer_free_fuel_from_players(players)
+        self.game_stats["free_fuel"] = max(0, min(FUEL_REQUIRED_COUNT, int(free_fuel or 0)))
+        if explicit:
+            self.free_fuel_explicit = True
+        self.update_fuel_ui()
+
+    def add_fuel(self, _gid: str = ""):
+        if self.get_fuel_count() >= FUEL_REQUIRED_COUNT:
+            return
+        self.fuel_added_count = min(FUEL_REQUIRED_COUNT, int(getattr(self, "fuel_added_count", 0) or 0) + 1)
+        self.update_fuel_ui()
+        self.log(f"加油! 当前: {FUEL_REQUIRED_COUNT}/{self.get_fuel_count()}")
 
     def add_fuel_from_consumed_item(self, iid_norm: str):
         if iid_norm in self.consumed_fuel_items:
             return
-        available = [gid for gid, data in self.gens.items() if data.get("fuel", 0.0) < 100.0]
-        if not available:
+        if self.get_fuel_count() >= FUEL_REQUIRED_COUNT:
             return
         self.consumed_fuel_items.add(iid_norm)
-        gid = available[0]
         self.update_item_position(iid_norm, "已加油")
-        self.add_fuel(gid)
-        self.log("加油日志未包含发电机编号，已记录到下一个未满发电机")
+        self.add_fuel()
 
     def _cancel_pending_fuel_hibernations(self):
         pending = getattr(self, "pending_fuel_after_ids", None)
@@ -1650,7 +1694,10 @@ class SlashCoMonitorCN:
             return
 
         if event.kind == "fuel_base":
-            self.game_stats["fuel_base"] = int(event.groups[0])
+            players = int(event.groups[0])
+            self.game_stats["fuel_base"] = int(event.groups[1])
+            if not self.free_fuel_explicit:
+                self.set_player_fuel_headstart(players, free_fuel=None, explicit=False)
             self.update_stats_ui()
             return
 
@@ -1733,8 +1780,7 @@ class SlashCoMonitorCN:
             return
 
         if event.kind == "player_headstart":
-            self.game_stats["players"] = int(event.groups[0])
-            self.game_stats["free_fuel"] = int(event.groups[1])
+            self.set_player_fuel_headstart(int(event.groups[0]), int(event.groups[1]), explicit=True)
             self.update_stats_ui()
             self.log(f"局内 {self.game_stats['players']} 名玩家，可少加 {self.game_stats['free_fuel']} 桶油")
             return

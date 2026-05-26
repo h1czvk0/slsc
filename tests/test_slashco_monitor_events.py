@@ -77,6 +77,56 @@ class MonitorEventTests(unittest.TestCase):
 
         self.assertEqual(monitor.added_fuel, [])
 
+    def make_fuel_monitor(self):
+        monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
+        monitor.game_stats = {
+            "fuel_base": 0,
+            "fuel_extra": 0,
+            "item_out": 0,
+            "item_in": 0,
+            "players": 0,
+            "free_fuel": 0,
+            "sealed_rooms": 0,
+        }
+        monitor.fuel_added_count = 0
+        monitor.free_fuel_explicit = False
+        monitor.consumed_fuel_items = set()
+        monitor.positions = []
+        monitor.logs = []
+        monitor.update_item_position = lambda iid, pos: monitor.positions.append((iid, pos))
+        monitor.log = monitor.logs.append
+        return monitor
+
+    def test_fuel_headstart_is_inferred_from_player_count(self):
+        monitor = self.make_fuel_monitor()
+
+        SlashCoMonitorCN.set_player_fuel_headstart(monitor, 1)
+        self.assertEqual(monitor.game_stats["free_fuel"], 4)
+        self.assertEqual(SlashCoMonitorCN.get_fuel_count(monitor), 4)
+
+        SlashCoMonitorCN.add_fuel(monitor)
+        self.assertEqual(monitor.fuel_added_count, 1)
+        self.assertEqual(SlashCoMonitorCN.get_fuel_count(monitor), 5)
+
+    def test_fuel_count_defaults_to_zero_without_player_count(self):
+        monitor = self.make_fuel_monitor()
+
+        self.assertEqual(SlashCoMonitorCN.get_fuel_count(monitor), 0)
+        SlashCoMonitorCN.add_fuel_from_consumed_item(monitor, "SC_Item6")
+
+        self.assertEqual(SlashCoMonitorCN.get_fuel_count(monitor), 1)
+        self.assertEqual(monitor.positions, [("SC_Item6", "已加油")])
+
+    def test_explicit_free_fuel_overrides_inferred_value(self):
+        monitor = self.make_fuel_monitor()
+
+        SlashCoMonitorCN.set_player_fuel_headstart(monitor, 4, 0, explicit=True)
+
+        self.assertTrue(monitor.free_fuel_explicit)
+        self.assertEqual(monitor.game_stats["players"], 4)
+        self.assertEqual(monitor.game_stats["free_fuel"], 0)
+        self.assertEqual(SlashCoMonitorCN.get_fuel_count(monitor), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

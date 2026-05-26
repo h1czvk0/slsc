@@ -5,7 +5,7 @@ from dataclasses import dataclass
 PATTERNS = {
     "map_landing": re.compile(r"Selected landing spot on map\s+(.+)", re.IGNORECASE),
     "map_slashco": re.compile(r"Logging all doors for map\s+(.+)", re.IGNORECASE),
-    "fuel_base": re.compile(r"For a game of \d+ players, (\d+) will be spawned", re.IGNORECASE),
+    "fuel_base": re.compile(r"For a game of (\d+) players, (\d+) will be spawned", re.IGNORECASE),
     "fuel_extra": re.compile(r"(\d+) extra fuel cans will appear in sealed rooms", re.IGNORECASE),
     "item_outside": re.compile(r"(\d+) items will spawn outside sealed rooms", re.IGNORECASE),
     "item_inside": re.compile(r"(\d+) items will spawn INside sealed rooms", re.IGNORECASE),

@@ -52,7 +52,7 @@ class LogParserTests(unittest.TestCase):
 
     def test_parse_generator_and_stats_events(self):
         cases = [
-            ("For a game of 4 players, 6 will be spawned", "fuel_base", ("6",)),
+            ("For a game of 4 players, 6 will be spawned", "fuel_base", ("4", "6")),
             ("2 extra fuel cans will appear in sealed rooms", "fuel_extra", ("2",)),
             ("9 items will spawn outside sealed rooms", "item_outside", ("9",)),
             ("3 items will spawn INside sealed rooms", "item_inside", ("3",)),
