@@ -180,6 +180,31 @@ class MonitorEventTests(unittest.TestCase):
         self.assertEqual(monitor.lbl_round_timer.config["bg"], "#eeeeee")
         self.assertIn("等待开始", monitor.lbl_round_timer.config["text"])
 
+    def test_duplicate_round_start_does_not_reset_visible_stats(self):
+        monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
+        monitor.round_active = True
+        monitor.logs = []
+        monitor.log = monitor.logs.append
+        monitor.reset_game = lambda *args, **kwargs: self.fail("duplicate start should not reset")
+        monitor.start_round_timer = lambda: self.fail("duplicate start should not restart timer")
+
+        SlashCoMonitorCN.process_line(monitor, "SLASHCO Game setup.")
+
+        self.assertEqual(monitor.logs, ["忽略重复开始信号: 新回合开始"])
+
+    def test_first_round_start_resets_and_starts_timer(self):
+        monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
+        monitor.round_active = False
+        calls = []
+        monitor.reset_game = lambda *args, **kwargs: calls.append(("reset", args, kwargs))
+        monitor.start_round_timer = lambda: calls.append(("timer", (), {}))
+
+        SlashCoMonitorCN.process_line(monitor, "SLASHCO Game setup.")
+
+        self.assertEqual(calls[0][0], "reset")
+        self.assertEqual(calls[0][2], {"force": True, "reason": "新回合开始"})
+        self.assertEqual(calls[1][0], "timer")
+
 
 if __name__ == "__main__":
     unittest.main()

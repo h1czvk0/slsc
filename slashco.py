@@ -1374,6 +1374,13 @@ class SlashCoMonitorCN:
         self._cancel_round_timer_tick()
         self._update_round_timer_ui()
 
+    def begin_round(self, reason):
+        if getattr(self, "round_active", False):
+            self.log(f"忽略重复开始信号: {reason}")
+            return
+        self.reset_game(force=True, reason=reason)
+        self.start_round_timer()
+
     def reset_game(self, force=False, reason=""):
         now = time.time()
         if not force and (now - self.last_reset_time < 5):
@@ -1794,8 +1801,7 @@ class SlashCoMonitorCN:
 
         if event.kind == "map_landing":
             map_name = event.groups[0].strip()
-            self.reset_game(force=True, reason=f"新地图加载: {map_name}")
-            self.start_round_timer()
+            self.begin_round(f"新地图加载: {map_name}")
             # OCR 已改为通过 game_end 后的轮询机制触发，此处不再单独启动
             return
 
@@ -1808,8 +1814,7 @@ class SlashCoMonitorCN:
             return
 
         if event.kind == "game_setup":
-            self.reset_game(force=True, reason="新回合开始")
-            self.start_round_timer()
+            self.begin_round("新回合开始")
             return
 
         if event.kind == "fuel":
