@@ -519,7 +519,7 @@ def _get_proxy_settings():
             0, winreg.KEY_READ
         )
         settings = {}
-        for name in ["ProxyEnable", "ProxyServer", "ProxyOverride", "AutoConfigURL"]:
+        for name in ["ProxyEnable", "ProxyServer", "ProxyOverride", "AutoConfigURL", "AutoDetect"]:
             try:
                 val, _ = winreg.QueryValueEx(key, name)
                 settings[name] = val
@@ -529,6 +529,23 @@ def _get_proxy_settings():
         return settings
     except Exception:
         return {}
+
+
+def _build_proxy_server_value(proxy_port):
+    return (
+        f"http=127.0.0.1:{int(proxy_port)};"
+        f"https=127.0.0.1:{int(proxy_port)}"
+    )
+
+
+def _proxy_settings_match(settings, proxy_port):
+    expected = _build_proxy_server_value(proxy_port).lower()
+    return (
+        settings.get("ProxyEnable") == 1
+        and str(settings.get("ProxyServer") or "").strip().lower() == expected
+        and not settings.get("AutoConfigURL")
+        and settings.get("AutoDetect") in (None, 0)
+    )
 
 
 def _set_global_proxy(proxy_port, log_func=None):
@@ -541,11 +558,8 @@ def _set_global_proxy(proxy_port, log_func=None):
             0, winreg.KEY_SET_VALUE
         )
 
-        proxy_server = (
-            f"http=127.0.0.1:{int(proxy_port)};"
-            f"https=127.0.0.1:{int(proxy_port)}"
-        )
-        
+        proxy_server = _build_proxy_server_value(proxy_port)
+
         # 启用代理
         winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
         # 设置代理服务器
@@ -556,7 +570,10 @@ def _set_global_proxy(proxy_port, log_func=None):
             winreg.DeleteValue(key, "AutoConfigURL")
         except FileNotFoundError:
             pass
-            
+
+        # 关闭自动检测，避免 WPAD/PAC 抢占手动代理优先级
+        winreg.SetValueEx(key, "AutoDetect", 0, winreg.REG_DWORD, 0)
+
         # 清除 ProxyOverride (设为 <local> 排除本地)
         winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, "<local>")
 
@@ -566,6 +583,11 @@ def _set_global_proxy(proxy_port, log_func=None):
         import ctypes
         ctypes.windll.Wininet.InternetSetOptionW(0, 39, 0, 0)
         ctypes.windll.Wininet.InternetSetOptionW(0, 37, 0, 0)
+
+        actual = _get_proxy_settings()
+        if not _proxy_settings_match(actual, proxy_port):
+            _log(f"系统代理写入后校验失败: {actual}", log_func)
+            return False
 
         _log(f"系统全局代理已设置: {proxy_server}", log_func)
         return True

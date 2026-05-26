@@ -59,6 +59,23 @@ class RuntimePathTests(unittest.TestCase):
         self.assertEqual(sponsor_mitm._parse_port_from_endpoint("user:pass@127.0.0.1:9090"), 9090)
         self.assertIsNone(sponsor_mitm._parse_port_from_endpoint("127.0.0.1"))
 
+    def test_proxy_settings_match_requires_manual_proxy_without_auto_config(self):
+        settings = {
+            "ProxyEnable": 1,
+            "ProxyServer": "http=127.0.0.1:18080;https=127.0.0.1:18080",
+            "AutoConfigURL": None,
+            "AutoDetect": 0,
+        }
+        self.assertTrue(sponsor_mitm._proxy_settings_match(settings, 18080))
+
+        settings_with_pac = dict(settings)
+        settings_with_pac["AutoConfigURL"] = "http://example.invalid/proxy.pac"
+        self.assertFalse(sponsor_mitm._proxy_settings_match(settings_with_pac, 18080))
+
+        settings_with_auto_detect = dict(settings)
+        settings_with_auto_detect["AutoDetect"] = 1
+        self.assertFalse(sponsor_mitm._proxy_settings_match(settings_with_auto_detect, 18080))
+
 
 if __name__ == "__main__":
     unittest.main()
