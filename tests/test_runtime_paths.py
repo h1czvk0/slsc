@@ -47,6 +47,18 @@ class RuntimePathTests(unittest.TestCase):
         self.assertEqual(os.path.basename(os.path.dirname(log_path)), "SlashCoMonitor")
         self.assertEqual(os.path.basename(log_path), "admin_helper_debug.log")
 
+    def test_proxy_port_candidates_skip_upstream_and_accelerator_ports(self):
+        ports = sponsor_mitm._get_proxy_port_candidates(upstream_proxy="127.0.0.1:8080")
+        self.assertNotIn(8080, ports)
+        self.assertNotIn(7890, ports)
+        self.assertIn(18080, ports)
+
+    def test_parse_port_from_proxy_endpoint_formats(self):
+        self.assertEqual(sponsor_mitm._parse_port_from_endpoint("127.0.0.1:7890"), 7890)
+        self.assertEqual(sponsor_mitm._parse_port_from_endpoint("http://127.0.0.1:7891"), 7891)
+        self.assertEqual(sponsor_mitm._parse_port_from_endpoint("user:pass@127.0.0.1:9090"), 9090)
+        self.assertIsNone(sponsor_mitm._parse_port_from_endpoint("127.0.0.1"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,8 @@ import time
 import atexit
 import shutil
 import socket
+import json
+import random
 
 # ==================== 路径管理 (OneFile 支持) ====================
 DATA_DIR_ENV = "SLASHCO_SPONSOR_DATA_DIR"
@@ -84,6 +86,22 @@ def _run_python_script(script_path):
     return subprocess.run([sys.executable, script_path], **kwargs)
 
 
+def _run_powershell(script):
+    if os.name != "nt":
+        return 1, "", ""
+    try:
+        proc = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=12,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        return int(proc.returncode), proc.stdout or "", proc.stderr or ""
+    except Exception as e:
+        return 1, "", str(e)
+
+
 def _runas_python_with_reset(params):
     """
     提权运行 python 脚本并确保 OneFile 子进程使用独立临时目录。
@@ -104,6 +122,12 @@ def _runas_python_with_reset(params):
 
 # ==================== 配置 ====================
 PROXY_PORT = 8080
+COMMON_ACCELERATOR_PORTS = (7890, 7891, 9090, 1080, 10808, 10080)
+STATIC_PROXY_PORT_CANDIDATES = (PROXY_PORT, 18080, 28080, 38080, 48080, 58080)
+DYNAMIC_PORT_MIN = 20000
+DYNAMIC_PORT_MAX = 60999
+DYNAMIC_PORT_SAMPLE_COUNT = 140
+EPHEMERAL_PORT_ATTEMPTS = 24
 PASTEBIN_URL = "https://pastebin.com/raw/2WVJpW1N"
 SEPARATOR = "\u2674"  # ♴  (正确分隔符)
 WRONG_SEPARATORS = ["\u2634", "\u2734"]  # 旧代码使用的错误分隔符
@@ -142,18 +166,89 @@ def _is_port_available(port):
         return False
 
 
-def _get_proxy_port_candidates():
+def _parse_proxy_port(value):
+    try:
+        port = int(str(value).strip())
+    except Exception:
+        return None
+    if 1 <= port <= 65535:
+        return port
+    return None
+
+
+def _parse_port_from_endpoint(endpoint):
+    text = str(endpoint or "").strip()
+    if not text:
+        return None
+
+    if "://" in text:
+        text = text.split("://", 1)[1]
+    if "@" in text:
+        text = text.rsplit("@", 1)[-1]
+    if "/" in text:
+        text = text.split("/", 1)[0]
+
+    if text.startswith("[") and "]" in text:
+        _, _, rest = text.partition("]")
+        if rest.startswith(":"):
+            return _parse_proxy_port(rest[1:])
+        return None
+
+    if ":" not in text:
+        return None
+    return _parse_proxy_port(text.rsplit(":", 1)[1])
+
+
+def _get_proxy_port_candidates(upstream_proxy=None):
     """生成代理端口候选列表"""
-    candidates = [PROXY_PORT, 18080, 28080, 38080, 48080, 58080]
-    candidates.extend(range(20000, 20050))
+    upstream_port = _parse_port_from_endpoint(upstream_proxy)
+    blocked_ports = set(COMMON_ACCELERATOR_PORTS)
+    if upstream_port:
+        blocked_ports.add(upstream_port)
+
     seen = set()
     ordered = []
-    for p in candidates:
-        if p in seen:
-            continue
-        seen.add(p)
-        ordered.append(p)
+
+    def append_port(port):
+        parsed = _parse_proxy_port(port)
+        if not parsed or parsed in seen or parsed in blocked_ports:
+            return
+        seen.add(parsed)
+        ordered.append(parsed)
+
+    for p in STATIC_PROXY_PORT_CANDIDATES:
+        append_port(p)
+
+    for p in range(DYNAMIC_PORT_MIN, DYNAMIC_PORT_MIN + 120):
+        append_port(p)
+
+    rng = random.Random((int(time.time() * 1000) ^ os.getpid()) & 0xFFFFFFFF)
+    for _ in range(DYNAMIC_PORT_SAMPLE_COUNT):
+        append_port(rng.randint(DYNAMIC_PORT_MIN, DYNAMIC_PORT_MAX))
+
     return ordered
+
+
+def _pick_ephemeral_port(excluded_ports=None):
+    excluded = set(COMMON_ACCELERATOR_PORTS)
+    for item in excluded_ports or ():
+        parsed = _parse_proxy_port(item)
+        if parsed:
+            excluded.add(parsed)
+
+    for _ in range(EPHEMERAL_PORT_ATTEMPTS):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(("127.0.0.1", 0))
+                candidate = int(sock.getsockname()[1])
+        except OSError:
+            continue
+
+        if candidate in excluded:
+            continue
+        if _is_port_available(candidate):
+            return candidate
+    return None
 
 
 # ==================== 名单处理 ====================
@@ -445,8 +540,11 @@ def _set_global_proxy(proxy_port, log_func=None):
             r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
             0, winreg.KEY_SET_VALUE
         )
-        
-        proxy_server = f"127.0.0.1:{int(proxy_port)}"
+
+        proxy_server = (
+            f"http=127.0.0.1:{int(proxy_port)};"
+            f"https=127.0.0.1:{int(proxy_port)}"
+        )
         
         # 启用代理
         winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
@@ -474,6 +572,27 @@ def _set_global_proxy(proxy_port, log_func=None):
     except Exception as e:
         _log(f"设置全局代理失败: {e}", log_func)
         return False
+
+
+def _detect_upstream_proxy():
+    settings = _get_proxy_settings()
+    if not settings or settings.get("ProxyEnable") != 1:
+        return None, settings
+
+    server = settings.get("ProxyServer")
+    if not server:
+        return None, settings
+
+    if "=" not in server:
+        return server, settings
+
+    for part in server.split(";"):
+        if "http=" in part or "https=" in part:
+            _, value = part.split("=", 1)
+            value = value.strip()
+            if value:
+                return value, settings
+    return None, settings
 
 
 def _self_test_override(proxy_port, expected_names, log_func=None):
@@ -668,17 +787,29 @@ def _stop_mitmdump(log_func=None):
     """停止 mitmdump"""
     global _mitm_process
     if _mitm_process:
+        proc = _mitm_process
         pid = None
         try:
-            pid = _mitm_process.pid
+            pid = proc.pid
         except Exception:
             pass
         try:
-            _mitm_process.terminate()  # 尝试优雅退出
-            try:
-                _mitm_process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                _mitm_process.kill()   # 强制退出
+            if proc.poll() is None:
+                try:
+                    proc.terminate()  # 尝试优雅退出
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()   # 强制退出
+                    except Exception:
+                        pass
+                    try:
+                        proc.wait(timeout=1)
+                    except Exception:
+                        pass
         except Exception:
             pass
         # 补充清理进程树，防止残留句柄占用 _MEI
@@ -691,8 +822,87 @@ def _stop_mitmdump(log_func=None):
                 )
             except Exception:
                 pass
+        _close_process_pipes(proc)
         _mitm_process = None
         _log("mitmdump 已停止", log_func)
+
+
+def _close_process_pipes(proc):
+    for name in ("stdin", "stdout", "stderr"):
+        stream = getattr(proc, name, None)
+        if stream:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+
+def _kill_stale_mitmdump_processes(log_func=None, skip_current=True):
+    """清理本工具残留的 mitmdump，避免旧代理进程占端口或继续拦截。"""
+    if os.name != "nt":
+        return
+
+    current_pid = None
+    if skip_current and _mitm_process:
+        try:
+            current_pid = int(_mitm_process.pid)
+        except Exception:
+            current_pid = None
+
+    rc, out, err = _run_powershell(
+        "Get-CimInstance Win32_Process -Filter \"name='mitmdump.exe'\" "
+        "| Select-Object ProcessId,ExecutablePath,CommandLine "
+        "| ConvertTo-Json -Compress"
+    )
+    if rc != 0 or not out.strip():
+        return
+
+    try:
+        items = json.loads(out)
+    except Exception:
+        _log(f"读取 mitmdump 进程列表失败: {err or out[:120]}", log_func)
+        return
+
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list):
+        return
+
+    tags = (
+        "\\_mei",
+        "slashcomonitor",
+        "slashcosense",
+        "sponsor_override_hits.log",
+        "mitm_addon.py",
+    )
+    cleaned = 0
+    for proc in items:
+        try:
+            pid = int(proc.get("ProcessId") or 0)
+        except Exception:
+            pid = 0
+        if pid <= 0:
+            continue
+        if current_pid and pid == current_pid:
+            continue
+
+        exe = str(proc.get("ExecutablePath") or "").lower()
+        cmd = str(proc.get("CommandLine") or "").lower()
+        if "\\_mei" in exe or any(tag in cmd for tag in tags):
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True,
+                    timeout=6,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                cleaned += 1
+                _log(f"清理残留 mitmdump 进程: PID={pid}", log_func)
+            except Exception:
+                pass
+
+    if cleaned:
+        time.sleep(0.4)
 
 
 # ==================== 旧方案清理 ====================
@@ -868,30 +1078,19 @@ def start_sponsor_override(name, log_func=None):
     except Exception:
         pass
     addon_path = _generate_addon_script(MODIFIED_CONTENT_FILE, HIT_LOG_FILE)
-    
-    _original_proxy_settings = _get_proxy_settings()
-    upstream = None
-    if _original_proxy_settings and _original_proxy_settings.get("ProxyEnable") == 1:
-        srv = _original_proxy_settings.get("ProxyServer")
-        if srv:
-            # 简单解析: 如果是 "127.0.0.1:7890" 类型
-            if "=" not in srv:
-                upstream = srv
-            else:
-                # 复杂类型 "http=...;https=..."，尝试提取 http/https
-                for part in srv.split(";"):
-                    if "http=" in part or "https=" in part:
-                        upstream = part.split("=", 1)[1]
-                        break
+
+    _kill_stale_mitmdump_processes(log_func)
+    upstream, _original_proxy_settings = _detect_upstream_proxy()
 
     selected_port = None
-    for candidate_port in _get_proxy_port_candidates():
+    attempted_ports = set()
+    occupied_samples = []
+    for candidate_port in _get_proxy_port_candidates(upstream_proxy=upstream):
+        attempted_ports.add(candidate_port)
         # 跳过被占用端口
         if not _is_port_available(candidate_port):
-            continue
-
-        # 防止死循环: 若上游代理和候选端口一致，则跳过
-        if upstream and f":{candidate_port}" in upstream:
+            if len(occupied_samples) < 6:
+                occupied_samples.append(candidate_port)
             continue
 
         if _start_mitmdump(addon_path, candidate_port, upstream, log_func):
@@ -899,6 +1098,22 @@ def start_sponsor_override(name, log_func=None):
             break
 
     if not selected_port:
+        _log("固定候选端口不可用，尝试系统随机端口...", log_func)
+        for _ in range(EPHEMERAL_PORT_ATTEMPTS):
+            random_port = _pick_ephemeral_port(excluded_ports=attempted_ports)
+            if not random_port:
+                break
+            attempted_ports.add(random_port)
+            if _start_mitmdump(addon_path, random_port, upstream, log_func):
+                selected_port = random_port
+                break
+
+    if not selected_port:
+        if occupied_samples:
+            _log(
+                f"端口占用示例: {', '.join(str(x) for x in occupied_samples)}",
+                log_func,
+            )
         return False, "mitmproxy 启动失败（本地端口不可用）"
 
     if selected_port != PROXY_PORT:
@@ -948,6 +1163,7 @@ def stop_sponsor_override(log_func=None):
 
     # 2. 停止 mitmdump
     _stop_mitmdump(log_func)
+    _kill_stale_mitmdump_processes(log_func, skip_current=False)
 
     with _lock:
         _running = False
@@ -967,6 +1183,11 @@ def force_cleanup(log_func=None):
 
     try:
         _stop_mitmdump(log_func)
+    except Exception:
+        pass
+
+    try:
+        _kill_stale_mitmdump_processes(log_func, skip_current=False)
     except Exception:
         pass
 
