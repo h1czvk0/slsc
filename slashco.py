@@ -495,6 +495,7 @@ class SlashCoMonitorCN:
         self._log_lines_after_id = None
         self._tree_rebuild_after_id = None
         self._process_log_queue()
+        self.log(f"当前版本: {APP_VERSION}")
 
         threading.Thread(target=self._check_app_update_worker, daemon=True).start()
 
