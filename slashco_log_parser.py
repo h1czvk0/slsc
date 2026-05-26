@@ -55,10 +55,10 @@ PATTERNS = {
     "map_flags": re.compile(r"Establishing Map Flags", re.IGNORECASE),
     "slashco_loading": re.compile(r"SLASHCO now loading data", re.IGNORECASE),
     "player_headstart": re.compile(
-        r"Players in-game:\s*(\d+).*?(\d+)\s+fuel will be given for free",
+        r"Players in-game:\s*(\d+).*?(-?\d+)\s+fuel will be given for free",
         re.IGNORECASE,
     ),
-    "rooms_sealed": re.compile(r"(\d+)\s+Rooms will be SEALED", re.IGNORECASE),
+    "rooms_sealed": re.compile(r"(-?\d+)\s+Rooms will be SEALED", re.IGNORECASE),
 }
 
 ROUND_START_KEYS = ("map_landing", "game_setup", "map_spawns")

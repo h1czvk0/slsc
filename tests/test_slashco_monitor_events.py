@@ -94,7 +94,7 @@ class MonitorEventTests(unittest.TestCase):
             "item_in": 0,
             "players": 0,
             "free_fuel": 0,
-            "sealed_rooms": 0,
+            "sealed_rooms": None,
         }
         monitor.fuel_added_count = 0
         monitor.free_fuel_explicit = False
@@ -125,15 +125,38 @@ class MonitorEventTests(unittest.TestCase):
         self.assertEqual(SlashCoMonitorCN.get_fuel_count(monitor), 1)
         self.assertEqual(monitor.positions, [("SC_Item6", "已加油")])
 
-    def test_explicit_free_fuel_overrides_inferred_value(self):
+    def test_logged_free_fuel_is_ignored_in_favor_of_player_rule(self):
         monitor = self.make_fuel_monitor()
 
-        SlashCoMonitorCN.set_player_fuel_headstart(monitor, 4, 0, explicit=True)
+        SlashCoMonitorCN.set_player_fuel_headstart(monitor, 7, -2, explicit=True)
 
         self.assertTrue(monitor.free_fuel_explicit)
-        self.assertEqual(monitor.game_stats["players"], 4)
+        self.assertEqual(monitor.game_stats["players"], 7)
         self.assertEqual(monitor.game_stats["free_fuel"], 0)
         self.assertEqual(SlashCoMonitorCN.get_fuel_count(monitor), 0)
+
+    def make_stats_monitor(self):
+        monitor = self.make_fuel_monitor()
+        monitor.lbl_stats_fuel = FakeLabel()
+        monitor.lbl_stats_item = FakeLabel()
+        monitor.lbl_stats_sealed = FakeLabel()
+        monitor.lbl_stats_headstart = FakeLabel()
+        return monitor
+
+    def test_detected_zero_sealed_rooms_stays_visible(self):
+        monitor = self.make_stats_monitor()
+        monitor.game_stats["sealed_rooms"] = 0
+
+        SlashCoMonitorCN.update_stats_ui(monitor)
+
+        self.assertEqual(monitor.lbl_stats_sealed.config["text"], "有 0 个门被锁上")
+
+    def test_undetected_sealed_rooms_stays_hidden(self):
+        monitor = self.make_stats_monitor()
+
+        SlashCoMonitorCN.update_stats_ui(monitor)
+
+        self.assertEqual(monitor.lbl_stats_sealed.config["text"], "")
 
     def make_timer_monitor(self):
         monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)

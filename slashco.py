@@ -438,7 +438,7 @@ class SlashCoMonitorCN:
             "SC_generator2": {"battery": False, "battery_pending": False, "pending_since": 0.0},
         }
 
-        self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": 0}
+        self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": None}
         self.fuel_added_count = 0
         self.free_fuel_explicit = False
         self.map_var = StringVar(value="通用(默认)") # 新增：地图选择变量
@@ -1397,7 +1397,7 @@ class SlashCoMonitorCN:
         self.group_order = {"地图": [], "玩家": [], "未知": []}
         self.groups = {"地图": {}, "玩家": {}, "未知": {}}
         self.rebuild_item_tree()
-        self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": 0}
+        self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": None}
         self.fuel_added_count = 0
         self.free_fuel_explicit = False
         self.update_fuel_ui()
@@ -1461,11 +1461,8 @@ class SlashCoMonitorCN:
     def set_player_fuel_headstart(self, players: int, free_fuel=None, explicit=False):
         players = max(0, int(players or 0))
         self.game_stats["players"] = players
-        if free_fuel is None:
-            if explicit:
-                free_fuel = 0
-            else:
-                free_fuel = self.infer_free_fuel_from_players(players)
+        # 地图日志中的 free fuel 可能出现负数，显示和进度固定使用人数规则。
+        free_fuel = self.infer_free_fuel_from_players(players)
         self.game_stats["free_fuel"] = max(0, min(FUEL_REQUIRED_COUNT, int(free_fuel or 0)))
         if explicit:
             self.free_fuel_explicit = True
@@ -1597,7 +1594,7 @@ class SlashCoMonitorCN:
         
         # 显示封锁房间数
         sealed = self.game_stats["sealed_rooms"]
-        if sealed > 0:
+        if sealed is not None:
             self.lbl_stats_sealed.configure(text=f"有 {sealed} 个门被锁上")
         else:
             self.lbl_stats_sealed.configure(text="")
@@ -1861,13 +1858,13 @@ class SlashCoMonitorCN:
             return
 
         if event.kind == "player_headstart":
-            self.set_player_fuel_headstart(int(event.groups[0]), int(event.groups[1]), explicit=True)
+            self.set_player_fuel_headstart(int(event.groups[0]), free_fuel=None, explicit=True)
             self.update_stats_ui()
             self.log(f"局内 {self.game_stats['players']} 名玩家，可少加 {self.game_stats['free_fuel']} 桶油")
             return
 
         if event.kind == "rooms_sealed":
-            self.game_stats["sealed_rooms"] = int(event.groups[0])
+            self.game_stats["sealed_rooms"] = max(0, int(event.groups[0]))
             self.update_stats_ui()
             self.log(f"检测到 {self.game_stats['sealed_rooms']} 个门被锁上")
             return

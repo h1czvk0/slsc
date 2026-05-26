@@ -75,6 +75,13 @@ class LogParserTests(unittest.TestCase):
             ("Battery for SC_generator1 improperly set. FIXING NOW.", "battery_fixing", ("SC_generator1",)),
             ("Generator Battery skillcheck failed", "battery_skillcheck_failed", ()),
             ("4 Rooms will be SEALED", "rooms_sealed", ("4",)),
+            ("0 Rooms will be SEALED.", "rooms_sealed", ("0",)),
+            ("-1 Rooms will be SEALED.", "rooms_sealed", ("-1",)),
+            (
+                "Players in-game: 7, generator headstart will be adjusted. -2 fuel will be given for free.",
+                "player_headstart",
+                ("7", "-2"),
+            ),
         ]
         for line, kind, groups in cases:
             with self.subTest(kind=kind):
