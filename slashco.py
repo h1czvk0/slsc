@@ -360,13 +360,8 @@ LOCATION_TRANSLATION = {}
 def load_translations():
     global LOCATION_TRANSLATION
     try:
-        # 1. 尝试从 exe 同级目录加载 (外部自定义)
-        if getattr(sys, 'frozen', False):
-            base_dir = os.path.dirname(sys.executable)
-        else:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            
-        external_json = os.path.join(base_dir, 'locations.json')
+        # 1. 尝试从用户数据目录加载在线更新缓存
+        external_json = LOCAL_JSON_FILENAME
         
         # 2. 尝试从 PyInstaller 临时目录加载 (内部默认)
         internal_json = None
@@ -407,9 +402,11 @@ IMG_JSON = "images.json"
 class SlashCoMonitorCN:
     def __init__(self, root: Tk):
         if getattr(sys, 'frozen', False):
-            self.base_dir = os.path.dirname(sys.executable)
+            self.resource_dir = os.path.dirname(sys.executable)
         else:
-            self.base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.resource_dir = os.path.dirname(os.path.abspath(__file__))
+        self.base_dir = DATA_DIR
+        os.makedirs(self.base_dir, exist_ok=True)
 
         self.root = root
         self.root.title("SlashCoSense")
@@ -424,10 +421,7 @@ class SlashCoMonitorCN:
 
         # 设置窗口图标
         try:
-            icon_path = os.path.join(self.base_dir, 'icon.ico')
-            if hasattr(sys, '_MEIPASS'):
-                icon_path = os.path.join(sys._MEIPASS, 'icon.ico')
-            
+            icon_path = resource_path('icon.ico')
             if os.path.exists(icon_path):
                 self.root.iconbitmap(icon_path)
         except Exception:

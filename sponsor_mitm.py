@@ -44,12 +44,24 @@ def _get_work_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _get_default_data_dir():
+    """获取默认数据目录，避免向单 exe 所在目录写入运行文件"""
+    if os.name == "nt":
+        base_dir = (
+            os.environ.get("LOCALAPPDATA")
+            or os.environ.get("APPDATA")
+            or os.path.expanduser("~")
+        )
+        return os.path.join(base_dir, "SlashCoMonitor")
+    return os.path.join(os.path.expanduser("~"), ".local", "share", "SlashCoMonitor")
+
+
 def _get_data_dir():
-    """获取数据目录 (可通过环境变量覆盖，默认工作目录)"""
+    """获取数据目录 (可通过环境变量覆盖，默认用户本地数据目录)"""
     custom_dir = os.environ.get(DATA_DIR_ENV, "").strip()
     if custom_dir:
         return custom_dir
-    return _get_work_dir()
+    return _get_default_data_dir()
 
 
 def _get_data_tools_dir():

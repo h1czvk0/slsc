@@ -14,11 +14,30 @@ import sys
 import subprocess
 
 HOSTS_FILE = r"C:\Windows\System32\drivers\etc\hosts"
+APP_NAME = "SlashCoMonitor"
+
+
+def get_data_dir():
+    """获取运行日志目录，避免向单 exe 所在目录写入文件"""
+    if os.name == "nt":
+        base_dir = (
+            os.environ.get("LOCALAPPDATA")
+            or os.environ.get("APPDATA")
+            or os.path.expanduser("~")
+        )
+        return os.path.join(base_dir, APP_NAME)
+    return os.path.join(os.path.expanduser("~"), ".local", "share", APP_NAME)
+
+
+def get_log_path():
+    data_dir = get_data_dir()
+    os.makedirs(data_dir, exist_ok=True)
+    return os.path.join(data_dir, "admin_helper_debug.log")
 
 def log(msg):
     """写入调试日志"""
     try:
-        log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "admin_helper_debug.log")
+        log_path = get_log_path()
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"{msg}\n")
     except:
