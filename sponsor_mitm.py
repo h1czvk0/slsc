@@ -199,6 +199,21 @@ def _parse_port_from_endpoint(endpoint):
     return _parse_proxy_port(text.rsplit(":", 1)[1])
 
 
+def _normalize_upstream_proxy(endpoint):
+    text = str(endpoint or "").strip()
+    if not text:
+        return None
+
+    if "://" in text:
+        scheme, rest = text.split("://", 1)
+        scheme = scheme.lower().strip()
+        if scheme not in ("http", "https"):
+            return None
+        return f"{scheme}://{rest.strip()}" if rest.strip() else None
+
+    return f"http://{text}"
+
+
 def _get_proxy_port_candidates(upstream_proxy=None):
     """生成代理端口候选列表"""
     upstream_port = _parse_port_from_endpoint(upstream_proxy)
@@ -249,6 +264,24 @@ def _pick_ephemeral_port(excluded_ports=None):
         if _is_port_available(candidate):
             return candidate
     return None
+
+
+def _safe_remove(path):
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
+def _write_ca_trusted_flag():
+    os.makedirs(os.path.dirname(CA_INSTALLED_FLAG), exist_ok=True)
+    with open(CA_INSTALLED_FLAG, "w", encoding="utf-8") as f:
+        f.write("trusted")
+
+
+def _ps_quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 # ==================== 名单处理 ====================
@@ -412,7 +445,7 @@ class SponsorOverrideAddon:
 addons = [SponsorOverrideAddon()]
 '''
 
-    os.makedirs(os.path.dirname(addon_code_path := ADDON_SCRIPT_FILE), exist_ok=True)
+    os.makedirs(os.path.dirname(ADDON_SCRIPT_FILE), exist_ok=True)
     with open(ADDON_SCRIPT_FILE, 'w', encoding='utf-8') as f:
         f.write(addon_code)
     return ADDON_SCRIPT_FILE
@@ -442,14 +475,74 @@ def _ensure_ca_generated(log_func=None):
     return os.path.exists(CA_CERT_FILE)
 
 
-def _is_ca_trusted():
-    """检查 mitmproxy CA 是否已安装到 Windows 信任存储"""
-    return os.path.exists(CA_INSTALLED_FLAG)
+def _get_cert_thumbprint(cert_path):
+    """读取证书指纹，用于校验真实系统信任状态。"""
+    if not cert_path or not os.path.exists(cert_path) or os.name != "nt":
+        return None
+
+    script = (
+        "$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2("
+        + _ps_quote(cert_path)
+        + "); $cert.Thumbprint"
+    )
+    rc, out, _ = _run_powershell(script)
+    if rc != 0:
+        return None
+    thumbprint = "".join((out or "").split()).upper()
+    return thumbprint or None
+
+
+def _is_cert_thumbprint_trusted(thumbprint):
+    """检查证书指纹是否存在于当前用户或本机根证书信任存储。"""
+    thumbprint = "".join(str(thumbprint or "").split()).upper()
+    if not thumbprint or os.name != "nt":
+        return False
+
+    script = (
+        "$thumb = " + _ps_quote(thumbprint) + "; "
+        "$stores = @('Cert:\\CurrentUser\\Root', 'Cert:\\LocalMachine\\Root'); "
+        "foreach ($store in $stores) { "
+        "$found = Get-ChildItem -Path $store -ErrorAction SilentlyContinue "
+        "| Where-Object { $_.Thumbprint -eq $thumb } "
+        "| Select-Object -First 1; "
+        "if ($found) { Write-Output 'trusted'; exit 0 } "
+        "}; exit 1"
+    )
+    rc, out, _ = _run_powershell(script)
+    return rc == 0 and "trusted" in (out or "").lower()
+
+
+def _is_ca_trusted(log_func=None):
+    """检查 mitmproxy CA 是否已真实安装到 Windows 信任存储。"""
+    if not os.path.exists(CA_CERT_FILE):
+        _safe_remove(CA_INSTALLED_FLAG)
+        return False
+
+    if os.name != "nt":
+        return os.path.exists(CA_INSTALLED_FLAG)
+
+    thumbprint = _get_cert_thumbprint(CA_CERT_FILE)
+    if not thumbprint:
+        _safe_remove(CA_INSTALLED_FLAG)
+        return False
+
+    if _is_cert_thumbprint_trusted(thumbprint):
+        if not os.path.exists(CA_INSTALLED_FLAG):
+            try:
+                _write_ca_trusted_flag()
+            except Exception:
+                pass
+        return True
+
+    if os.path.exists(CA_INSTALLED_FLAG):
+        _safe_remove(CA_INSTALLED_FLAG)
+        _log("CA 信任标记已失效，准备重新安装证书", log_func)
+    return False
 
 
 def _trust_ca(log_func=None):
     """安装 mitmproxy CA 到 Windows 信任存储"""
-    if _is_ca_trusted():
+    if _is_ca_trusted(log_func):
         _log("CA 已信任，跳过", log_func)
         return True
 
@@ -464,14 +557,9 @@ def _trust_ca(log_func=None):
     resource_dir = _get_resource_dir()
     helper_path = os.path.join(resource_dir, "admin_helper.py")
     
-    tools_dir = os.path.dirname(CA_INSTALLED_FLAG) # tools dir in WORK dir
     flag_file = CA_INSTALLED_FLAG
 
-    if os.path.exists(flag_file):
-        try:
-            os.remove(flag_file)
-        except Exception:
-            pass
+    _safe_remove(flag_file)
 
     # 使用 admin_helper 的 add 模式安装证书
     if os.path.exists(helper_path):
@@ -490,15 +578,12 @@ def _trust_ca(log_func=None):
 
         for _ in range(30):
             if os.path.exists(flag_file):
-                try:
-                    os.remove(flag_file)
-                except Exception:
-                    pass
-                os.makedirs(tools_dir, exist_ok=True)
-                with open(CA_INSTALLED_FLAG, 'w') as f:
-                    f.write("trusted")
-                _log("CA 证书已安装", log_func)
-                return True
+                _safe_remove(flag_file)
+                if _is_ca_trusted(log_func):
+                    _log("CA 证书已安装", log_func)
+                    return True
+                _log("CA 安装完成但未在系统信任存储中验证到证书", log_func)
+                return False
             time.sleep(1)
 
         _log("CA 安装超时", log_func)
@@ -596,8 +681,8 @@ def _set_global_proxy(proxy_port, log_func=None):
         return False
 
 
-def _detect_upstream_proxy():
-    settings = _get_proxy_settings()
+def _detect_upstream_proxy(settings=None):
+    settings = _get_proxy_settings() if settings is None else settings
     if not settings or settings.get("ProxyEnable") != 1:
         return None, settings
 
@@ -606,14 +691,16 @@ def _detect_upstream_proxy():
         return None, settings
 
     if "=" not in server:
-        return server, settings
+        return _normalize_upstream_proxy(server), settings
 
     for part in server.split(";"):
-        if "http=" in part or "https=" in part:
-            _, value = part.split("=", 1)
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        if key.strip().lower() in ("http", "https"):
             value = value.strip()
             if value:
-                return value, settings
+                return _normalize_upstream_proxy(value), settings
     return None, settings
 
 
@@ -772,8 +859,7 @@ def _start_mitmdump(addon_path, listen_port, upstream_proxy=None, log_func=None)
 
     if upstream_proxy:
         _log(f"检测到上游代理: {upstream_proxy}，启用 Upstream 模式", log_func)
-        # --mode upstream:http://hostname:port
-        cmd.extend(["--mode", f"upstream:http://{upstream_proxy}"])
+        cmd.extend(["--mode", f"upstream:{upstream_proxy}"])
     else:
         _log("未检测到上游代理，启用常规代理模式", log_func)
 
@@ -1037,6 +1123,8 @@ def start_sponsor_override(name, log_func=None):
     name_display = ", ".join(name_list)
     _log(f"启动赞助者覆盖: {name_display}", log_func)
 
+    startup_proxy_settings = _get_proxy_settings()
+
     # 0. 强制清理残留 (旧进程 + 旧代理设置 + Hosts)
     _cleanup_old_caddy_residuals(log_func)
     _active_proxy_port = None
@@ -1050,7 +1138,11 @@ def start_sponsor_override(name, log_func=None):
     except Exception:
         pass
 
-    _restore_proxy(log_func)  # 确保清理上次可能残留的代理设置
+    if _original_proxy_settings is not None:
+        _restore_proxy(log_func)  # 恢复本进程上次启动时保存的代理设置
+        startup_proxy_settings = _get_proxy_settings()
+    else:
+        _log("保留当前系统代理设置，稍后用于停止恢复和上游代理", log_func)
 
     # 1. 下载原始名单 (在设置代理之前, 绕过代理直连)
     _log("步骤 1/5: 下载原始名单...", log_func)
@@ -1085,7 +1177,7 @@ def start_sponsor_override(name, log_func=None):
 
     # 3. 安装 CA 证书 (首次)
     _log("步骤 3/5: 检查 CA 证书...", log_func)
-    if not _is_ca_trusted():
+    if not _is_ca_trusted(log_func):
         _ensure_ca_generated(log_func)
         if not _trust_ca(log_func):
             return False, "CA 证书安装失败 (需要管理员权限)"
@@ -1102,7 +1194,7 @@ def start_sponsor_override(name, log_func=None):
     addon_path = _generate_addon_script(MODIFIED_CONTENT_FILE, HIT_LOG_FILE)
 
     _kill_stale_mitmdump_processes(log_func)
-    upstream, _original_proxy_settings = _detect_upstream_proxy()
+    upstream, _original_proxy_settings = _detect_upstream_proxy(startup_proxy_settings)
 
     selected_port = None
     attempted_ports = set()
@@ -1198,10 +1290,16 @@ def force_cleanup(log_func=None):
     """强制清理代理、进程和旧方案残留，用于异常退出兜底。"""
     global _running, _active_proxy_port
 
-    try:
-        _restore_proxy(log_func)
-    except Exception:
-        pass
+    should_restore_proxy = (
+        _running
+        or _active_proxy_port is not None
+        or _original_proxy_settings is not None
+    )
+    if should_restore_proxy:
+        try:
+            _restore_proxy(log_func)
+        except Exception:
+            pass
 
     try:
         _stop_mitmdump(log_func)

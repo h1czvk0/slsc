@@ -1,6 +1,8 @@
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
@@ -75,6 +77,78 @@ class RuntimePathTests(unittest.TestCase):
         settings_with_auto_detect = dict(settings)
         settings_with_auto_detect["AutoDetect"] = 1
         self.assertFalse(sponsor_mitm._proxy_settings_match(settings_with_auto_detect, 18080))
+
+    def test_detect_upstream_proxy_normalizes_proxy_server(self):
+        settings = {
+            "ProxyEnable": 1,
+            "ProxyServer": "http=http://127.0.0.1:7890;https=http://127.0.0.1:7890",
+        }
+        upstream, original = sponsor_mitm._detect_upstream_proxy(settings)
+        self.assertEqual(upstream, "http://127.0.0.1:7890")
+        self.assertIs(original, settings)
+
+        settings["ProxyServer"] = "http=127.0.0.1:7891;https=127.0.0.1:7891"
+        upstream, _ = sponsor_mitm._detect_upstream_proxy(settings)
+        self.assertEqual(upstream, "http://127.0.0.1:7891")
+
+    def test_socks_only_proxy_is_not_used_as_http_upstream(self):
+        settings = {
+            "ProxyEnable": 1,
+            "ProxyServer": "socks=127.0.0.1:1080",
+        }
+        upstream, _ = sponsor_mitm._detect_upstream_proxy(settings)
+        self.assertIsNone(upstream)
+
+    def test_ca_trust_flag_is_removed_when_cert_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            flag_path = os.path.join(tmp_dir, ".mitm_ca_trusted")
+            with open(flag_path, "w", encoding="utf-8") as f:
+                f.write("trusted")
+
+            with mock.patch.object(sponsor_mitm, "CA_CERT_FILE", os.path.join(tmp_dir, "missing.cer")), \
+                    mock.patch.object(sponsor_mitm, "CA_INSTALLED_FLAG", flag_path):
+                self.assertFalse(sponsor_mitm._is_ca_trusted())
+                self.assertFalse(os.path.exists(flag_path))
+
+    def test_force_cleanup_does_not_restore_proxy_when_idle(self):
+        old_running = sponsor_mitm._running
+        old_active_port = sponsor_mitm._active_proxy_port
+        old_original = sponsor_mitm._original_proxy_settings
+        try:
+            sponsor_mitm._running = False
+            sponsor_mitm._active_proxy_port = None
+            sponsor_mitm._original_proxy_settings = None
+
+            with mock.patch.object(sponsor_mitm, "_restore_proxy") as restore_proxy, \
+                    mock.patch.object(sponsor_mitm, "_stop_mitmdump"), \
+                    mock.patch.object(sponsor_mitm, "_kill_stale_mitmdump_processes"), \
+                    mock.patch.object(sponsor_mitm, "_cleanup_old_caddy_residuals"):
+                sponsor_mitm.force_cleanup()
+
+            restore_proxy.assert_not_called()
+        finally:
+            sponsor_mitm._running = old_running
+            sponsor_mitm._active_proxy_port = old_active_port
+            sponsor_mitm._original_proxy_settings = old_original
+
+    def test_admin_helper_mitm_ca_failure_does_not_write_flag(self):
+        class FailedResult:
+            stdout = ""
+            stderr = "failed"
+            returncode = 1
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cert_path = os.path.join(tmp_dir, "mitmproxy-ca-cert.cer")
+            flag_path = os.path.join(tmp_dir, "flag")
+            with open(cert_path, "w", encoding="utf-8") as f:
+                f.write("not a real cert")
+
+            argv = ["admin_helper.py", "mitm_ca_trust", cert_path, "--flag", flag_path]
+            with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(admin_helper.subprocess, "run", return_value=FailedResult()):
+                admin_helper.main()
+
+            self.assertFalse(os.path.exists(flag_path))
 
 
 if __name__ == "__main__":

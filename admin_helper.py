@@ -111,6 +111,7 @@ def main():
                 break
         
         log(f"Installing mitmproxy CA: {cert_path}")
+        success = False
         try:
             result = subprocess.run(
                 ["certutil", "-addstore", "Root", cert_path],
@@ -119,9 +120,15 @@ def main():
             log(f"certutil stdout: {result.stdout}")
             log(f"certutil stderr: {result.stderr}")
             log(f"certutil returncode: {result.returncode}")
+            success = result.returncode == 0
         except Exception as e:
             log(f"certutil failed: {e}")
-        
+            success = False
+
+        if not success:
+            log("mitmproxy CA install failed; flag file will not be created")
+            return
+
         if flag_file:
             try:
                 os.makedirs(os.path.dirname(flag_file), exist_ok=True)
