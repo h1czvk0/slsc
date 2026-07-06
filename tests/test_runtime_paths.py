@@ -124,6 +124,13 @@ class RuntimePathTests(unittest.TestCase):
         }
         self.assertTrue(sponsor_mitm._looks_like_stale_local_proxy(stale_settings))
 
+    def test_caddy_proxy_override_merge_preserves_existing_entries(self):
+        merged = sponsor_mitm._merge_proxy_override("<local>;example.com;pastebin.com")
+        self.assertEqual(merged, "<local>;example.com;pastebin.com;www.pastebin.com")
+
+        merged_again = sponsor_mitm._merge_proxy_override(merged)
+        self.assertEqual(merged_again, merged)
+
     def test_ca_trust_flag_is_removed_when_cert_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             flag_path = os.path.join(tmp_dir, ".mitm_ca_trusted")

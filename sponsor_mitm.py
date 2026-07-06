@@ -154,6 +154,7 @@ CADDY_KEY_FILE = os.path.join(CADDY_DIR, "pastebin.local.key")
 CADDY_LOG_FILE = os.path.join(CADDY_DIR, "caddy.log")
 CADDY_HOSTS_ADD_FLAG = os.path.join(CADDY_DIR, "_hosts_add_done")
 CADDY_HOSTS_REMOVE_FLAG = os.path.join(CADDY_DIR, "_hosts_remove_done")
+CADDY_PROXY_BYPASS_HOSTS = ("pastebin.com", "www.pastebin.com")
 
 # ==================== 全局状态 ====================
 _mitm_process = None
@@ -810,18 +811,36 @@ def _set_global_proxy(proxy_port, log_func=None):
         return False
 
 
-def _set_direct_network_for_caddy(log_func=None):
-    """hosts+Caddy 模式需要目标域名直连本机 hosts，不能继续走系统代理/PAC。"""
+def _split_proxy_override(value):
+    return [item.strip() for item in str(value or "").split(";") if item.strip()]
+
+
+def _merge_proxy_override(value, hosts=CADDY_PROXY_BYPASS_HOSTS):
+    items = _split_proxy_override(value)
+    seen = {item.lower() for item in items}
+    for host in hosts:
+        if host.lower() not in seen:
+            items.append(host)
+            seen.add(host.lower())
+    return ";".join(items)
+
+
+def _set_proxy_bypass_for_caddy(log_func=None):
+    """hosts+Caddy 模式只让 pastebin 绕过手动代理，不关闭 Clash/加速器/PAC。"""
     global _original_proxy_settings
 
     settings = _get_proxy_settings()
-    if _looks_like_stale_local_proxy(settings):
-        _original_proxy_settings = None
-        _log(f"检测到失效的本地代理残留，已清理而不再恢复: {settings.get('ProxyServer')}", log_func)
-    else:
-        _original_proxy_settings = settings
+    _original_proxy_settings = settings
 
     try:
+        if settings.get("AutoConfigURL"):
+            _log("检测到 PAC 配置，hosts+Caddy 模式不会关闭或改写 PAC；若 PAC 仍代理 pastebin，请改用 mitmdump 或 TUN 模式", log_func)
+            return True
+
+        if settings.get("ProxyEnable") != 1:
+            _log("未启用系统手动代理，hosts+Caddy 模式无需修改代理设置", log_func)
+            return True
+
         import winreg
         key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
@@ -829,22 +848,18 @@ def _set_direct_network_for_caddy(log_func=None):
             0, winreg.KEY_SET_VALUE
         )
 
-        try:
-            winreg.DeleteValue(key, "AutoConfigURL")
-        except FileNotFoundError:
-            pass
-        winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-        winreg.SetValueEx(key, "AutoDetect", 0, winreg.REG_DWORD, 0)
+        proxy_override = _merge_proxy_override(settings.get("ProxyOverride"))
+        winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, proxy_override)
         winreg.CloseKey(key)
 
         import ctypes
         ctypes.windll.Wininet.InternetSetOptionW(0, 39, 0, 0)
         ctypes.windll.Wininet.InternetSetOptionW(0, 37, 0, 0)
 
-        _log("hosts+Caddy 模式已临时关闭系统代理/PAC，停止覆盖时会恢复原设置", log_func)
+        _log(f"hosts+Caddy 模式已临时为 pastebin 添加代理绕过: {proxy_override}", log_func)
         return True
     except Exception as e:
-        _log(f"设置 hosts+Caddy 直连网络失败: {e}", log_func)
+        _log(f"设置 hosts+Caddy 代理绕过失败: {e}", log_func)
         return False
 
 
@@ -1762,8 +1777,8 @@ def _start_sponsor_override_caddy(name, log_func=None):
         return False, "Caddy 证书生成失败"
 
     _kill_stale_mitmdump_processes(log_func)
-    if not _set_direct_network_for_caddy(log_func):
-        return False, "设置直连网络失败"
+    if not _set_proxy_bypass_for_caddy(log_func):
+        return False, "设置代理绕过失败"
 
     _log("步骤 4/5: 启动 Caddy HTTPS 服务...", log_func)
     caddyfile = _generate_caddyfile(MODIFIED_CONTENT_FILE)
@@ -1812,7 +1827,7 @@ def stop_sponsor_override(log_func=None):
             _running = False
             _active_proxy_port = None
             _active_mode = None
-        _log("✓ 已停止，hosts 和网络设置已恢复", log_func)
+        _log("✓ 已停止，hosts 和代理绕过设置已恢复", log_func)
         return
 
     # 1. 恢复系统代理
