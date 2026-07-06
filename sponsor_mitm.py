@@ -217,6 +217,74 @@ def _parse_port_from_endpoint(endpoint):
     return _parse_proxy_port(text.rsplit(":", 1)[1])
 
 
+def _extract_proxy_server_endpoints(proxy_server):
+    text = str(proxy_server or "").strip()
+    if not text:
+        return []
+
+    if "=" not in text:
+        return [text]
+
+    endpoints = []
+    for part in text.split(";"):
+        if "=" not in part:
+            continue
+        _, value = part.split("=", 1)
+        value = value.strip()
+        if value:
+            endpoints.append(value)
+    return endpoints
+
+
+def _is_local_proxy_endpoint(endpoint):
+    text = str(endpoint or "").strip()
+    if not text:
+        return False
+    if "://" in text:
+        text = text.split("://", 1)[1]
+    if "@" in text:
+        text = text.rsplit("@", 1)[-1]
+    if "/" in text:
+        text = text.split("/", 1)[0]
+    if text.startswith("[") and "]" in text:
+        return text[1:text.index("]")].lower() in ("::1", "0:0:0:0:0:0:0:1")
+    host = text.rsplit(":", 1)[0].strip().lower() if ":" in text else text.lower()
+    return host in ("127.0.0.1", "localhost", "::1")
+
+
+def _is_local_port_listening(port):
+    parsed = _parse_proxy_port(port)
+    if not parsed:
+        return False
+    try:
+        with socket.create_connection(("127.0.0.1", parsed), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def _looks_like_stale_local_proxy(settings):
+    if not settings or settings.get("ProxyEnable") != 1:
+        return False
+
+    endpoints = _extract_proxy_server_endpoints(settings.get("ProxyServer"))
+    if not endpoints:
+        return False
+
+    ports = []
+    for endpoint in endpoints:
+        if not _is_local_proxy_endpoint(endpoint):
+            return False
+        port = _parse_port_from_endpoint(endpoint)
+        if not port:
+            return False
+        if port in COMMON_ACCELERATOR_PORTS:
+            return False
+        ports.append(port)
+
+    return bool(ports) and all(not _is_local_port_listening(port) for port in ports)
+
+
 def _normalize_upstream_proxy(endpoint):
     text = str(endpoint or "").strip()
     if not text:
@@ -739,6 +807,44 @@ def _set_global_proxy(proxy_port, log_func=None):
         return True
     except Exception as e:
         _log(f"设置全局代理失败: {e}", log_func)
+        return False
+
+
+def _set_direct_network_for_caddy(log_func=None):
+    """hosts+Caddy 模式需要目标域名直连本机 hosts，不能继续走系统代理/PAC。"""
+    global _original_proxy_settings
+
+    settings = _get_proxy_settings()
+    if _looks_like_stale_local_proxy(settings):
+        _original_proxy_settings = None
+        _log(f"检测到失效的本地代理残留，已清理而不再恢复: {settings.get('ProxyServer')}", log_func)
+    else:
+        _original_proxy_settings = settings
+
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            0, winreg.KEY_SET_VALUE
+        )
+
+        try:
+            winreg.DeleteValue(key, "AutoConfigURL")
+        except FileNotFoundError:
+            pass
+        winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+        winreg.SetValueEx(key, "AutoDetect", 0, winreg.REG_DWORD, 0)
+        winreg.CloseKey(key)
+
+        import ctypes
+        ctypes.windll.Wininet.InternetSetOptionW(0, 39, 0, 0)
+        ctypes.windll.Wininet.InternetSetOptionW(0, 37, 0, 0)
+
+        _log("hosts+Caddy 模式已临时关闭系统代理/PAC，停止覆盖时会恢复原设置", log_func)
+        return True
+    except Exception as e:
+        _log(f"设置 hosts+Caddy 直连网络失败: {e}", log_func)
         return False
 
 
@@ -1655,19 +1761,26 @@ def _start_sponsor_override_caddy(name, log_func=None):
     if not _generate_caddy_leaf_cert(log_func):
         return False, "Caddy 证书生成失败"
 
+    _kill_stale_mitmdump_processes(log_func)
+    if not _set_direct_network_for_caddy(log_func):
+        return False, "设置直连网络失败"
+
     _log("步骤 4/5: 启动 Caddy HTTPS 服务...", log_func)
     caddyfile = _generate_caddyfile(MODIFIED_CONTENT_FILE)
     if not _start_caddy(caddyfile, log_func):
+        _restore_proxy(log_func)
         return False, "Caddy 启动失败（可能是 443 端口被占用）"
 
     if not _install_caddy_hosts(log_func):
         _stop_caddy(log_func)
+        _restore_proxy(log_func)
         return False, "写入 hosts 失败 (需要管理员权限)"
 
     _log("步骤 5/5: 验证 hosts+Caddy 拦截链路...", log_func)
     if not _self_test_caddy_override(name_list, log_func):
         _remove_caddy_hosts(log_func)
         _stop_caddy(log_func)
+        _restore_proxy(log_func)
         return False, "hosts+Caddy 已启动但拦截未生效"
 
     with _lock:
@@ -1694,11 +1807,12 @@ def stop_sponsor_override(log_func=None):
     if active_mode == SPONSOR_MODE_CADDY:
         _remove_caddy_hosts(log_func)
         _stop_caddy(log_func)
+        _restore_proxy(log_func)
         with _lock:
             _running = False
             _active_proxy_port = None
             _active_mode = None
-        _log("✓ 已停止，hosts 已恢复", log_func)
+        _log("✓ 已停止，hosts 和网络设置已恢复", log_func)
         return
 
     # 1. 恢复系统代理
