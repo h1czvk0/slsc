@@ -241,6 +241,7 @@ class SponsorStandaloneApp:
         tutorial = (
             "在进入SlashCo前打开此功能\n"
             "进入地图后即可关闭\n"
+            "如果当前模式不生效，请停止后切换另一个模式再试\n"
             "注意：不关闭会导致无法下载模型"
         )
         ttk.Label(
@@ -444,7 +445,7 @@ class SponsorStandaloneApp:
                 mode_label = "hosts + Caddy" if mode == "caddy" else "mitmdump"
                 self._ui_after(self._update_sponsor_status, f"运行中 ✓ ({mode_label})", "#27ae60")
             else:
-                self._ui_after(self._update_sponsor_status, f"失败: {message}", "red")
+                self._ui_after(self._update_sponsor_status, f"失败: {message}；可切换另一个模式再试", "red")
                 self._ui_after(self._set_enabled_and_save, False)
         except Exception as e:
             self._ui_after(self.log, f"启动失败: {e}")

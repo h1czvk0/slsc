@@ -834,6 +834,12 @@ class SlashCoMonitorCN:
                 value="caddy",
                 command=self._save_sponsor_config,
             ).pack(side=LEFT)
+            ttk.Label(
+                sponsor_frame,
+                text="如果当前模式不生效，请停止后切换另一个模式再试。",
+                foreground="#c0392b",
+                font=("\u5fae\u8f6f\u96c5\u9ed1", 8),
+            ).pack(fill=X, pady=(2, 0))
 
         # 参考图折叠区域
         self.img_visible = False
@@ -1199,7 +1205,7 @@ class SlashCoMonitorCN:
                 mode_label = "hosts + Caddy" if mode == "caddy" else "mitmdump"
                 self._ui_after(self._update_sponsor_status, f"运行中 ✓ ({mode_label})", "#27ae60")
             else:
-                self._ui_after(self._update_sponsor_status, f"失败: {message}", "red")
+                self._ui_after(self._update_sponsor_status, f"失败: {message}；可切换另一个模式再试", "red")
                 self._ui_after(self.sponsor_enabled.set, False)
         finally:
             self._sponsor_op_lock.release()
