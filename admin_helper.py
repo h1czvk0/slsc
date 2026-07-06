@@ -53,6 +53,7 @@ def main():
         print("Usage:")
         print("  admin_helper.py <add|remove> <target_host> <marker> [cert_path] [--flag <flag_file>]")
         print("  admin_helper.py caddy_trust <caddy_exe_path> [--flag <flag_file>]")
+        print("  admin_helper.py <sponsor_hosts_add|sponsor_hosts_remove> <target_host> <marker> [--flag <flag_file>]")
         return
     
     mode = sys.argv[1]        # "add", "remove", or "caddy_trust"
@@ -72,6 +73,7 @@ def main():
                 break
         
         log(f"Running caddy trust: {caddy_exe}")
+        success = False
         try:
             result = subprocess.run(
                 [caddy_exe, "trust"],
@@ -81,9 +83,15 @@ def main():
             log(f"caddy trust stdout: {result.stdout}")
             log(f"caddy trust stderr: {result.stderr}")
             log(f"caddy trust returncode: {result.returncode}")
+            success = result.returncode == 0
         except Exception as e:
             log(f"caddy trust failed: {e}")
-        
+            success = False
+
+        if not success:
+            log("caddy trust failed; flag file will not be created")
+            return
+
         # 写入完成标志
         if flag_file:
             try:
@@ -139,6 +147,69 @@ def main():
                 log(f"ERROR creating flag file: {e}")
         
         log("=== admin_helper.py (mitm_ca_trust) finished ===")
+        return
+
+    # --- hosts-only sponsor mode ---
+    if mode in ("sponsor_hosts_add", "sponsor_hosts_remove"):
+        target_host = sys.argv[2] if len(sys.argv) > 2 else "pastebin.com"
+        marker = sys.argv[3] if len(sys.argv) > 3 else "# SlashCoCaddy"
+
+        flag_file = None
+        for i, arg in enumerate(sys.argv):
+            if arg == "--flag" and i + 1 < len(sys.argv):
+                flag_file = sys.argv[i + 1]
+                break
+
+        log(f"{mode}: host={target_host}, marker={marker}, flag={flag_file}")
+        success = False
+        try:
+            os.system(f'attrib -r "{HOSTS_FILE}"')
+            content = ""
+            if os.path.exists(HOSTS_FILE):
+                try:
+                    with open(HOSTS_FILE, "r", encoding="utf-8") as f:
+                        content = f.read()
+                except UnicodeDecodeError:
+                    with open(HOSTS_FILE, "r", encoding="mbcs") as f:
+                        content = f.read()
+
+            lines = content.splitlines()
+            new_lines = []
+            for line in lines:
+                lower = line.lower()
+                if marker.lower() in lower:
+                    continue
+                if "slashcocaddy" in lower and target_host.lower() in lower:
+                    continue
+                new_lines.append(line)
+
+            if mode == "sponsor_hosts_add":
+                new_lines.append(f"127.0.0.1 {target_host} {marker}")
+
+            new_content = "\n".join(new_lines)
+            if new_content:
+                new_content += "\n"
+            with open(HOSTS_FILE, "w", encoding="utf-8") as f:
+                f.write(new_content)
+
+            os.system("ipconfig /flushdns")
+            success = True
+            log(f"{mode} completed")
+        except Exception as e:
+            log(f"{mode} failed: {e}")
+            import traceback
+            log(traceback.format_exc())
+
+        if success and flag_file:
+            try:
+                os.makedirs(os.path.dirname(flag_file), exist_ok=True)
+                with open(flag_file, "w") as f:
+                    f.write("done")
+                log(f"Flag file created: {flag_file}")
+            except Exception as e:
+                log(f"ERROR creating flag file: {e}")
+
+        log(f"=== admin_helper.py ({mode}) finished ===")
         return
     
     # --- DNS 设置模式 ---

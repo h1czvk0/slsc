@@ -148,6 +148,7 @@ class SponsorStandaloneApp:
         self._ensure_local_sponsors_txt()
         self.sponsor_enabled = tk.BooleanVar(value=False)
         self.sponsor_name = tk.StringVar(value="")
+        self.sponsor_mode = tk.StringVar(value="mitm")
         self._load_config()
 
         self._setup_window()
@@ -219,6 +220,24 @@ class SponsorStandaloneApp:
         self.btn_save = ttk.Button(row2, text="保存", width=8, command=self._on_save_clicked)
         self.btn_save.pack(side=tk.LEFT, padx=(8, 0))
 
+        row3 = ttk.Frame(sponsor_frame)
+        row3.pack(fill=tk.X, pady=4)
+        ttk.Label(row3, text="模式:").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Radiobutton(
+            row3,
+            text="mitmdump",
+            variable=self.sponsor_mode,
+            value="mitm",
+            command=self._on_save_clicked,
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Radiobutton(
+            row3,
+            text="hosts + Caddy",
+            variable=self.sponsor_mode,
+            value="caddy",
+            command=self._on_save_clicked,
+        ).pack(side=tk.LEFT)
+
         tutorial = (
             "在进入SlashCo前打开此功能\n"
             "进入地图后即可关闭\n"
@@ -245,20 +264,31 @@ class SponsorStandaloneApp:
                     cfg = json.load(f)
                 self.sponsor_enabled.set(bool(cfg.get("enabled", False)))
                 self.sponsor_name.set(str(cfg.get("name", "")))
+                mode = cfg.get("mode", "mitm")
+                if hasattr(sponsor_mitm, "normalize_sponsor_mode"):
+                    mode = sponsor_mitm.normalize_sponsor_mode(mode)
+                self.sponsor_mode.set(mode if mode in ("mitm", "caddy") else "mitm")
         except Exception:
             self.sponsor_enabled.set(False)
             self.sponsor_name.set("")
+            self.sponsor_mode.set("mitm")
 
     def _save_config(self, with_log=True):
         cfg = {
             "enabled": bool(self.sponsor_enabled.get()),
             "name": self.sponsor_name.get().strip(),
+            "mode": (
+                sponsor_mitm.normalize_sponsor_mode(self.sponsor_mode.get())
+                if hasattr(sponsor_mitm, "normalize_sponsor_mode")
+                else self.sponsor_mode.get()
+            ),
         }
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
             if with_log:
-                self.log(f"配置已保存 (启用={cfg['enabled']}, 名称={cfg['name'] or '未设置'})")
+                mode_label = "hosts + Caddy" if cfg["mode"] == "caddy" else "mitmdump"
+                self.log(f"配置已保存 (启用={cfg['enabled']}, 名称={cfg['name'] or '未设置'}, 模式={mode_label})")
         except Exception as e:
             if with_log:
                 self.log(f"保存配置失败: {e}")
@@ -404,10 +434,15 @@ class SponsorStandaloneApp:
                 return
 
             self._ui_after(self._update_sponsor_status, "正在启动...", "#f39c12")
-            self._prepare_sponsor_proxy_port()
-            success, message = sponsor_mitm.start_sponsor_override(name, log_func=self.log)
+            mode = self.sponsor_mode.get()
+            if hasattr(sponsor_mitm, "normalize_sponsor_mode"):
+                mode = sponsor_mitm.normalize_sponsor_mode(mode)
+            if mode == "mitm":
+                self._prepare_sponsor_proxy_port()
+            success, message = sponsor_mitm.start_sponsor_override(name, log_func=self.log, mode=mode)
             if success:
-                self._ui_after(self._update_sponsor_status, "运行中 ✓", "#27ae60")
+                mode_label = "hosts + Caddy" if mode == "caddy" else "mitmdump"
+                self._ui_after(self._update_sponsor_status, f"运行中 ✓ ({mode_label})", "#27ae60")
             else:
                 self._ui_after(self._update_sponsor_status, f"失败: {message}", "red")
                 self._ui_after(self._set_enabled_and_save, False)

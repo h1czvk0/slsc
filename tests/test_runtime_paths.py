@@ -150,6 +150,55 @@ class RuntimePathTests(unittest.TestCase):
 
             self.assertFalse(os.path.exists(flag_path))
 
+    def test_sponsor_mode_normalization(self):
+        self.assertEqual(sponsor_mitm.normalize_sponsor_mode("mitmdump"), "mitm")
+        self.assertEqual(sponsor_mitm.normalize_sponsor_mode("hosts + caddy"), "caddy")
+        self.assertEqual(sponsor_mitm.normalize_sponsor_mode("unknown"), "mitm")
+
+    def test_generate_caddyfile_uses_generated_cert_and_content_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            content_file = os.path.join(tmp_dir, "sponsors.dat")
+            with open(content_file, "w", encoding="utf-8") as f:
+                f.write("base")
+
+            with mock.patch.object(sponsor_mitm, "CADDY_DIR", tmp_dir), \
+                    mock.patch.object(sponsor_mitm, "CADDYFILE", os.path.join(tmp_dir, "Caddyfile")), \
+                    mock.patch.object(sponsor_mitm, "CADDY_CERT_FILE", os.path.join(tmp_dir, "pastebin.crt")), \
+                    mock.patch.object(sponsor_mitm, "CADDY_KEY_FILE", os.path.join(tmp_dir, "pastebin.key")), \
+                    mock.patch.object(sponsor_mitm, "CADDY_LOG_FILE", os.path.join(tmp_dir, "caddy.log")):
+                caddyfile = sponsor_mitm._generate_caddyfile(content_file)
+
+            with open(caddyfile, "r", encoding="utf-8") as f:
+                text = f.read()
+            self.assertIn("https://pastebin.com:443", text)
+            self.assertIn("tls", text)
+            self.assertIn("rewrite * /sponsors.dat", text)
+
+    def test_force_cleanup_does_not_cleanup_caddy_when_idle(self):
+        old_running = sponsor_mitm._running
+        old_active_mode = sponsor_mitm._active_mode
+        old_caddy_process = sponsor_mitm._caddy_process
+        try:
+            sponsor_mitm._running = False
+            sponsor_mitm._active_mode = None
+            sponsor_mitm._caddy_process = None
+
+            with mock.patch.object(sponsor_mitm, "_restore_proxy"), \
+                    mock.patch.object(sponsor_mitm, "_stop_mitmdump"), \
+                    mock.patch.object(sponsor_mitm, "_kill_stale_mitmdump_processes"), \
+                    mock.patch.object(sponsor_mitm, "_remove_caddy_hosts") as remove_hosts, \
+                    mock.patch.object(sponsor_mitm, "_stop_caddy") as stop_caddy, \
+                    mock.patch.object(sponsor_mitm, "_cleanup_old_caddy_residuals") as cleanup_caddy:
+                sponsor_mitm.force_cleanup()
+
+            remove_hosts.assert_not_called()
+            stop_caddy.assert_not_called()
+            cleanup_caddy.assert_not_called()
+        finally:
+            sponsor_mitm._running = old_running
+            sponsor_mitm._active_mode = old_active_mode
+            sponsor_mitm._caddy_process = old_caddy_process
+
 
 if __name__ == "__main__":
     unittest.main()

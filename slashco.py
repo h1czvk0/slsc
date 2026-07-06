@@ -817,6 +817,24 @@ class SlashCoMonitorCN:
             self.entry_sponsor_name.pack(side=LEFT, padx=(0, 5), fill=X, expand=True)
             ttk.Button(row2, text="\u4fdd\u5b58", command=self._save_sponsor_config, width=6).pack(side=RIGHT)
 
+            row3 = ttk.Frame(sponsor_frame)
+            row3.pack(fill=X, pady=2)
+            ttk.Label(row3, text="模式：").pack(side=LEFT)
+            ttk.Radiobutton(
+                row3,
+                text="mitmdump",
+                variable=self.sponsor_mode,
+                value="mitm",
+                command=self._save_sponsor_config,
+            ).pack(side=LEFT, padx=(0, 8))
+            ttk.Radiobutton(
+                row3,
+                text="hosts + Caddy",
+                variable=self.sponsor_mode,
+                value="caddy",
+                command=self._save_sponsor_config,
+            ).pack(side=LEFT)
+
         # 参考图折叠区域
         self.img_visible = False
         self.btn_toggle_img = ttk.Button(self.left_p, text="显示参考图 ▼", command=self.toggle_reference_image)
@@ -1054,7 +1072,8 @@ class SlashCoMonitorCN:
         """加载赞助者配置"""
         self.sponsor_enabled = BooleanVar(value=False)
         self.sponsor_name = StringVar(value="")
-        
+        self.sponsor_mode = StringVar(value="mitm")
+
         config_path = os.path.join(self.base_dir, "sponsor_config.json")
         try:
             if os.path.exists(config_path):
@@ -1062,20 +1081,29 @@ class SlashCoMonitorCN:
                     cfg = json.load(f)
                 self.sponsor_enabled.set(cfg.get("enabled", False))
                 self.sponsor_name.set(cfg.get("name", ""))
+                mode = cfg.get("mode", "mitm")
+                if HAS_SPONSOR_PROXY and hasattr(sponsor_caddy, "normalize_sponsor_mode"):
+                    mode = sponsor_caddy.normalize_sponsor_mode(mode)
+                self.sponsor_mode.set(mode if mode in ("mitm", "caddy") else "mitm")
         except Exception:
             pass
 
     def _save_sponsor_config(self):
         """保存赞助者配置"""
         config_path = os.path.join(self.base_dir, "sponsor_config.json")
+        mode = self.sponsor_mode.get() if hasattr(self, "sponsor_mode") else "mitm"
+        if HAS_SPONSOR_PROXY and hasattr(sponsor_caddy, "normalize_sponsor_mode"):
+            mode = sponsor_caddy.normalize_sponsor_mode(mode)
         cfg = {
             "enabled": self.sponsor_enabled.get(),
             "name": self.sponsor_name.get().strip(),
+            "mode": mode,
         }
         try:
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
-            self.log(f"赞助者设置已保存 (名称: {cfg['name'] or '未设置'})")
+            mode_label = "hosts + Caddy" if cfg["mode"] == "caddy" else "mitmdump"
+            self.log(f"赞助者设置已保存 (名称: {cfg['name'] or '未设置'}, 模式: {mode_label})")
         except Exception as e:
             self.log(f"保存赞助者设置失败: {e}")
 
@@ -1156,15 +1184,20 @@ class SlashCoMonitorCN:
                 return
 
             self._ui_after(self._update_sponsor_status, "正在启动...", "#f39c12")
-            self._prepare_sponsor_proxy_port()
+            mode = self.sponsor_mode.get() if hasattr(self, "sponsor_mode") else "mitm"
+            if HAS_SPONSOR_PROXY and hasattr(sponsor_caddy, "normalize_sponsor_mode"):
+                mode = sponsor_caddy.normalize_sponsor_mode(mode)
+            if mode == "mitm":
+                self._prepare_sponsor_proxy_port()
 
             def _log_to_ui(msg):
                 self.log(msg)
 
-            success, message = sponsor_caddy.start_sponsor_override(name, log_func=_log_to_ui)
+            success, message = sponsor_caddy.start_sponsor_override(name, log_func=_log_to_ui, mode=mode)
 
             if success:
-                self._ui_after(self._update_sponsor_status, "运行中 ✓", "#27ae60")
+                mode_label = "hosts + Caddy" if mode == "caddy" else "mitmdump"
+                self._ui_after(self._update_sponsor_status, f"运行中 ✓ ({mode_label})", "#27ae60")
             else:
                 self._ui_after(self._update_sponsor_status, f"失败: {message}", "red")
                 self._ui_after(self.sponsor_enabled.set, False)

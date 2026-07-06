@@ -13,6 +13,7 @@ a = Analysis(
         ('admin_helper.py', '.'),
         ('sponsors.txt', '.'),
         ('tools/mitmdump.exe', 'tools'),
+        ('tools/caddy/caddy.exe', 'tools/caddy'),
         ('tools/cleanup_hosts.py', 'tools'),
         ('tools/reset_network.py', 'tools'),
     ],

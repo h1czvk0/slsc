@@ -27,6 +27,7 @@ import shutil
 import socket
 import json
 import random
+from datetime import datetime, timedelta, timezone
 
 # ==================== 路径管理 (OneFile 支持) ====================
 DATA_DIR_ENV = "SLASHCO_SPONSOR_DATA_DIR"
@@ -122,6 +123,12 @@ def _runas_python_with_reset(params):
 
 # ==================== 配置 ====================
 PROXY_PORT = 8080
+SPONSOR_MODE_MITM = "mitm"
+SPONSOR_MODE_CADDY = "caddy"
+SPONSOR_MODE_LABELS = {
+    SPONSOR_MODE_MITM: "mitmdump",
+    SPONSOR_MODE_CADDY: "hosts + Caddy",
+}
 COMMON_ACCELERATOR_PORTS = (7890, 7891, 9090, 1080, 10808, 10080)
 STATIC_PROXY_PORT_CANDIDATES = (PROXY_PORT, 18080, 28080, 38080, 48080, 58080)
 DYNAMIC_PORT_MIN = 20000
@@ -138,13 +145,24 @@ ADDON_SCRIPT_FILE = os.path.join(_get_data_dir(), "tools", "mitm_addon.py")
 HIT_LOG_FILE = os.path.join(_get_data_dir(), "tools", "sponsor_override_hits.log")
 CA_INSTALLED_FLAG = os.path.join(_get_data_dir(), "tools", ".mitm_ca_trusted")
 CA_CERT_FILE = os.path.join(os.path.expanduser("~"), ".mitmproxy", "mitmproxy-ca-cert.cer")
+CA_PEM_FILE = os.path.join(os.path.expanduser("~"), ".mitmproxy", "mitmproxy-ca.pem")
+CADDY_HOST_MARKER = "# SlashCoCaddy"
+CADDY_DIR = os.path.join(_get_data_dir(), "tools", "caddy")
+CADDYFILE = os.path.join(CADDY_DIR, "Caddyfile")
+CADDY_CERT_FILE = os.path.join(CADDY_DIR, "pastebin.local.crt")
+CADDY_KEY_FILE = os.path.join(CADDY_DIR, "pastebin.local.key")
+CADDY_LOG_FILE = os.path.join(CADDY_DIR, "caddy.log")
+CADDY_HOSTS_ADD_FLAG = os.path.join(CADDY_DIR, "_hosts_add_done")
+CADDY_HOSTS_REMOVE_FLAG = os.path.join(CADDY_DIR, "_hosts_remove_done")
 
 # ==================== 全局状态 ====================
 _mitm_process = None
+_caddy_process = None
 _running = False
 _lock = threading.Lock()
 _original_proxy_settings = None
 _active_proxy_port = None
+_active_mode = None
 
 
 def _log(msg, log_func=None):
@@ -282,6 +300,49 @@ def _write_ca_trusted_flag():
 
 def _ps_quote(value):
     return "'" + str(value).replace("'", "''") + "'"
+
+
+def normalize_sponsor_mode(mode):
+    text = str(mode or "").strip().lower()
+    aliases = {
+        "": SPONSOR_MODE_MITM,
+        "mitm": SPONSOR_MODE_MITM,
+        "mitmdump": SPONSOR_MODE_MITM,
+        "mitmproxy": SPONSOR_MODE_MITM,
+        "proxy": SPONSOR_MODE_MITM,
+        "caddy": SPONSOR_MODE_CADDY,
+        "hosts": SPONSOR_MODE_CADDY,
+        "host": SPONSOR_MODE_CADDY,
+        "hosts+caddy": SPONSOR_MODE_CADDY,
+        "hosts + caddy": SPONSOR_MODE_CADDY,
+    }
+    return aliases.get(text, SPONSOR_MODE_MITM)
+
+
+def get_sponsor_mode_label(mode):
+    return SPONSOR_MODE_LABELS.get(normalize_sponsor_mode(mode), SPONSOR_MODE_LABELS[SPONSOR_MODE_MITM])
+
+
+def _parse_sponsor_names(name):
+    if isinstance(name, str):
+        if not name.strip():
+            return []
+        return [n.strip() for n in name.replace("，", ",").split(",") if n.strip()]
+    return [str(n).strip() for n in (name or ()) if str(n).strip()]
+
+
+def _wait_for_flag(flag_file, timeout_seconds=30):
+    deadline = time.time() + float(timeout_seconds)
+    while time.time() < deadline:
+        if os.path.exists(flag_file):
+            _safe_remove(flag_file)
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _caddy_path_value(path):
+    return str(path).replace("\\", "/")
 
 
 # ==================== 名单处理 ====================
@@ -454,7 +515,7 @@ addons = [SponsorOverrideAddon()]
 # ==================== CA 证书管理 ====================
 def _ensure_ca_generated(log_func=None):
     """确保 mitmproxy CA 证书已生成"""
-    if os.path.exists(CA_CERT_FILE):
+    if os.path.exists(CA_CERT_FILE) and os.path.exists(CA_PEM_FILE):
         return True
 
     _log("生成 mitmproxy CA 证书...", log_func)
@@ -472,7 +533,7 @@ def _ensure_ca_generated(log_func=None):
     except Exception:
         pass
 
-    return os.path.exists(CA_CERT_FILE)
+    return os.path.exists(CA_CERT_FILE) and os.path.exists(CA_PEM_FILE)
 
 
 def _get_cert_thumbprint(cert_path):
@@ -1013,14 +1074,331 @@ def _kill_stale_mitmdump_processes(log_func=None, skip_current=True):
         time.sleep(0.4)
 
 
+# ==================== Caddy / hosts 模式 ====================
+def _get_caddy_path():
+    resource_caddy = os.path.join(_get_resource_dir(), "tools", "caddy", "caddy.exe")
+    data_caddy = os.path.join(CADDY_DIR, "caddy.exe")
+    if os.path.exists(resource_caddy):
+        try:
+            os.makedirs(CADDY_DIR, exist_ok=True)
+            need_copy = (
+                not os.path.exists(data_caddy)
+                or os.path.getsize(data_caddy) != os.path.getsize(resource_caddy)
+            )
+            if need_copy:
+                shutil.copy2(resource_caddy, data_caddy)
+            return data_caddy
+        except Exception:
+            return resource_caddy
+
+    if os.path.exists(data_caddy):
+        return data_caddy
+    return resource_caddy
+
+
+def _load_ca_cert_and_key():
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+    except Exception as e:
+        raise RuntimeError(f"无法导入 cryptography: {e}")
+
+    if not os.path.exists(CA_PEM_FILE):
+        raise RuntimeError(f"找不到 mitmproxy CA 私钥: {CA_PEM_FILE}")
+
+    with open(CA_PEM_FILE, "rb") as f:
+        ca_pem = f.read()
+
+    ca_key = serialization.load_pem_private_key(ca_pem, password=None)
+
+    cert_blocks = []
+    marker_begin = b"-----BEGIN CERTIFICATE-----"
+    marker_end = b"-----END CERTIFICATE-----"
+    start = 0
+    while True:
+        begin = ca_pem.find(marker_begin, start)
+        if begin < 0:
+            break
+        end = ca_pem.find(marker_end, begin)
+        if end < 0:
+            break
+        end += len(marker_end)
+        cert_blocks.append(ca_pem[begin:end] + b"\n")
+        start = end
+
+    if not cert_blocks:
+        raise RuntimeError("mitmproxy CA PEM 中没有证书")
+
+    ca_cert = x509.load_pem_x509_certificate(cert_blocks[0])
+    return ca_cert, ca_key
+
+
+def _generate_caddy_leaf_cert(log_func=None):
+    """为 hosts+Caddy 模式生成 pastebin.com 证书，复用已信任的 mitmproxy CA。"""
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+    except Exception as e:
+        _log(f"生成 Caddy 证书失败: 无法导入 cryptography ({e})", log_func)
+        return False
+
+    try:
+        ca_cert, ca_key = _load_ca_cert_and_key()
+        leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        now = datetime.now(timezone.utc)
+        subject = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "pastebin.com"),
+        ])
+        san = x509.SubjectAlternativeName([
+            x509.DNSName("pastebin.com"),
+            x509.DNSName("www.pastebin.com"),
+        ])
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(ca_cert.subject)
+            .public_key(leaf_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=5))
+            .not_valid_after(now + timedelta(days=30))
+            .add_extension(san, critical=False)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature=True,
+                    content_commitment=False,
+                    key_encipherment=True,
+                    data_encipherment=False,
+                    key_agreement=False,
+                    key_cert_sign=False,
+                    crl_sign=False,
+                    encipher_only=False,
+                    decipher_only=False,
+                ),
+                critical=True,
+            )
+            .add_extension(
+                x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+                critical=False,
+            )
+            .sign(private_key=ca_key, algorithm=hashes.SHA256())
+        )
+
+        os.makedirs(CADDY_DIR, exist_ok=True)
+        with open(CADDY_CERT_FILE, "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+        with open(CADDY_KEY_FILE, "wb") as f:
+            f.write(
+                leaf_key.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.TraditionalOpenSSL,
+                    serialization.NoEncryption(),
+                )
+            )
+        return True
+    except Exception as e:
+        _log(f"生成 Caddy 证书失败: {e}", log_func)
+        return False
+
+
+def _generate_caddyfile(content_file_path):
+    os.makedirs(CADDY_DIR, exist_ok=True)
+    caddyfile = f'''{{
+    auto_https off
+    admin off
+    log {{
+        output file "{_caddy_path_value(CADDY_LOG_FILE)}"
+        level WARN
+    }}
+}}
+
+https://pastebin.com:443, https://www.pastebin.com:443 {{
+    tls "{_caddy_path_value(CADDY_CERT_FILE)}" "{_caddy_path_value(CADDY_KEY_FILE)}"
+    @sponsor path /raw/2WVJpW1N /raw/2WVJpW1N/
+    handle @sponsor {{
+        root * "{_caddy_path_value(os.path.dirname(content_file_path))}"
+        rewrite * /{os.path.basename(content_file_path)}
+        file_server
+        header Content-Type "text/plain; charset=utf-8"
+        header Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+        header Pragma "no-cache"
+        header Expires "0"
+    }}
+    respond "Not Found" 404
+}}
+'''
+    with open(CADDYFILE, "w", encoding="utf-8") as f:
+        f.write(caddyfile)
+    return CADDYFILE
+
+
+def _start_caddy(caddyfile_path, log_func=None):
+    global _caddy_process
+
+    caddy = _get_caddy_path()
+    if not os.path.exists(caddy):
+        _log(f"caddy.exe 未找到: {caddy}", log_func)
+        return False
+
+    cmd = [caddy, "run", "--config", caddyfile_path, "--adapter", "caddyfile"]
+    try:
+        _caddy_process = subprocess.Popen(
+            cmd,
+            cwd=os.path.dirname(caddy),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+        )
+        time.sleep(1.5)
+        if _caddy_process.poll() is not None:
+            stdout = _caddy_process.stdout.read().decode("utf-8", errors="replace")
+            stderr = _caddy_process.stderr.read().decode("utf-8", errors="replace")
+            _log(f"Caddy 启动失败 (code={_caddy_process.returncode})", log_func)
+            if stdout:
+                _log(f"Caddy STDOUT: {stdout[:500]}", log_func)
+            if stderr:
+                _log(f"Caddy STDERR: {stderr[:500]}", log_func)
+            _caddy_process = None
+            return False
+
+        _log(f"Caddy 已启动 (PID={_caddy_process.pid}, 端口=443)", log_func)
+        return True
+    except Exception as e:
+        _log(f"启动 Caddy 失败: {e}", log_func)
+        _caddy_process = None
+        return False
+
+
+def _stop_caddy(log_func=None):
+    global _caddy_process
+    if not _caddy_process:
+        return
+
+    proc = _caddy_process
+    pid = None
+    try:
+        pid = proc.pid
+    except Exception:
+        pass
+
+    try:
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=1)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    if os.name == "nt" and pid:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except Exception:
+            pass
+    _close_process_pipes(proc)
+    _caddy_process = None
+    _log("Caddy 已停止", log_func)
+
+
+def _run_admin_hosts(mode, marker, flag_file, log_func=None):
+    resource_dir = _get_resource_dir()
+    helper_path = os.path.join(resource_dir, "admin_helper.py")
+    if not os.path.exists(helper_path):
+        _log("错误: 找不到 admin_helper.py", log_func)
+        return False
+
+    _safe_remove(flag_file)
+    params = f'"{helper_path}" {mode} "pastebin.com" "{marker}" --flag "{flag_file}"'
+    try:
+        ret = _runas_python_with_reset(params)
+        if int(ret) <= 32:
+            _log(f"UAC 提权失败 (code={ret})", log_func)
+            return False
+        if _wait_for_flag(flag_file, timeout_seconds=25):
+            return True
+        _log("hosts 修改等待超时", log_func)
+        return False
+    except Exception as e:
+        _log(f"hosts 修改失败: {e}", log_func)
+        return False
+
+
+def _install_caddy_hosts(log_func=None):
+    return _run_admin_hosts("sponsor_hosts_add", CADDY_HOST_MARKER, CADDY_HOSTS_ADD_FLAG, log_func)
+
+
+def _remove_caddy_hosts(log_func=None):
+    return _run_admin_hosts("sponsor_hosts_remove", CADDY_HOST_MARKER, CADDY_HOSTS_REMOVE_FLAG, log_func)
+
+
+def _self_test_caddy_override(expected_names, log_func=None):
+    expected_markers = []
+    for n in expected_names or ():
+        name = str(n or "").strip()
+        if name:
+            expected_markers.append(SEPARATOR + name)
+    if not expected_markers:
+        return True
+
+    try:
+        import ssl
+        import urllib.request
+    except Exception as e:
+        _log(f"Caddy 自检失败: 无法导入 urllib ({e})", log_func)
+        return False
+
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=ssl._create_unverified_context()),
+    )
+    for idx in range(1, 5):
+        try:
+            req = urllib.request.Request(
+                f"{PASTEBIN_URL}?_ts={int(time.time() * 1000)}",
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                },
+            )
+            with opener.open(req, timeout=8) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+            if any(marker in body for marker in expected_markers):
+                _log(f"Caddy 自检通过 (第 {idx} 次尝试)", log_func)
+                return True
+            _log(f"Caddy 自检未命中替换内容 (第 {idx} 次)", log_func)
+        except Exception as e:
+            _log(f"Caddy 自检请求失败 (第 {idx} 次): {e}", log_func)
+        time.sleep(0.6)
+    return False
+
+
 # ==================== 旧方案清理 ====================
-def _cleanup_old_caddy_residuals(log_func=None):
+def _cleanup_old_caddy_residuals(log_func=None, stop_https_listener=False):
     """清理旧 Caddy 方案的残留 (hosts 条目 + 旧 Caddy 进程)"""
     import ctypes
 
     # 1. 停止残留旧进程
-    # 仅处理 443(旧 Caddy) + 当前运行端口，避免误杀用户自己的 8080 代理软件
-    ports_to_check = ["443"]
+    # 仅在 hosts+Caddy 路径处理 443，避免 mitmdump 模式误杀用户自己的 HTTPS 服务。
+    ports_to_check = ["443"] if stop_https_listener else []
     if _active_proxy_port:
         ports_to_check.append(str(_active_proxy_port))
 
@@ -1048,18 +1426,6 @@ def _cleanup_old_caddy_residuals(log_func=None):
         except Exception:
             pass
 
-    # 2. 清理 hosts 文件 (需要管理员权限)
-    # 通过 admin_helper 清理
-    resource_dir = _get_resource_dir()
-    helper_path = os.path.join(resource_dir, "admin_helper.py")
-    flag_file = os.path.join(_get_data_dir(), "tools", "_hosts_cleanup_done")
-
-    if os.path.exists(flag_file):
-        try:
-            os.remove(flag_file)
-        except Exception:
-            pass
-
     # 简单检测是否需要清理
     hosts_file = r"C:\Windows\System32\drivers\etc\hosts"
     markers = ["# SlashCoCaddy", "# SlashCoSponsorProxy"]
@@ -1073,34 +1439,59 @@ def _cleanup_old_caddy_residuals(log_func=None):
     
     if needs_cleanup:
         _log("发现旧 hosts 配置，准备清理...", log_func)
-        try:
-            params = f'"{helper_path}" remove "pastebin.com" "# SlashCoCaddy" --flag "{flag_file}"'
-            ret = _runas_python_with_reset(params)
-            if int(ret) > 32:
-                for _ in range(15):
-                    if os.path.exists(flag_file):
-                        try:
-                            os.remove(flag_file)
-                        except Exception:
-                            pass
-                        _log("旧 hosts 条目已清理", log_func)
-                        subprocess.run(
-                            ["ipconfig", "/flushdns"],
-                            capture_output=True, timeout=5,
-                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
-                        )
-                        break
-                    time.sleep(1)
-        except Exception:
-            pass
+        for idx, marker in enumerate(markers):
+            flag_file = os.path.join(_get_data_dir(), "tools", f"_hosts_cleanup_{idx}_done")
+            try:
+                _run_admin_hosts("sponsor_hosts_remove", marker, flag_file, log_func)
+            except Exception:
+                pass
+        _log("旧 hosts 条目清理完成", log_func)
 
 
 # ==================== 主要 API ====================
-def start_sponsor_override(name, log_func=None):
+def _prepare_modified_sponsor_content(name_list, log_func=None):
+    _log("步骤 1/5: 下载原始名单...", log_func)
+    original = fetch_original_sponsors(log_func)
+    if not original:
+        sponsors_candidates = [
+            os.path.join(_get_data_dir(), "sponsors.txt"),
+            os.path.join(_get_resource_dir(), "sponsors.txt"),
+        ]
+        for sponsors_path in sponsors_candidates:
+            if not os.path.exists(sponsors_path):
+                continue
+            try:
+                with open(sponsors_path, 'r', encoding='utf-8') as f:
+                    original = f.read()
+                _log(f"使用本地 sponsors.txt 作为备用: {sponsors_path}", log_func)
+                break
+            except Exception:
+                pass
+        if not original:
+            return False, "无法获取赞助者名单"
+
+    _log("步骤 2/5: 构建修改后的名单...", log_func)
+    modified = build_modified_content(original, name_list)
+
+    os.makedirs(os.path.dirname(MODIFIED_CONTENT_FILE), exist_ok=True)
+    with open(MODIFIED_CONTENT_FILE, 'w', encoding='utf-8') as f:
+        f.write(modified)
+    _log(f"名单已保存 ({len(modified)} 字符)", log_func)
+    return True, ""
+
+
+def start_sponsor_override(name, log_func=None, mode=SPONSOR_MODE_MITM):
+    selected_mode = normalize_sponsor_mode(mode)
+    if selected_mode == SPONSOR_MODE_CADDY:
+        return _start_sponsor_override_caddy(name, log_func=log_func)
+    return _start_sponsor_override_mitm(name, log_func=log_func)
+
+
+def _start_sponsor_override_mitm(name, log_func=None):
     """
     启动赞助者名单覆盖 (mitmproxy + Global Proxy)
     """
-    global _running, _original_proxy_settings, _active_proxy_port
+    global _running, _original_proxy_settings, _active_proxy_port, _active_mode
 
     with _lock:
         if _running:
@@ -1109,15 +1500,9 @@ def start_sponsor_override(name, log_func=None):
     if not name:
         return False, "请先输入显示名称"
 
-    # 支持列表或字符串
-    if isinstance(name, str):
-        if not name.strip():
-             return False, "请先输入显示名称"
-        name_list = [n.strip() for n in name.replace("，", ",").split(",") if n.strip()]
-        if not name_list:
-             return False, "请先输入显示名称"
-    else:
-        name_list = [n.strip() for n in name if n.strip()]
+    name_list = _parse_sponsor_names(name)
+    if not name_list:
+        return False, "请先输入显示名称"
 
     # log 显示
     name_display = ", ".join(name_list)
@@ -1144,36 +1529,9 @@ def start_sponsor_override(name, log_func=None):
     else:
         _log("保留当前系统代理设置，稍后用于停止恢复和上游代理", log_func)
 
-    # 1. 下载原始名单 (在设置代理之前, 绕过代理直连)
-    _log("步骤 1/5: 下载原始名单...", log_func)
-    original = fetch_original_sponsors(log_func)
-    if not original:
-        # 优先读取数据目录下的 sponsors.txt，其次读取 bundled 的 sponsors.txt
-        sponsors_candidates = [
-            os.path.join(_get_data_dir(), "sponsors.txt"),
-            os.path.join(_get_resource_dir(), "sponsors.txt"),
-        ]
-        for sponsors_path in sponsors_candidates:
-            if not os.path.exists(sponsors_path):
-                continue
-            try:
-                with open(sponsors_path, 'r', encoding='utf-8') as f:
-                    original = f.read()
-                _log(f"使用本地 sponsors.txt 作为备用: {sponsors_path}", log_func)
-                break
-            except Exception:
-                pass
-        if not original:
-            return False, "无法获取赞助者名单"
-
-    # 2. 构建修改后的内容
-    _log("步骤 2/5: 构建修改后的名单...", log_func)
-    modified = build_modified_content(original, name_list)
-    
-    os.makedirs(os.path.dirname(MODIFIED_CONTENT_FILE), exist_ok=True)
-    with open(MODIFIED_CONTENT_FILE, 'w', encoding='utf-8') as f:
-        f.write(modified)
-    _log(f"名单已保存 ({len(modified)} 字符)", log_func)
+    ok, message = _prepare_modified_sponsor_content(name_list, log_func)
+    if not ok:
+        return False, message
 
     # 3. 安装 CA 证书 (首次)
     _log("步骤 3/5: 检查 CA 证书...", log_func)
@@ -1254,6 +1612,7 @@ def start_sponsor_override(name, log_func=None):
     with _lock:
         _running = True
         _active_proxy_port = selected_port
+        _active_mode = SPONSOR_MODE_MITM
 
     # 注册退出清理
     atexit.register(lambda: stop_sponsor_override(log_func))
@@ -1262,15 +1621,85 @@ def start_sponsor_override(name, log_func=None):
     return True, "运行中"
 
 
+def _start_sponsor_override_caddy(name, log_func=None):
+    """
+    启动赞助者名单覆盖 (hosts + Caddy)
+    """
+    global _running, _active_mode, _active_proxy_port
+
+    with _lock:
+        if _running:
+            return True, "已在运行中"
+
+    name_list = _parse_sponsor_names(name)
+    if not name_list:
+        return False, "请先输入显示名称"
+
+    name_display = ", ".join(name_list)
+    _log(f"启动赞助者覆盖: {name_display} (hosts + Caddy)", log_func)
+
+    _cleanup_old_caddy_residuals(log_func, stop_https_listener=True)
+    _active_proxy_port = None
+
+    ok, message = _prepare_modified_sponsor_content(name_list, log_func)
+    if not ok:
+        return False, message
+
+    _log("步骤 3/5: 检查 CA 证书...", log_func)
+    if not _ensure_ca_generated(log_func):
+        return False, "CA 证书生成失败"
+    if not _is_ca_trusted(log_func):
+        if not _trust_ca(log_func):
+            return False, "CA 证书安装失败 (需要管理员权限)"
+
+    if not _generate_caddy_leaf_cert(log_func):
+        return False, "Caddy 证书生成失败"
+
+    _log("步骤 4/5: 启动 Caddy HTTPS 服务...", log_func)
+    caddyfile = _generate_caddyfile(MODIFIED_CONTENT_FILE)
+    if not _start_caddy(caddyfile, log_func):
+        return False, "Caddy 启动失败（可能是 443 端口被占用）"
+
+    if not _install_caddy_hosts(log_func):
+        _stop_caddy(log_func)
+        return False, "写入 hosts 失败 (需要管理员权限)"
+
+    _log("步骤 5/5: 验证 hosts+Caddy 拦截链路...", log_func)
+    if not _self_test_caddy_override(name_list, log_func):
+        _remove_caddy_hosts(log_func)
+        _stop_caddy(log_func)
+        return False, "hosts+Caddy 已启动但拦截未生效"
+
+    with _lock:
+        _running = True
+        _active_mode = SPONSOR_MODE_CADDY
+
+    atexit.register(lambda: stop_sponsor_override(log_func))
+
+    _log("✓ 赞助者名单覆盖已启动! (hosts + Caddy 模式)", log_func)
+    return True, "运行中"
+
+
 def stop_sponsor_override(log_func=None):
     """停止赞助者名单覆盖并清理"""
-    global _running, _active_proxy_port
+    global _running, _active_proxy_port, _active_mode
 
     with _lock:
         if not _running:
             return
+        active_mode = _active_mode
 
     _log("正在停止...", log_func)
+
+    if active_mode == SPONSOR_MODE_CADDY:
+        _remove_caddy_hosts(log_func)
+        _stop_caddy(log_func)
+        with _lock:
+            _running = False
+            _active_proxy_port = None
+            _active_mode = None
+        _log("✓ 已停止，hosts 已恢复", log_func)
+        return
 
     # 1. 恢复系统代理
     _restore_proxy(log_func)
@@ -1282,13 +1711,14 @@ def stop_sponsor_override(log_func=None):
     with _lock:
         _running = False
         _active_proxy_port = None
+        _active_mode = None
 
     _log("✓ 已停止，系统代理已恢复", log_func)
 
 
 def force_cleanup(log_func=None):
     """强制清理代理、进程和旧方案残留，用于异常退出兜底。"""
-    global _running, _active_proxy_port
+    global _running, _active_proxy_port, _active_mode
 
     should_restore_proxy = (
         _running
@@ -1311,14 +1741,25 @@ def force_cleanup(log_func=None):
     except Exception:
         pass
 
-    try:
-        _cleanup_old_caddy_residuals(log_func)
-    except Exception:
-        pass
+    should_cleanup_caddy = _active_mode == SPONSOR_MODE_CADDY or _caddy_process is not None
+    if should_cleanup_caddy:
+        try:
+            _remove_caddy_hosts(log_func)
+        except Exception:
+            pass
+        try:
+            _stop_caddy(log_func)
+        except Exception:
+            pass
+        try:
+            _cleanup_old_caddy_residuals(log_func, stop_https_listener=True)
+        except Exception:
+            pass
 
     with _lock:
         _running = False
         _active_proxy_port = None
+        _active_mode = None
 
 
 def is_running():
