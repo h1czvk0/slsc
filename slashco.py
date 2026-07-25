@@ -219,10 +219,10 @@ class EclipticaDesktopHud:
     BG = "#090c14"
     TRANSPARENT = "#010203"
     FG = "#f4f5f8"
-    MUTED = "#a5adbd"
-    ACCENT = "#7c5cff"
+    MUTED = "#c1c6d0"
+    ACCENT = "#aaa0ff"
     BORDER = "#343b4d"
-    TEXT_OUTLINE = "#000000"
+    TEXT_SHADOW = "#05070c"
 
     def __init__(self, root, layout=None, opacity=0.9):
         self.root = root
@@ -237,7 +237,7 @@ class EclipticaDesktopHud:
         self.damage_canvas = None
         self.lock_canvas = None
         self.damage_title_text = "ECLIPTICA"
-        self.damage_text = ""
+        self.damage_rows = []
         self.lock_text = "Boss 当前锁定：-"
         self.lock_detail_text = "未确认"
         self.lock_color = self.ACCENT
@@ -308,27 +308,17 @@ class EclipticaDesktopHud:
         widget.bind("<B1-Motion>", self._drag_window)
         widget.configure(cursor="fleur")
 
-    def _draw_outlined_text(self, canvas, x, y, text, fill, font, anchor, justify=CENTER):
-        for dx, dy in (
-            (-1, -1),
-            (0, -1),
-            (1, -1),
-            (-1, 0),
-            (1, 0),
-            (-1, 1),
-            (0, 1),
-            (1, 1),
-        ):
-            canvas.create_text(
-                x + dx,
-                y + dy,
-                text=text,
-                fill=self.TEXT_OUTLINE,
-                font=font,
-                anchor=anchor,
-                justify=justify,
-                tags="hud_text",
-            )
+    def _draw_shadowed_text(self, canvas, x, y, text, fill, font, anchor, justify=CENTER):
+        canvas.create_text(
+            x + 1,
+            y + 1,
+            text=text,
+            fill=self.TEXT_SHADOW,
+            font=font,
+            anchor=anchor,
+            justify=justify,
+            tags="hud_text",
+        )
         canvas.create_text(
             x,
             y,
@@ -344,33 +334,45 @@ class EclipticaDesktopHud:
         if not self.damage_canvas or not self.damage_canvas.winfo_exists():
             return
         self.damage_canvas.delete("hud_text")
-        self._draw_outlined_text(
+        self._draw_shadowed_text(
             self.damage_canvas,
             14,
-            11,
+            12,
             self.damage_title_text,
             self.ACCENT,
             ("Segoe UI", 10, "bold"),
             NW,
             LEFT,
         )
-        self._draw_outlined_text(
-            self.damage_canvas,
-            14,
-            36,
-            self.damage_text,
-            self.FG,
-            ("Consolas", 10),
-            NW,
-            LEFT,
-        )
+        for index, (label, value) in enumerate(self.damage_rows):
+            y = 39 + index * 19
+            self._draw_shadowed_text(
+                self.damage_canvas,
+                14,
+                y,
+                label,
+                self.MUTED,
+                ("Microsoft YaHei UI", 9),
+                NW,
+                LEFT,
+            )
+            self._draw_shadowed_text(
+                self.damage_canvas,
+                118,
+                y - 1,
+                value,
+                self.FG,
+                ("Microsoft YaHei UI", 10, "bold"),
+                NW,
+                LEFT,
+            )
 
     def _render_lock_text(self, _event=None):
         if not self.lock_canvas or not self.lock_canvas.winfo_exists():
             return
         self.lock_canvas.delete("hud_text")
         center_x = max(HUD_MIN_SIZES["boss_lock"][0], self.lock_canvas.winfo_width()) // 2
-        self._draw_outlined_text(
+        self._draw_shadowed_text(
             self.lock_canvas,
             center_x,
             8,
@@ -379,7 +381,7 @@ class EclipticaDesktopHud:
             ("Microsoft YaHei UI", 15, "bold"),
             N,
         )
-        self._draw_outlined_text(
+        self._draw_shadowed_text(
             self.lock_canvas,
             center_x,
             48,
@@ -650,22 +652,21 @@ class EclipticaDesktopHud:
             self.display_mode = normalize_hud_display_mode(display_mode)
         boss_phase = snapshot.get("current_boss_phase")
         phase_text = str(boss_phase) if boss_phase is not None else "-"
-        damage_text = (
-            f"当前职业   {snapshot.get('class_name', '-')}\n"
-            f"当前阶段   {snapshot.get('stage', '-')}\n"
-            f"当前 BOSS  {snapshot.get('current_boss', '-')}\n"
-            f"BOSS 阶段  {phase_text}\n"
-            f"当前伤害   {format_ecliptica_number(snapshot.get('current_boss_damage', 0))}\n"
-            f"本局总伤害 {format_ecliptica_number(snapshot.get('session_total_damage', 0))}\n"
-            f"最近 DPS   {snapshot.get('last_settlement_dps', 0.0):.1f}\n"
-            f"受到伤害   {format_ecliptica_number(snapshot.get('session_damage_taken', 0))}\n"
-            f"击败 BOSS  {snapshot.get('defeated_count', 0)}"
-        )
-        self.damage_text = damage_text
+        self.damage_rows = [
+            ("当前职业", str(snapshot.get("class_name", "-"))),
+            ("当前阶段", str(snapshot.get("stage", "-"))),
+            ("当前 BOSS", str(snapshot.get("current_boss", "-"))),
+            ("BOSS 阶段", phase_text),
+            ("当前伤害", format_ecliptica_number(snapshot.get("current_boss_damage", 0))),
+            ("本局总伤害", format_ecliptica_number(snapshot.get("session_total_damage", 0))),
+            ("最近 DPS", f"{snapshot.get('last_settlement_dps', 0.0):.1f}"),
+            ("受到伤害", format_ecliptica_number(snapshot.get("session_damage_taken", 0))),
+            ("击败 BOSS", str(snapshot.get("defeated_count", 0))),
+        ]
 
         aggro = snapshot.get("aggro", {})
         target = aggro.get("target", "-")
-        lock_color = "#ff5d73" if aggro.get("is_local") else self.ACCENT
+        lock_color = "#ff8c9c" if aggro.get("is_local") else self.ACCENT
         self.lock_text = f"Boss 当前锁定：{target}"
         self.lock_color = lock_color
         detail = aggro.get("status", "未确认")

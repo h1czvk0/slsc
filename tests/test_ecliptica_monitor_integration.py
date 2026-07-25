@@ -179,14 +179,15 @@ class PanelModeSelectionTests(unittest.TestCase):
 
 
 class HudLayoutTests(unittest.TestCase):
-    def test_hud_text_uses_eight_direction_outline(self):
+    def test_hud_text_uses_single_soft_shadow(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
         canvas = FakeCanvas()
 
-        hud._draw_outlined_text(canvas, 10, 20, "HUD", "#ffffff", ("Segoe UI", 10), "nw")
+        hud._draw_shadowed_text(canvas, 10, 20, "HUD", "#ffffff", ("Segoe UI", 10), "nw")
 
-        self.assertEqual(len(canvas.text_items), 9)
-        self.assertTrue(all(item[1]["fill"] == "#000000" for item in canvas.text_items[:8]))
+        self.assertEqual(len(canvas.text_items), 2)
+        self.assertEqual(canvas.text_items[0][0], (11, 21))
+        self.assertEqual(canvas.text_items[0][1]["fill"], "#05070c")
         self.assertEqual(canvas.text_items[-1][1]["fill"], "#ffffff")
 
     def test_hud_opacity_only_changes_background_windows(self):
