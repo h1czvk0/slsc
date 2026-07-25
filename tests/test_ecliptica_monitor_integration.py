@@ -7,7 +7,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ecliptica_log_parser import EclipticaState, parse_ecliptica_line  # noqa: E402
-from slashco import PANEL_MODE_LABELS, SlashCoMonitorCN  # noqa: E402
+from slashco import PANEL_MODE_LABELS, SlashCoMonitorCN, normalize_hud_layout  # noqa: E402
 
 
 class FakeVar:
@@ -145,6 +145,36 @@ class PanelModeSelectionTests(unittest.TestCase):
         self.assertEqual(monitor.detected_game_mode, "ecliptica")
         self.assertEqual(monitor.current_game_mode, "slashco")
         self.assertTrue(monitor.slashco_right_frame.packed)
+
+
+class HudLayoutTests(unittest.TestCase):
+    def test_layout_values_are_normalized_and_minimum_size_is_enforced(self):
+        layout = normalize_hud_layout(
+            {
+                "damage": {"x": "35", "y": 42, "width": 100, "height": 80},
+                "boss_lock": {"x": 500, "y": 20, "width": 480, "height": 120},
+            }
+        )
+
+        self.assertEqual(
+            layout["damage"],
+            {"x": 35, "y": 42, "width": 250, "height": 210},
+        )
+        self.assertEqual(
+            layout["boss_lock"],
+            {"x": 500, "y": 20, "width": 480, "height": 120},
+        )
+
+    def test_invalid_or_partial_layout_entries_are_ignored(self):
+        layout = normalize_hud_layout(
+            {
+                "damage": {"x": 1, "y": 2, "width": "bad", "height": 220},
+                "boss_lock": {"x": 1, "y": 2},
+                "unknown": {"x": 1, "y": 2, "width": 3, "height": 4},
+            }
+        )
+
+        self.assertEqual(layout, {})
 
 
 if __name__ == "__main__":

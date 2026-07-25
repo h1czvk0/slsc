@@ -170,6 +170,32 @@ class GalleryWindow:
         self.top.bind("<Escape>", lambda e: self.top.destroy())
 
 
+HUD_MIN_SIZES = {
+    "damage": (250, 210),
+    "boss_lock": (320, 90),
+}
+
+
+def normalize_hud_layout(layout):
+    normalized = {}
+    if not isinstance(layout, dict):
+        return normalized
+    for key, (min_width, min_height) in HUD_MIN_SIZES.items():
+        raw = layout.get(key)
+        if not isinstance(raw, dict):
+            continue
+        try:
+            normalized[key] = {
+                "x": int(raw["x"]),
+                "y": int(raw["y"]),
+                "width": max(min_width, int(raw["width"])),
+                "height": max(min_height, int(raw["height"])),
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+    return normalized
+
+
 class EclipticaDesktopHud:
     BG = "#090c14"
     FG = "#f4f5f8"
@@ -177,15 +203,20 @@ class EclipticaDesktopHud:
     ACCENT = "#7c5cff"
     BORDER = "#343b4d"
 
-    def __init__(self, root):
+    def __init__(self, root, layout=None):
         self.root = root
+        self.layout = normalize_hud_layout(layout)
+        self.editing = False
         self.damage_window = None
         self.lock_window = None
         self.damage_label = None
         self.lock_label = None
         self.lock_detail_label = None
+        self.damage_title = None
+        self.resize_grips = {}
+        self._pointer_operation = None
 
-    def _make_click_through(self, window):
+    def _set_click_through(self, window, enabled):
         if os.name != "nt":
             return
         try:
@@ -194,9 +225,94 @@ class EclipticaDesktopHud:
             get_style = ctypes.windll.user32.GetWindowLongW
             set_style = ctypes.windll.user32.SetWindowLongW
             ex_style = get_style(hwnd, -20)
-            set_style(hwnd, -20, ex_style | 0x00000020 | 0x00000080 | 0x00080000)
+            ex_style |= 0x00000080 | 0x00080000
+            if enabled:
+                ex_style |= 0x00000020
+            else:
+                ex_style &= ~0x00000020
+            set_style(hwnd, -20, ex_style)
         except Exception:
             pass
+
+    def _bind_drag(self, widget, key, window):
+        widget.bind(
+            "<ButtonPress-1>",
+            lambda event: self._start_drag(event, key, window),
+        )
+        widget.bind("<B1-Motion>", self._drag_window)
+        widget.configure(cursor="fleur")
+
+    def _create_resize_grip(self, window, key):
+        grip = Label(
+            window,
+            text="//",
+            bg=self.BG,
+            fg=self.ACCENT,
+            font=("Consolas", 11, "bold"),
+            cursor="size_nw_se",
+            padx=3,
+            pady=1,
+        )
+        grip.bind(
+            "<ButtonPress-1>",
+            lambda event: self._start_resize(event, key, window),
+        )
+        grip.bind("<B1-Motion>", self._resize_window)
+        self.resize_grips[key] = grip
+
+    def _start_drag(self, event, key, window):
+        if not self.editing:
+            return
+        self._pointer_operation = {
+            "kind": "drag",
+            "key": key,
+            "window": window,
+            "pointer_x": event.x_root,
+            "pointer_y": event.y_root,
+            "x": window.winfo_x(),
+            "y": window.winfo_y(),
+        }
+
+    def _drag_window(self, event):
+        operation = self._pointer_operation
+        if not self.editing or not operation or operation.get("kind") != "drag":
+            return
+        window = operation["window"]
+        x = operation["x"] + event.x_root - operation["pointer_x"]
+        y = operation["y"] + event.y_root - operation["pointer_y"]
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        x = min(max(-window.winfo_width() + 80, x), screen_w - 80)
+        y = min(max(0, y), screen_h - 40)
+        window.geometry(f"+{x}+{y}")
+        self._capture_window_layout(operation["key"], window)
+
+    def _start_resize(self, event, key, window):
+        if not self.editing:
+            return
+        self._pointer_operation = {
+            "kind": "resize",
+            "key": key,
+            "window": window,
+            "pointer_x": event.x_root,
+            "pointer_y": event.y_root,
+            "width": window.winfo_width(),
+            "height": window.winfo_height(),
+        }
+
+    def _resize_window(self, event):
+        operation = self._pointer_operation
+        if not self.editing or not operation or operation.get("kind") != "resize":
+            return
+        key = operation["key"]
+        window = operation["window"]
+        min_width, min_height = HUD_MIN_SIZES[key]
+        width = max(min_width, operation["width"] + event.x_root - operation["pointer_x"])
+        height = max(min_height, operation["height"] + event.y_root - operation["pointer_y"])
+        width = min(width, self.root.winfo_screenwidth())
+        height = min(height, self.root.winfo_screenheight())
+        window.geometry(f"{width}x{height}")
+        self._capture_window_layout(key, window)
 
     def _create_damage_window(self):
         window = Toplevel(self.root)
@@ -205,7 +321,7 @@ class EclipticaDesktopHud:
         window.attributes("-topmost", True)
         window.attributes("-alpha", 0.9)
         window.configure(bg=self.BG, highlightbackground=self.BORDER, highlightthickness=1)
-        title = Label(
+        self.damage_title = Label(
             window,
             text="ECLIPTICA",
             bg=self.BG,
@@ -213,7 +329,7 @@ class EclipticaDesktopHud:
             font=("Segoe UI", 10, "bold"),
             anchor=W,
         )
-        title.pack(fill=X, padx=14, pady=(11, 2))
+        self.damage_title.pack(fill=X, padx=14, pady=(11, 2))
         self.damage_label = Label(
             window,
             text="",
@@ -225,7 +341,11 @@ class EclipticaDesktopHud:
         )
         self.damage_label.pack(fill=BOTH, padx=14, pady=(2, 12))
         self.damage_window = window
-        self._make_click_through(window)
+        self._bind_drag(window, "damage", window)
+        self._bind_drag(self.damage_title, "damage", window)
+        self._bind_drag(self.damage_label, "damage", window)
+        self._create_resize_grip(window, "damage")
+        self._set_click_through(window, True)
 
     def _create_lock_window(self):
         window = Toplevel(self.root)
@@ -254,7 +374,11 @@ class EclipticaDesktopHud:
         )
         self.lock_detail_label.pack(pady=(0, 8))
         self.lock_window = window
-        self._make_click_through(window)
+        self._bind_drag(window, "boss_lock", window)
+        self._bind_drag(self.lock_label, "boss_lock", window)
+        self._bind_drag(self.lock_detail_label, "boss_lock", window)
+        self._create_resize_grip(window, "boss_lock")
+        self._set_click_through(window, True)
 
     def _ensure_windows(self):
         if not self.damage_window or not self.damage_window.winfo_exists():
@@ -262,15 +386,86 @@ class EclipticaDesktopHud:
         if not self.lock_window or not self.lock_window.winfo_exists():
             self._create_lock_window()
 
-    def _place_windows(self):
+    def _default_layout(self):
         self.damage_window.update_idletasks()
         self.lock_window.update_idletasks()
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        damage_h = self.damage_window.winfo_reqheight()
-        lock_w = self.lock_window.winfo_reqwidth()
-        self.damage_window.geometry(f"+24+{max(24, (screen_h - damage_h) // 2)}")
-        self.lock_window.geometry(f"+{max(24, (screen_w - lock_w) // 2)}+24")
+        damage_w = max(HUD_MIN_SIZES["damage"][0], self.damage_window.winfo_reqwidth())
+        damage_h = max(HUD_MIN_SIZES["damage"][1], self.damage_window.winfo_reqheight())
+        lock_w = max(HUD_MIN_SIZES["boss_lock"][0], self.lock_window.winfo_reqwidth())
+        lock_h = max(HUD_MIN_SIZES["boss_lock"][1], self.lock_window.winfo_reqheight())
+        return {
+            "damage": {
+                "x": 24,
+                "y": max(24, (screen_h - damage_h) // 2),
+                "width": damage_w,
+                "height": damage_h,
+            },
+            "boss_lock": {
+                "x": max(24, (screen_w - lock_w) // 2),
+                "y": 24,
+                "width": lock_w,
+                "height": lock_h,
+            },
+        }
+
+    def _capture_window_layout(self, key, window):
+        self.layout[key] = {
+            "x": window.winfo_x(),
+            "y": window.winfo_y(),
+            "width": window.winfo_width(),
+            "height": window.winfo_height(),
+        }
+
+    def _apply_window_layout(self, key, window, defaults):
+        geometry = self.layout.get(key, defaults[key])
+        min_width, min_height = HUD_MIN_SIZES[key]
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        width = min(screen_w, max(min_width, int(geometry["width"])))
+        height = min(screen_h, max(min_height, int(geometry["height"])))
+        x = min(max(-width + 80, int(geometry["x"])), screen_w - 80)
+        y = min(max(0, int(geometry["y"])), screen_h - 40)
+        window.geometry(f"{width}x{height}+{x}+{y}")
+        self.layout[key] = {"x": x, "y": y, "width": width, "height": height}
+
+    def _place_windows(self):
+        defaults = self._default_layout()
+        self._apply_window_layout("damage", self.damage_window, defaults)
+        self._apply_window_layout("boss_lock", self.lock_window, defaults)
+
+    def _apply_edit_visuals(self):
+        for key, window in (("damage", self.damage_window), ("boss_lock", self.lock_window)):
+            window.configure(highlightbackground=self.ACCENT, highlightthickness=2)
+            self._set_click_through(window, False)
+            self.resize_grips[key].place(relx=1.0, rely=1.0, anchor=SE)
+        self.damage_title.configure(text="ECLIPTICA  |  拖动调整位置")
+        self.lock_detail_label.configure(text="拖动调整位置，右下角调整大小")
+
+    def begin_edit(self, snapshot):
+        self.editing = True
+        self.update(snapshot)
+        self._apply_edit_visuals()
+
+    def end_edit(self):
+        self._ensure_windows()
+        self._capture_window_layout("damage", self.damage_window)
+        self._capture_window_layout("boss_lock", self.lock_window)
+        self.editing = False
+        self._pointer_operation = None
+        for key, window in (("damage", self.damage_window), ("boss_lock", self.lock_window)):
+            self.resize_grips[key].place_forget()
+            window.configure(highlightbackground=self.BORDER, highlightthickness=1)
+            self._set_click_through(window, True)
+        self.damage_title.configure(text="ECLIPTICA")
+        return self.get_layout()
+
+    def get_layout(self):
+        for key, window in (("damage", self.damage_window), ("boss_lock", self.lock_window)):
+            if window and window.winfo_exists():
+                self._capture_window_layout(key, window)
+        return {key: dict(value) for key, value in self.layout.items()}
 
     def update(self, snapshot):
         self._ensure_windows()
@@ -300,8 +495,12 @@ class EclipticaDesktopHud:
         self._place_windows()
         self.damage_window.deiconify()
         self.lock_window.deiconify()
+        if self.editing:
+            self._apply_edit_visuals()
 
-    def hide(self):
+    def hide(self, force=False):
+        if self.editing and not force:
+            return
         for window in (self.damage_window, self.lock_window):
             if window and window.winfo_exists():
                 window.withdraw()
@@ -619,6 +818,7 @@ class SlashCoMonitorCN:
         self.detected_game_mode = "slashco"
         self.current_game_mode = "slashco"
         self.ecliptica_hud = None
+        self.ecliptica_hud_editing = False
 
         # 设置 AppUserModelID 以修复任务栏图标
         try:
@@ -660,7 +860,7 @@ class SlashCoMonitorCN:
         self._load_ecliptica_config()
 
         self.setup_ui()
-        self.ecliptica_hud = EclipticaDesktopHud(self.root)
+        self.ecliptica_hud = EclipticaDesktopHud(self.root, self.ecliptica_hud_layout)
         self._ecliptica_hud_after_id = self.root.after(
             ECLIPTICA_HUD_REFRESH_MS,
             self._ecliptica_hud_tick,
@@ -1141,9 +1341,14 @@ class SlashCoMonitorCN:
             variable=self.ecliptica_hud_enabled,
             command=self._on_ecliptica_hud_toggle,
         ).pack(side=LEFT)
+        ttk.Button(
+            hud_frame,
+            textvariable=self.ecliptica_hud_layout_button_var,
+            command=self._on_ecliptica_hud_layout_action,
+        ).pack(side=LEFT, padx=(10, 0))
         ttk.Label(
             hud_frame,
-            text="伤害数据位于左侧，Boss 锁定位于屏幕顶部",
+            text="拖动预览框，右下角缩放",
             foreground="#666666",
             font=("微软雅黑", 8),
         ).pack(side=RIGHT)
@@ -1350,6 +1555,8 @@ class SlashCoMonitorCN:
     def _load_ecliptica_config(self):
         self.ecliptica_hud_enabled = BooleanVar(value=False)
         self.panel_mode_var = StringVar(value=PANEL_MODE_LABELS["auto"])
+        self.ecliptica_hud_layout_button_var = StringVar(value="配置 HUD 布局")
+        self.ecliptica_hud_layout = {}
         try:
             if os.path.exists(ECLIPTICA_CONFIG_FILENAME):
                 with open(ECLIPTICA_CONFIG_FILENAME, "r", encoding="utf-8") as config_file:
@@ -1357,17 +1564,21 @@ class SlashCoMonitorCN:
                 self.ecliptica_hud_enabled.set(bool(config.get("hud_enabled", False)))
                 panel_mode = str(config.get("panel_mode", "auto")).lower()
                 self.panel_mode_var.set(PANEL_MODE_LABELS.get(panel_mode, PANEL_MODE_LABELS["auto"]))
+                self.ecliptica_hud_layout = normalize_hud_layout(config.get("hud_layout", {}))
         except Exception:
             pass
 
     def _save_ecliptica_config(self):
         try:
+            if self.ecliptica_hud and not self.ecliptica_hud.editing:
+                self.ecliptica_hud_layout = self.ecliptica_hud.get_layout()
             os.makedirs(os.path.dirname(ECLIPTICA_CONFIG_FILENAME), exist_ok=True)
             with open(ECLIPTICA_CONFIG_FILENAME, "w", encoding="utf-8") as config_file:
                 json.dump(
                     {
                         "hud_enabled": bool(self.ecliptica_hud_enabled.get()),
                         "panel_mode": self._panel_mode_preference(),
+                        "hud_layout": self.ecliptica_hud_layout,
                     },
                     config_file,
                     ensure_ascii=False,
@@ -1381,6 +1592,26 @@ class SlashCoMonitorCN:
         self._save_ecliptica_config()
         if not self.ecliptica_hud_enabled.get() and self.ecliptica_hud:
             self.ecliptica_hud.hide()
+
+    def _on_ecliptica_hud_layout_action(self):
+        if not self.ecliptica_hud:
+            return
+        if not self.ecliptica_hud_editing:
+            self.ecliptica_hud_editing = True
+            self.ecliptica_hud_layout_button_var.set("保存 HUD 布局")
+            self.ecliptica_hud.begin_edit(self.ecliptica_state.snapshot())
+            self.log("HUD 布局预览已显示：拖动框体调整位置，拖动右下角调整大小")
+            return
+
+        self.ecliptica_hud_layout = self.ecliptica_hud.end_edit()
+        self.ecliptica_hud_editing = False
+        self.ecliptica_hud_layout_button_var.set("配置 HUD 布局")
+        self._save_ecliptica_config()
+        if self.ecliptica_hud_enabled.get() and self.detected_game_mode == "ecliptica":
+            self.ecliptica_hud.update(self.ecliptica_state.snapshot())
+        else:
+            self.ecliptica_hud.hide(force=True)
+        self.log("HUD 布局已保存")
 
     def _ecliptica_hud_tick(self):
         self._ecliptica_hud_after_id = None
