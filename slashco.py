@@ -612,8 +612,6 @@ class SlashCoMonitorCN:
         self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": None}
         self.fuel_added_count = 0
         self.free_fuel_explicit = False
-        self.map_var = StringVar(value="通用(默认)") # 新增：地图选择变量
-        self.game_info = {"location": "通用(默认)", "difficulty": "未知", "slasher": "未知"} # 修改默认 location
         self.item_records = {}
         self.group_order = {"地图": [], "玩家": [], "未知": []}
         self.groups = {"地图": {}, "玩家": {}, "未知": {}}
@@ -890,24 +888,7 @@ class SlashCoMonitorCN:
         top_bar.pack(fill=X, padx=5, pady=5)
         self.update_frame_after_widget = top_bar
         
-        # 新增：任务地点选择
-        ttk.Label(top_bar, text="任务地点：").pack(side=LEFT)
-        self.map_combo = ttk.Combobox(top_bar, textvariable=self.map_var, state="readonly", width=25)
-        self.map_combo['values'] = ["通用(默认)", "旧SlashCo总部", "马龙家的农场", "菲利普斯·韦斯特伍德高中", "伊斯特伍德综合医院", "德尔塔科研机构"]
-        self.map_combo.pack(side=LEFT, padx=(0, 10))
-        self.map_combo.bind("<<ComboboxSelected>>", self.on_map_changed)
-
-        ttk.Button(top_bar, text="导出未翻译位置", command=self.export_untranslated).pack(side=LEFT)
-
-        ttk.Button(top_bar, text="强制重置数据", command=self.force_reset).pack(side=RIGHT)
-        self.mode_status_var = StringVar(value="当前：SlashCo")
-        self.lbl_mode_status = ttk.Label(
-            top_bar,
-            textvariable=self.mode_status_var,
-            foreground="#6c4cff",
-            font=("微软雅黑", 9, "bold"),
-        )
-        self.lbl_mode_status.pack(side=RIGHT, padx=(8, 12))
+        ttk.Label(top_bar, text="数据面板：").pack(side=LEFT)
         self.panel_mode_combo = ttk.Combobox(
             top_bar,
             textvariable=self.panel_mode_var,
@@ -915,9 +896,18 @@ class SlashCoMonitorCN:
             state="readonly",
             width=10,
         )
-        self.panel_mode_combo.pack(side=RIGHT)
+        self.panel_mode_combo.pack(side=LEFT, padx=(0, 8))
         self.panel_mode_combo.bind("<<ComboboxSelected>>", self._on_panel_mode_changed)
-        ttk.Label(top_bar, text="面板：").pack(side=RIGHT, padx=(8, 3))
+        self.mode_status_var = StringVar(value="当前：SlashCo")
+        self.lbl_mode_status = ttk.Label(
+            top_bar,
+            textvariable=self.mode_status_var,
+            foreground="#6c4cff",
+            font=("微软雅黑", 9, "bold"),
+        )
+        self.lbl_mode_status.pack(side=LEFT, padx=(0, 12))
+        ttk.Button(top_bar, text="导出未翻译位置", command=self.export_untranslated).pack(side=LEFT)
+        ttk.Button(top_bar, text="强制重置数据", command=self.force_reset).pack(side=RIGHT)
 
         self.update_status_var = StringVar(value="")
         self.update_progress_var = DoubleVar(value=0.0)
@@ -1963,17 +1953,6 @@ class SlashCoMonitorCN:
         self.last_pending_gid = None
         self.last_pending_time = 0.0
 
-    def on_map_changed(self, event):
-        """处理任务地点变更"""
-        new_map = self.map_var.get()
-        self.game_info["location"] = new_map
-        self.log(f"任务地点已手动切换为: {new_map}")
-        
-
-
-
-
-
     def update_gen_ui(self, gid: str):
         data = self.gens[gid]
         ui = self.ui_gens[gid]
@@ -2832,25 +2811,13 @@ class SlashCoMonitorCN:
         rec = self.item_records[item_id]
         pos_raw = rec.get("pos_raw", "")
         
-        # 获取当前地图名称
-        current_map = self.game_info.get("location", "通用(默认)")
-        if "等待" in current_map or "未知" in current_map: 
-             current_map = self.game_info.get("location", "通用(默认)")
+        img_names = self.img_mappings.get(pos_raw)
 
-        # 1. 优先尝试查找特定地图的图片 KEY: "位置原名|地图名"
-        img_names = self.img_mappings.get(f"{pos_raw}|{current_map}")
-        
-        # 2. 如果没找到，尝试查找通用的图片 KEY: "位置原名"
-        if not img_names:
-            img_names = self.img_mappings.get(pos_raw)
-        
-        # 3. 如果还没找到，尝试 Wildcard 匹配
+        # 如果没有精确位置图片，尝试通用 Wildcard 映射。
         if not img_names:
             for pattern, _, w_key in self.wildcard_patterns:
                 if pattern.match(pos_raw):
-                    img_names = self.img_mappings.get(f"{w_key}|{current_map}")
-                    if not img_names:
-                        img_names = self.img_mappings.get(w_key)
+                    img_names = self.img_mappings.get(w_key)
                     if img_names:
                         break
         
