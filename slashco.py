@@ -397,8 +397,7 @@ def _update_layered_window(window, image):
 class EclipticaDesktopHud:
     BG = "#090c14"
     TRANSPARENT = "#010203"
-    FG = "#f4f5f8"
-    MUTED = "#c1c6d0"
+    FG = "#ffffff"
     ACCENT = "#aaa0ff"
     BORDER = "#343b4d"
 
@@ -418,7 +417,6 @@ class EclipticaDesktopHud:
         self.damage_rows = []
         self.lock_text = "Boss 当前锁定：-"
         self.lock_detail_text = "未确认"
-        self.lock_color = self.ACCENT
         self.resize_grips = {}
         self._pointer_operation = None
 
@@ -538,7 +536,7 @@ class EclipticaDesktopHud:
             14,
             12,
             self.damage_title_text,
-            self.ACCENT,
+            self.FG,
             _load_hud_font(14, bold=True),
         )
         for index, (label, value) in enumerate(self.damage_rows):
@@ -548,7 +546,7 @@ class EclipticaDesktopHud:
                 14,
                 y,
                 label,
-                self.MUTED,
+                self.FG,
                 _load_hud_font(13),
             )
             self._draw_text(
@@ -575,7 +573,7 @@ class EclipticaDesktopHud:
             center_x,
             8,
             self.lock_text,
-            self.lock_color,
+            self.FG,
             _load_hud_font(21, bold=True),
             "ma",
         )
@@ -584,7 +582,7 @@ class EclipticaDesktopHud:
             center_x,
             48,
             self.lock_detail_text,
-            self.MUTED,
+            self.FG,
             _load_hud_font(13),
             "ma",
         )
@@ -596,7 +594,7 @@ class EclipticaDesktopHud:
             window,
             text="//",
             bg=self.TRANSPARENT,
-            fg=self.ACCENT,
+            fg=self.FG,
             font=("Consolas", 11, "bold"),
             cursor="size_nw_se",
             padx=3,
@@ -871,9 +869,7 @@ class EclipticaDesktopHud:
 
         aggro = snapshot.get("aggro", {})
         target = aggro.get("target", "-")
-        lock_color = "#ff8c9c" if aggro.get("is_local") else self.ACCENT
         self.lock_text = f"Boss 当前锁定：{target}"
-        self.lock_color = lock_color
         detail = aggro.get("status", "未确认")
         if aggro.get("locked_secs", 0) > 0:
             detail = f"{detail} · {aggro['locked_secs']} 秒"

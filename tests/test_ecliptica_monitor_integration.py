@@ -182,6 +182,9 @@ class PanelModeSelectionTests(unittest.TestCase):
 
 
 class HudLayoutTests(unittest.TestCase):
+    def test_hud_text_color_is_pure_white(self):
+        self.assertEqual(EclipticaDesktopHud.FG, "#ffffff")
+
     def test_hud_text_is_drawn_once_without_outline_or_shadow(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
         draw = FakeDraw()

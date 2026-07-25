@@ -1,5 +1,9 @@
 # 更新日志
 
+## 3.9.1
+
+- 将 Ecliptica 伤害 HUD 与 Boss 锁定 HUD 的全部文字统一为纯白色 `#FFFFFF`。
+
 ## 3.9.0
 
 - 将 Ecliptica HUD 文字层从 Tk 色键透明迁移到 Windows `UpdateLayeredWindow` 逐像素 Alpha 合成。
