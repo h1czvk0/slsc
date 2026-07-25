@@ -222,7 +222,6 @@ class EclipticaDesktopHud:
     MUTED = "#c1c6d0"
     ACCENT = "#aaa0ff"
     BORDER = "#343b4d"
-    TEXT_SHADOW = "#05070c"
 
     def __init__(self, root, layout=None, opacity=0.9):
         self.root = root
@@ -308,17 +307,7 @@ class EclipticaDesktopHud:
         widget.bind("<B1-Motion>", self._drag_window)
         widget.configure(cursor="fleur")
 
-    def _draw_shadowed_text(self, canvas, x, y, text, fill, font, anchor, justify=CENTER):
-        canvas.create_text(
-            x + 1,
-            y + 1,
-            text=text,
-            fill=self.TEXT_SHADOW,
-            font=font,
-            anchor=anchor,
-            justify=justify,
-            tags="hud_text",
-        )
+    def _draw_text(self, canvas, x, y, text, fill, font, anchor, justify=CENTER):
         canvas.create_text(
             x,
             y,
@@ -334,7 +323,7 @@ class EclipticaDesktopHud:
         if not self.damage_canvas or not self.damage_canvas.winfo_exists():
             return
         self.damage_canvas.delete("hud_text")
-        self._draw_shadowed_text(
+        self._draw_text(
             self.damage_canvas,
             14,
             12,
@@ -346,7 +335,7 @@ class EclipticaDesktopHud:
         )
         for index, (label, value) in enumerate(self.damage_rows):
             y = 39 + index * 19
-            self._draw_shadowed_text(
+            self._draw_text(
                 self.damage_canvas,
                 14,
                 y,
@@ -356,7 +345,7 @@ class EclipticaDesktopHud:
                 NW,
                 LEFT,
             )
-            self._draw_shadowed_text(
+            self._draw_text(
                 self.damage_canvas,
                 118,
                 y - 1,
@@ -372,7 +361,7 @@ class EclipticaDesktopHud:
             return
         self.lock_canvas.delete("hud_text")
         center_x = max(HUD_MIN_SIZES["boss_lock"][0], self.lock_canvas.winfo_width()) // 2
-        self._draw_shadowed_text(
+        self._draw_text(
             self.lock_canvas,
             center_x,
             8,
@@ -381,7 +370,7 @@ class EclipticaDesktopHud:
             ("Microsoft YaHei UI", 15, "bold"),
             N,
         )
-        self._draw_shadowed_text(
+        self._draw_text(
             self.lock_canvas,
             center_x,
             48,
