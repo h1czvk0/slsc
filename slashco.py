@@ -174,6 +174,17 @@ HUD_MIN_SIZES = {
     "damage": (250, 210),
     "boss_lock": (320, 90),
 }
+HUD_DISPLAY_LABELS = {
+    "both": "两者共同显示",
+    "damage": "只显示伤害数据",
+    "boss_lock": "只显示 Boss 锁定",
+}
+HUD_DISPLAY_KEYS = {label: key for key, label in HUD_DISPLAY_LABELS.items()}
+
+
+def normalize_hud_display_mode(value):
+    mode = str(value or "both").lower()
+    return mode if mode in HUD_DISPLAY_LABELS else "both"
 
 
 def normalize_hud_layout(layout):
@@ -207,6 +218,7 @@ class EclipticaDesktopHud:
         self.root = root
         self.layout = normalize_hud_layout(layout)
         self.editing = False
+        self.display_mode = "both"
         self.damage_window = None
         self.lock_window = None
         self.damage_label = None
@@ -222,15 +234,20 @@ class EclipticaDesktopHud:
         try:
             window.update_idletasks()
             hwnd = window.winfo_id()
+            parent_hwnd = ctypes.windll.user32.GetParent(hwnd)
+            if parent_hwnd:
+                hwnd = parent_hwnd
             get_style = ctypes.windll.user32.GetWindowLongW
             set_style = ctypes.windll.user32.SetWindowLongW
             ex_style = get_style(hwnd, -20)
-            ex_style |= 0x00000080 | 0x00080000
+            ex_style |= 0x00000080
             if enabled:
                 ex_style |= 0x00000020
             else:
                 ex_style &= ~0x00000020
             set_style(hwnd, -20, ex_style)
+            ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0033)
+            window.attributes("-alpha", 0.9)
         except Exception:
             pass
 
@@ -443,9 +460,21 @@ class EclipticaDesktopHud:
         self.damage_title.configure(text="ECLIPTICA  |  拖动调整位置")
         self.lock_detail_label.configure(text="拖动调整位置，右下角调整大小")
 
-    def begin_edit(self, snapshot):
+    def _apply_display_visibility(self):
+        show_damage = self.display_mode in ("both", "damage")
+        show_boss_lock = self.display_mode in ("both", "boss_lock")
+        if show_damage:
+            self.damage_window.deiconify()
+        else:
+            self.damage_window.withdraw()
+        if show_boss_lock:
+            self.lock_window.deiconify()
+        else:
+            self.lock_window.withdraw()
+
+    def begin_edit(self, snapshot, display_mode="both"):
         self.editing = True
-        self.update(snapshot)
+        self.update(snapshot, display_mode)
         self._apply_edit_visuals()
 
     def end_edit(self):
@@ -467,8 +496,10 @@ class EclipticaDesktopHud:
                 self._capture_window_layout(key, window)
         return {key: dict(value) for key, value in self.layout.items()}
 
-    def update(self, snapshot):
+    def update(self, snapshot, display_mode=None):
         self._ensure_windows()
+        if display_mode is not None:
+            self.display_mode = normalize_hud_display_mode(display_mode)
         boss_phase = snapshot.get("current_boss_phase")
         phase_text = str(boss_phase) if boss_phase is not None else "-"
         damage_text = (
@@ -493,10 +524,13 @@ class EclipticaDesktopHud:
             detail = f"{detail} · {aggro['locked_secs']} 秒"
         self.lock_detail_label.configure(text=detail)
         self._place_windows()
-        self.damage_window.deiconify()
-        self.lock_window.deiconify()
+        self._apply_display_visibility()
         if self.editing:
             self._apply_edit_visuals()
+        else:
+            for window in (self.damage_window, self.lock_window):
+                if window.state() == "normal":
+                    self._set_click_through(window, True)
 
     def hide(self, force=False):
         if self.editing and not force:
@@ -1335,19 +1369,36 @@ class SlashCoMonitorCN:
 
         hud_frame = ttk.LabelFrame(self.ecliptica_left_frame, text="Ecliptica 桌面 HUD", padding=7)
         hud_frame.pack(fill=X, padx=5, pady=5)
+        hud_controls = ttk.Frame(hud_frame)
+        hud_controls.pack(fill=X)
         ttk.Checkbutton(
-            hud_frame,
+            hud_controls,
             text="启用透明置顶 HUD",
             variable=self.ecliptica_hud_enabled,
             command=self._on_ecliptica_hud_toggle,
         ).pack(side=LEFT)
         ttk.Button(
-            hud_frame,
+            hud_controls,
             textvariable=self.ecliptica_hud_layout_button_var,
             command=self._on_ecliptica_hud_layout_action,
         ).pack(side=LEFT, padx=(10, 0))
+        hud_display_row = ttk.Frame(hud_frame)
+        hud_display_row.pack(fill=X, pady=(7, 0))
+        ttk.Label(hud_display_row, text="显示内容：").pack(side=LEFT)
+        self.ecliptica_hud_display_combo = ttk.Combobox(
+            hud_display_row,
+            textvariable=self.ecliptica_hud_display_var,
+            values=tuple(HUD_DISPLAY_LABELS.values()),
+            state="readonly",
+            width=20,
+        )
+        self.ecliptica_hud_display_combo.pack(side=LEFT)
+        self.ecliptica_hud_display_combo.bind(
+            "<<ComboboxSelected>>",
+            self._on_ecliptica_hud_display_changed,
+        )
         ttk.Label(
-            hud_frame,
+            hud_display_row,
             text="拖动预览框，右下角缩放",
             foreground="#666666",
             font=("微软雅黑", 8),
@@ -1471,8 +1522,6 @@ class SlashCoMonitorCN:
             self.slashco_right_frame.pack(fill=BOTH, expand=True)
             self.mode_status_var.set("当前：SlashCo")
             self.lbl_mode_status.configure(foreground="#1f6f3a")
-            if self.ecliptica_hud:
-                self.ecliptica_hud.hide()
 
         if changed and log_change and hasattr(self, "txt_log"):
             suffix = f" ({reason})" if reason else ""
@@ -1488,9 +1537,6 @@ class SlashCoMonitorCN:
             log_change=log_change and automatic,
             automatic=automatic,
         )
-        ecliptica_hud = getattr(self, "ecliptica_hud", None)
-        if self.detected_game_mode != "ecliptica" and ecliptica_hud:
-            ecliptica_hud.hide()
 
     def _on_panel_mode_changed(self, _event=None):
         self._save_ecliptica_config()
@@ -1556,6 +1602,7 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_enabled = BooleanVar(value=False)
         self.panel_mode_var = StringVar(value=PANEL_MODE_LABELS["auto"])
         self.ecliptica_hud_layout_button_var = StringVar(value="配置 HUD 布局")
+        self.ecliptica_hud_display_var = StringVar(value=HUD_DISPLAY_LABELS["both"])
         self.ecliptica_hud_layout = {}
         try:
             if os.path.exists(ECLIPTICA_CONFIG_FILENAME):
@@ -1564,6 +1611,8 @@ class SlashCoMonitorCN:
                 self.ecliptica_hud_enabled.set(bool(config.get("hud_enabled", False)))
                 panel_mode = str(config.get("panel_mode", "auto")).lower()
                 self.panel_mode_var.set(PANEL_MODE_LABELS.get(panel_mode, PANEL_MODE_LABELS["auto"]))
+                hud_display_mode = normalize_hud_display_mode(config.get("hud_display_mode", "both"))
+                self.ecliptica_hud_display_var.set(HUD_DISPLAY_LABELS[hud_display_mode])
                 self.ecliptica_hud_layout = normalize_hud_layout(config.get("hud_layout", {}))
         except Exception:
             pass
@@ -1578,6 +1627,7 @@ class SlashCoMonitorCN:
                     {
                         "hud_enabled": bool(self.ecliptica_hud_enabled.get()),
                         "panel_mode": self._panel_mode_preference(),
+                        "hud_display_mode": self._ecliptica_hud_display_mode(),
                         "hud_layout": self.ecliptica_hud_layout,
                     },
                     config_file,
@@ -1590,8 +1640,27 @@ class SlashCoMonitorCN:
 
     def _on_ecliptica_hud_toggle(self):
         self._save_ecliptica_config()
-        if not self.ecliptica_hud_enabled.get() and self.ecliptica_hud:
-            self.ecliptica_hud.hide()
+        if not self.ecliptica_hud:
+            return
+        if self.ecliptica_hud_enabled.get():
+            self.ecliptica_hud.update(
+                self.ecliptica_state.snapshot(),
+                self._ecliptica_hud_display_mode(),
+            )
+        else:
+            self.ecliptica_hud.hide(force=True)
+
+    def _ecliptica_hud_display_mode(self):
+        label = self.ecliptica_hud_display_var.get()
+        return HUD_DISPLAY_KEYS.get(label, "both")
+
+    def _on_ecliptica_hud_display_changed(self, _event=None):
+        self._save_ecliptica_config()
+        if self.ecliptica_hud and (self.ecliptica_hud_enabled.get() or self.ecliptica_hud_editing):
+            self.ecliptica_hud.update(
+                self.ecliptica_state.snapshot(),
+                self._ecliptica_hud_display_mode(),
+            )
 
     def _on_ecliptica_hud_layout_action(self):
         if not self.ecliptica_hud:
@@ -1599,7 +1668,10 @@ class SlashCoMonitorCN:
         if not self.ecliptica_hud_editing:
             self.ecliptica_hud_editing = True
             self.ecliptica_hud_layout_button_var.set("保存 HUD 布局")
-            self.ecliptica_hud.begin_edit(self.ecliptica_state.snapshot())
+            self.ecliptica_hud.begin_edit(
+                self.ecliptica_state.snapshot(),
+                self._ecliptica_hud_display_mode(),
+            )
             self.log("HUD 布局预览已显示：拖动框体调整位置，拖动右下角调整大小")
             return
 
@@ -1607,8 +1679,11 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_editing = False
         self.ecliptica_hud_layout_button_var.set("配置 HUD 布局")
         self._save_ecliptica_config()
-        if self.ecliptica_hud_enabled.get() and self.detected_game_mode == "ecliptica":
-            self.ecliptica_hud.update(self.ecliptica_state.snapshot())
+        if self.ecliptica_hud_enabled.get():
+            self.ecliptica_hud.update(
+                self.ecliptica_state.snapshot(),
+                self._ecliptica_hud_display_mode(),
+            )
         else:
             self.ecliptica_hud.hide(force=True)
         self.log("HUD 布局已保存")
@@ -1621,10 +1696,9 @@ class SlashCoMonitorCN:
             if (
                 self.ecliptica_hud
                 and self.ecliptica_hud_enabled.get()
-                and self.detected_game_mode == "ecliptica"
             ):
                 snapshot = self.ecliptica_state.snapshot()
-                self.ecliptica_hud.update(snapshot)
+                self.ecliptica_hud.update(snapshot, self._ecliptica_hud_display_mode())
                 self._update_ecliptica_ui()
             elif self.ecliptica_hud:
                 self.ecliptica_hud.hide()

@@ -7,7 +7,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ecliptica_log_parser import EclipticaState, parse_ecliptica_line  # noqa: E402
-from slashco import PANEL_MODE_LABELS, SlashCoMonitorCN, normalize_hud_layout  # noqa: E402
+from slashco import (  # noqa: E402
+    PANEL_MODE_LABELS,
+    SlashCoMonitorCN,
+    normalize_hud_display_mode,
+    normalize_hud_layout,
+)
 
 
 class FakeVar:
@@ -135,7 +140,7 @@ class PanelModeSelectionTests(unittest.TestCase):
         self.assertEqual(monitor.detected_game_mode, "slashco")
         self.assertEqual(monitor.current_game_mode, "ecliptica")
         self.assertTrue(monitor.ecliptica_right_frame.packed)
-        self.assertEqual(monitor.ecliptica_hud.hide_calls, 1)
+        self.assertEqual(monitor.ecliptica_hud.hide_calls, 0)
 
     def test_manual_slashco_panel_ignores_ecliptica_detection(self):
         monitor = self.make_monitor(preference="slashco")
@@ -148,6 +153,12 @@ class PanelModeSelectionTests(unittest.TestCase):
 
 
 class HudLayoutTests(unittest.TestCase):
+    def test_hud_display_mode_defaults_to_both_for_invalid_values(self):
+        self.assertEqual(normalize_hud_display_mode("damage"), "damage")
+        self.assertEqual(normalize_hud_display_mode("boss_lock"), "boss_lock")
+        self.assertEqual(normalize_hud_display_mode("both"), "both")
+        self.assertEqual(normalize_hud_display_mode("invalid"), "both")
+
     def test_layout_values_are_normalized_and_minimum_size_is_enforced(self):
         layout = normalize_hud_layout(
             {
