@@ -12,6 +12,7 @@ import re
 import threading
 import glob
 import ctypes
+from ctypes import wintypes
 import json
 import concurrent.futures
 import subprocess
@@ -24,7 +25,7 @@ from tkinter import ttk, scrolledtext, Menu, messagebox
 
 
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageTk
 HAS_PIL = True
 
 from slashco_log_parser import (
@@ -215,6 +216,184 @@ def normalize_hud_layout(layout):
     return normalized
 
 
+class _LayeredPoint(ctypes.Structure):
+    _fields_ = (("x", wintypes.LONG), ("y", wintypes.LONG))
+
+
+class _LayeredSize(ctypes.Structure):
+    _fields_ = (("cx", wintypes.LONG), ("cy", wintypes.LONG))
+
+
+class _BlendFunction(ctypes.Structure):
+    _fields_ = (
+        ("BlendOp", ctypes.c_ubyte),
+        ("BlendFlags", ctypes.c_ubyte),
+        ("SourceConstantAlpha", ctypes.c_ubyte),
+        ("AlphaFormat", ctypes.c_ubyte),
+    )
+
+
+class _BitmapInfoHeader(ctypes.Structure):
+    _fields_ = (
+        ("biSize", wintypes.DWORD),
+        ("biWidth", wintypes.LONG),
+        ("biHeight", wintypes.LONG),
+        ("biPlanes", wintypes.WORD),
+        ("biBitCount", wintypes.WORD),
+        ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD),
+        ("biXPelsPerMeter", wintypes.LONG),
+        ("biYPelsPerMeter", wintypes.LONG),
+        ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    )
+
+
+class _BitmapInfo(ctypes.Structure):
+    _fields_ = (("bmiHeader", _BitmapInfoHeader), ("bmiColors", wintypes.DWORD * 3))
+
+
+_HUD_FONT_CACHE = {}
+
+
+def _load_hud_font(size, bold=False):
+    key = (int(size), bool(bold))
+    cached = _HUD_FONT_CACHE.get(key)
+    if cached:
+        return cached
+    font_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+    names = ("msyhbd.ttc", "msyh.ttc") if bold else ("msyh.ttc", "segoeui.ttf")
+    for name in names:
+        try:
+            font = ImageFont.truetype(os.path.join(font_dir, name), key[0])
+            _HUD_FONT_CACHE[key] = font
+            return font
+        except OSError:
+            continue
+    font = ImageFont.load_default()
+    _HUD_FONT_CACHE[key] = font
+    return font
+
+
+def _premultiplied_bgra(image):
+    red, green, blue, alpha = image.convert("RGBA").split()
+    return Image.merge(
+        "RGBA",
+        (
+            ImageChops.multiply(blue, alpha),
+            ImageChops.multiply(green, alpha),
+            ImageChops.multiply(red, alpha),
+            alpha,
+        ),
+    ).tobytes()
+
+
+def _native_toplevel_hwnd(window):
+    user32 = ctypes.windll.user32
+    user32.GetParent.argtypes = (wintypes.HWND,)
+    user32.GetParent.restype = wintypes.HWND
+    hwnd = wintypes.HWND(window.winfo_id())
+    parent_hwnd = user32.GetParent(hwnd)
+    return parent_hwnd or hwnd
+
+
+def _update_layered_window(window, image):
+    if os.name != "nt":
+        return False
+    window.update_idletasks()
+    width, height = image.size
+    hwnd = _native_toplevel_hwnd(window)
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    user32.GetWindowLongW.argtypes = (wintypes.HWND, ctypes.c_int)
+    user32.GetWindowLongW.restype = wintypes.LONG
+    user32.SetWindowLongW.argtypes = (wintypes.HWND, ctypes.c_int, wintypes.LONG)
+    user32.SetWindowLongW.restype = wintypes.LONG
+    user32.GetDC.argtypes = (wintypes.HWND,)
+    user32.GetDC.restype = wintypes.HDC
+    user32.ReleaseDC.argtypes = (wintypes.HWND, wintypes.HDC)
+    gdi32.CreateCompatibleDC.argtypes = (wintypes.HDC,)
+    gdi32.CreateCompatibleDC.restype = wintypes.HDC
+    gdi32.CreateDIBSection.argtypes = (
+        wintypes.HDC,
+        ctypes.POINTER(_BitmapInfo),
+        wintypes.UINT,
+        ctypes.POINTER(ctypes.c_void_p),
+        wintypes.HANDLE,
+        wintypes.DWORD,
+    )
+    gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+    gdi32.SelectObject.argtypes = (wintypes.HDC, wintypes.HANDLE)
+    gdi32.SelectObject.restype = wintypes.HANDLE
+    gdi32.DeleteObject.argtypes = (wintypes.HANDLE,)
+    gdi32.DeleteDC.argtypes = (wintypes.HDC,)
+    user32.UpdateLayeredWindow.argtypes = (
+        wintypes.HWND,
+        wintypes.HDC,
+        ctypes.POINTER(_LayeredPoint),
+        ctypes.POINTER(_LayeredSize),
+        wintypes.HDC,
+        ctypes.POINTER(_LayeredPoint),
+        wintypes.COLORREF,
+        ctypes.POINTER(_BlendFunction),
+        wintypes.DWORD,
+    )
+    user32.UpdateLayeredWindow.restype = wintypes.BOOL
+    ex_style = user32.GetWindowLongW(hwnd, -20)
+    user32.SetWindowLongW(hwnd, -20, ex_style | 0x00080000 | 0x00000080)
+
+    screen_dc = user32.GetDC(0)
+    memory_dc = gdi32.CreateCompatibleDC(screen_dc)
+    bitmap = None
+    old_bitmap = None
+    try:
+        bitmap_info = _BitmapInfo()
+        bitmap_info.bmiHeader.biSize = ctypes.sizeof(_BitmapInfoHeader)
+        bitmap_info.bmiHeader.biWidth = width
+        bitmap_info.bmiHeader.biHeight = -height
+        bitmap_info.bmiHeader.biPlanes = 1
+        bitmap_info.bmiHeader.biBitCount = 32
+        bitmap_info.bmiHeader.biCompression = 0
+        bits = ctypes.c_void_p()
+        bitmap = gdi32.CreateDIBSection(
+            memory_dc,
+            ctypes.byref(bitmap_info),
+            0,
+            ctypes.byref(bits),
+            None,
+            0,
+        )
+        if not bitmap or not bits.value:
+            return False
+        old_bitmap = gdi32.SelectObject(memory_dc, bitmap)
+        pixel_data = _premultiplied_bgra(image)
+        ctypes.memmove(bits.value, bytes(pixel_data), len(pixel_data))
+        destination = _LayeredPoint(window.winfo_x(), window.winfo_y())
+        source = _LayeredPoint(0, 0)
+        size = _LayeredSize(width, height)
+        blend = _BlendFunction(0, 0, 255, 1)
+        return bool(
+            user32.UpdateLayeredWindow(
+                hwnd,
+                screen_dc,
+                ctypes.byref(destination),
+                ctypes.byref(size),
+                memory_dc,
+                ctypes.byref(source),
+                0,
+                ctypes.byref(blend),
+                2,
+            )
+        )
+    finally:
+        if old_bitmap:
+            gdi32.SelectObject(memory_dc, old_bitmap)
+        if bitmap:
+            gdi32.DeleteObject(bitmap)
+        gdi32.DeleteDC(memory_dc)
+        user32.ReleaseDC(0, screen_dc)
+
+
 class EclipticaDesktopHud:
     BG = "#090c14"
     TRANSPARENT = "#010203"
@@ -278,10 +457,7 @@ class EclipticaDesktopHud:
         window.withdraw()
         window.overrideredirect(True)
         window.attributes("-topmost", True)
-        window.attributes("-alpha", 1.0)
         window.configure(bg=self.TRANSPARENT, highlightthickness=0)
-        if os.name == "nt":
-            window.attributes("-transparentcolor", self.TRANSPARENT)
 
     def _background_window(self, key):
         if key == "damage":
@@ -292,6 +468,7 @@ class EclipticaDesktopHud:
         background = self._background_window(key)
         if not background or not background.winfo_exists():
             return
+        content_window.update_idletasks()
         geometry = (
             f"{content_window.winfo_width()}x{content_window.winfo_height()}"
             f"+{content_window.winfo_x()}+{content_window.winfo_y()}"
@@ -307,78 +484,112 @@ class EclipticaDesktopHud:
         widget.bind("<B1-Motion>", self._drag_window)
         widget.configure(cursor="fleur")
 
-    def _draw_text(self, canvas, x, y, text, fill, font, anchor, justify=CENTER):
-        canvas.create_text(
-            x,
-            y,
-            text=text,
-            fill=fill,
-            font=font,
-            anchor=anchor,
-            justify=justify,
-            tags="hud_text",
+    def _bind_edit_surface(self, widget, key, window):
+        widget.bind(
+            "<ButtonPress-1>",
+            lambda event: self._start_edit_surface_action(event, key, window),
         )
+        widget.bind("<B1-Motion>", self._continue_pointer_operation)
+
+    def _start_edit_surface_action(self, event, key, window):
+        if not self.editing:
+            return
+        if event.x >= event.widget.winfo_width() - 28 and event.y >= event.widget.winfo_height() - 28:
+            self._start_resize(event, key, window)
+        else:
+            self._start_drag(event, key, window)
+
+    def _continue_pointer_operation(self, event):
+        operation = self._pointer_operation
+        if operation and operation.get("kind") == "resize":
+            self._resize_window(event)
+        else:
+            self._drag_window(event)
+
+    def _draw_text(self, draw, x, y, text, fill, font, anchor="la"):
+        draw.text((x, y), text, fill=fill, font=font, anchor=anchor)
+
+    def _render_layered_image(self, window, image):
+        if _update_layered_window(window, image):
+            return
+        window.configure(bg=self.BG)
+
+    def _draw_edit_grip(self, draw, width, height):
+        if not self.editing:
+            return
+        draw.rectangle((width - 28, height - 28, width, height), fill=(0, 0, 0, 1))
+        color = (170, 160, 255, 255)
+        for inset in (7, 12, 17):
+            draw.line(
+                (width - inset, height - 3, width - 3, height - inset),
+                fill=color,
+                width=2,
+            )
 
     def _render_damage_text(self, _event=None):
         if not self.damage_canvas or not self.damage_canvas.winfo_exists():
             return
-        self.damage_canvas.delete("hud_text")
+        width = max(1, self.damage_window.winfo_width())
+        height = max(1, self.damage_window.winfo_height())
+        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
         self._draw_text(
-            self.damage_canvas,
+            draw,
             14,
             12,
             self.damage_title_text,
             self.ACCENT,
-            ("Segoe UI", 10, "bold"),
-            NW,
-            LEFT,
+            _load_hud_font(14, bold=True),
         )
         for index, (label, value) in enumerate(self.damage_rows):
             y = 39 + index * 19
             self._draw_text(
-                self.damage_canvas,
+                draw,
                 14,
                 y,
                 label,
                 self.MUTED,
-                ("Microsoft YaHei UI", 9),
-                NW,
-                LEFT,
+                _load_hud_font(13),
             )
             self._draw_text(
-                self.damage_canvas,
+                draw,
                 118,
                 y - 1,
                 value,
                 self.FG,
-                ("Microsoft YaHei UI", 10, "bold"),
-                NW,
-                LEFT,
+                _load_hud_font(14, bold=True),
             )
+        self._draw_edit_grip(draw, width, height)
+        self._render_layered_image(self.damage_window, image)
 
     def _render_lock_text(self, _event=None):
         if not self.lock_canvas or not self.lock_canvas.winfo_exists():
             return
-        self.lock_canvas.delete("hud_text")
-        center_x = max(HUD_MIN_SIZES["boss_lock"][0], self.lock_canvas.winfo_width()) // 2
+        width = max(1, self.lock_window.winfo_width())
+        height = max(1, self.lock_window.winfo_height())
+        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        center_x = width // 2
         self._draw_text(
-            self.lock_canvas,
+            draw,
             center_x,
             8,
             self.lock_text,
             self.lock_color,
-            ("Microsoft YaHei UI", 15, "bold"),
-            N,
+            _load_hud_font(21, bold=True),
+            "ma",
         )
         self._draw_text(
-            self.lock_canvas,
+            draw,
             center_x,
             48,
             self.lock_detail_text,
             self.MUTED,
-            ("Microsoft YaHei UI", 9),
-            N,
+            _load_hud_font(13),
+            "ma",
         )
+        self._draw_edit_grip(draw, width, height)
+        self._render_layered_image(self.lock_window, image)
 
     def _create_resize_grip(self, window, key):
         grip = Label(
@@ -452,6 +663,10 @@ class EclipticaDesktopHud:
         height = min(height, self.root.winfo_screenheight())
         window.geometry(f"{width}x{height}")
         self._sync_background_window(key, window)
+        if key == "damage":
+            self._render_damage_text()
+        else:
+            self._render_lock_text()
         self._capture_window_layout(key, window)
 
     def _create_damage_window(self):
@@ -469,7 +684,7 @@ class EclipticaDesktopHud:
         self.damage_canvas.bind("<Configure>", self._render_damage_text)
         self.damage_background_window = background
         self.damage_window = window
-        self._bind_drag(background, "damage", window)
+        self._bind_edit_surface(background, "damage", window)
         self._bind_drag(window, "damage", window)
         self._bind_drag(self.damage_canvas, "damage", window)
         self._create_resize_grip(window, "damage")
@@ -492,7 +707,7 @@ class EclipticaDesktopHud:
         self.lock_canvas.bind("<Configure>", self._render_lock_text)
         self.lock_background_window = background
         self.lock_window = window
-        self._bind_drag(background, "boss_lock", window)
+        self._bind_edit_surface(background, "boss_lock", window)
         self._bind_drag(window, "boss_lock", window)
         self._bind_drag(self.lock_canvas, "boss_lock", window)
         self._create_resize_grip(window, "boss_lock")
@@ -627,6 +842,7 @@ class EclipticaDesktopHud:
             self._set_click_through(window, True)
         self.damage_title_text = "ECLIPTICA"
         self._render_damage_text()
+        self._render_lock_text()
         return self.get_layout()
 
     def get_layout(self):

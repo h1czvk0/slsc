@@ -2,6 +2,8 @@ import pathlib
 import sys
 import unittest
 
+from PIL import Image
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -11,6 +13,7 @@ from slashco import (  # noqa: E402
     EclipticaDesktopHud,
     PANEL_MODE_LABELS,
     SlashCoMonitorCN,
+    _premultiplied_bgra,
     normalize_hud_display_mode,
     normalize_hud_layout,
     normalize_hud_opacity,
@@ -63,11 +66,11 @@ class FakeHudWindow:
         self.lifted_above = window
 
 
-class FakeCanvas:
+class FakeDraw:
     def __init__(self):
         self.text_items = []
 
-    def create_text(self, *args, **kwargs):
+    def text(self, *args, **kwargs):
         self.text_items.append((args, kwargs))
 
 
@@ -181,13 +184,22 @@ class PanelModeSelectionTests(unittest.TestCase):
 class HudLayoutTests(unittest.TestCase):
     def test_hud_text_is_drawn_once_without_outline_or_shadow(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
-        canvas = FakeCanvas()
+        draw = FakeDraw()
 
-        hud._draw_text(canvas, 10, 20, "HUD", "#ffffff", ("Segoe UI", 10), "nw")
+        hud._draw_text(draw, 10, 20, "HUD", "#ffffff", "font", "la")
 
-        self.assertEqual(len(canvas.text_items), 1)
-        self.assertEqual(canvas.text_items[0][0], (10, 20))
-        self.assertEqual(canvas.text_items[0][1]["fill"], "#ffffff")
+        self.assertEqual(len(draw.text_items), 1)
+        self.assertEqual(draw.text_items[0][0], ((10, 20), "HUD"))
+        self.assertEqual(draw.text_items[0][1]["fill"], "#ffffff")
+
+    def test_layered_window_pixels_use_premultiplied_bgra(self):
+        image = Image.new("RGBA", (2, 1))
+        image.putdata(((200, 100, 50, 128), (10, 20, 30, 255)))
+
+        pixels = _premultiplied_bgra(image)
+
+        self.assertEqual(list(pixels[:4]), [25, 50, 100, 128])
+        self.assertEqual(list(pixels[4:]), [30, 20, 10, 255])
 
     def test_hud_opacity_only_changes_background_windows(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
