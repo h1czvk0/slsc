@@ -7,18 +7,50 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ecliptica_log_parser import EclipticaState, parse_ecliptica_line  # noqa: E402
-from slashco import SlashCoMonitorCN  # noqa: E402
+from slashco import PANEL_MODE_LABELS, SlashCoMonitorCN  # noqa: E402
+
+
+class FakeVar:
+    def __init__(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
+class FakeWidget:
+    def __init__(self):
+        self.packed = False
+        self.config = {}
+        self.hide_calls = 0
+
+    def pack(self, **_kwargs):
+        self.packed = True
+
+    def pack_forget(self):
+        self.packed = False
+
+    def configure(self, **kwargs):
+        self.config.update(kwargs)
+
+    def hide(self):
+        self.hide_calls += 1
 
 
 class EclipticaMonitorIntegrationTests(unittest.TestCase):
     def make_monitor(self):
         monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
+        monitor.detected_game_mode = "slashco"
         monitor.current_game_mode = "slashco"
         monitor.ecliptica_state = EclipticaState()
         monitor.mode_changes = []
         monitor.ui_updates = 0
 
         def set_mode(mode, reason="", log_change=True):
+            monitor.detected_game_mode = mode
             monitor.current_game_mode = mode
             monitor.mode_changes.append((mode, reason, log_change))
 
@@ -67,6 +99,52 @@ class EclipticaMonitorIntegrationTests(unittest.TestCase):
         self.assertFalse(monitor._handle_ecliptica_event(event))
         self.assertEqual(monitor.current_game_mode, "slashco")
         self.assertEqual(monitor.ecliptica_state.session_damage_taken, 0)
+
+
+class PanelModeSelectionTests(unittest.TestCase):
+    def make_monitor(self, preference="auto", detected="slashco"):
+        monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
+        monitor.detected_game_mode = detected
+        monitor.current_game_mode = "slashco"
+        monitor.panel_mode_var = FakeVar(PANEL_MODE_LABELS[preference])
+        monitor.mode_status_var = FakeVar("当前：SlashCo")
+        monitor.lbl_mode_status = FakeWidget()
+        monitor.slashco_left_frame = FakeWidget()
+        monitor.ecliptica_left_frame = FakeWidget()
+        monitor.slashco_right_frame = FakeWidget()
+        monitor.ecliptica_right_frame = FakeWidget()
+        monitor.ecliptica_hud = None
+        return monitor
+
+    def test_auto_mode_follows_detected_game(self):
+        monitor = self.make_monitor(preference="auto")
+
+        monitor._set_active_game_mode("ecliptica", log_change=False)
+
+        self.assertEqual(monitor.detected_game_mode, "ecliptica")
+        self.assertEqual(monitor.current_game_mode, "ecliptica")
+        self.assertTrue(monitor.ecliptica_left_frame.packed)
+        self.assertFalse(monitor.slashco_left_frame.packed)
+
+    def test_manual_ecliptica_panel_ignores_slashco_detection(self):
+        monitor = self.make_monitor(preference="ecliptica", detected="ecliptica")
+        monitor.ecliptica_hud = FakeWidget()
+
+        monitor._set_active_game_mode("slashco", log_change=False)
+
+        self.assertEqual(monitor.detected_game_mode, "slashco")
+        self.assertEqual(monitor.current_game_mode, "ecliptica")
+        self.assertTrue(monitor.ecliptica_right_frame.packed)
+        self.assertEqual(monitor.ecliptica_hud.hide_calls, 1)
+
+    def test_manual_slashco_panel_ignores_ecliptica_detection(self):
+        monitor = self.make_monitor(preference="slashco")
+
+        monitor._set_active_game_mode("ecliptica", log_change=False)
+
+        self.assertEqual(monitor.detected_game_mode, "ecliptica")
+        self.assertEqual(monitor.current_game_mode, "slashco")
+        self.assertTrue(monitor.slashco_right_frame.packed)
 
 
 if __name__ == "__main__":

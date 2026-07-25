@@ -362,6 +362,12 @@ FUEL_REQUIRED_COUNT = 8
 ROUND_TIMEOUT_SECONDS = 25 * 60
 ECLIPTICA_CONFIG_FILENAME = os.path.join(DATA_DIR, "ecliptica_config.json")
 ECLIPTICA_HUD_REFRESH_MS = 500
+PANEL_MODE_LABELS = {
+    "auto": "自动",
+    "slashco": "SlashCo",
+    "ecliptica": "Ecliptica",
+}
+PANEL_MODE_KEYS = {label: key for key, label in PANEL_MODE_LABELS.items()}
 
 
 def _parse_port(value):
@@ -612,6 +618,7 @@ class SlashCoMonitorCN:
         self.group_order = {"地图": [], "玩家": [], "未知": []}
         self.groups = {"地图": {}, "玩家": {}, "未知": {}}
         self.ecliptica_state = EclipticaState()
+        self.detected_game_mode = "slashco"
         self.current_game_mode = "slashco"
         self.ecliptica_hud = None
 
@@ -901,6 +908,16 @@ class SlashCoMonitorCN:
             font=("微软雅黑", 9, "bold"),
         )
         self.lbl_mode_status.pack(side=RIGHT, padx=(8, 12))
+        self.panel_mode_combo = ttk.Combobox(
+            top_bar,
+            textvariable=self.panel_mode_var,
+            values=tuple(PANEL_MODE_LABELS.values()),
+            state="readonly",
+            width=10,
+        )
+        self.panel_mode_combo.pack(side=RIGHT)
+        self.panel_mode_combo.bind("<<ComboboxSelected>>", self._on_panel_mode_changed)
+        ttk.Label(top_bar, text="面板：").pack(side=RIGHT, padx=(8, 3))
 
         self.update_status_var = StringVar(value="")
         self.update_progress_var = DoubleVar(value=0.0)
@@ -1228,7 +1245,17 @@ class SlashCoMonitorCN:
         self.ecliptica_source_tree.column("Damage", width=110, anchor=E)
         self.ecliptica_source_tree.pack(fill=BOTH, expand=True)
 
-    def _set_active_game_mode(self, mode, reason="", log_change=True):
+    def _panel_mode_preference(self):
+        label = self.panel_mode_var.get() if hasattr(self, "panel_mode_var") else PANEL_MODE_LABELS["auto"]
+        return PANEL_MODE_KEYS.get(label, "auto")
+
+    def _resolved_panel_mode(self):
+        preference = self._panel_mode_preference()
+        if preference == "auto":
+            return getattr(self, "detected_game_mode", "slashco")
+        return preference
+
+    def _show_game_panel(self, mode, reason="", log_change=True, automatic=False):
         selected = "ecliptica" if mode == "ecliptica" else "slashco"
         changed = selected != getattr(self, "current_game_mode", "slashco")
         self.current_game_mode = selected
@@ -1254,7 +1281,31 @@ class SlashCoMonitorCN:
 
         if changed and log_change and hasattr(self, "txt_log"):
             suffix = f" ({reason})" if reason else ""
-            self.log(f"数据面板已自动切换为 {self.mode_status_var.get().replace('当前：', '')}{suffix}")
+            action = "自动切换" if automatic else "切换"
+            self.log(f"数据面板已{action}为 {self.mode_status_var.get().replace('当前：', '')}{suffix}")
+
+    def _set_active_game_mode(self, mode, reason="", log_change=True):
+        self.detected_game_mode = "ecliptica" if mode == "ecliptica" else "slashco"
+        automatic = self._panel_mode_preference() == "auto"
+        self._show_game_panel(
+            self._resolved_panel_mode(),
+            reason=reason if automatic else "",
+            log_change=log_change and automatic,
+            automatic=automatic,
+        )
+        ecliptica_hud = getattr(self, "ecliptica_hud", None)
+        if self.detected_game_mode != "ecliptica" and ecliptica_hud:
+            ecliptica_hud.hide()
+
+    def _on_panel_mode_changed(self, _event=None):
+        self._save_ecliptica_config()
+        preference = self._panel_mode_preference()
+        self._show_game_panel(
+            self._resolved_panel_mode(),
+            reason="手动选择" if preference != "auto" else "跟随当前地图",
+            log_change=True,
+            automatic=preference == "auto",
+        )
 
     def _update_ecliptica_ui(self):
         if not hasattr(self, "ecliptica_vars"):
@@ -1308,11 +1359,14 @@ class SlashCoMonitorCN:
 
     def _load_ecliptica_config(self):
         self.ecliptica_hud_enabled = BooleanVar(value=False)
+        self.panel_mode_var = StringVar(value=PANEL_MODE_LABELS["auto"])
         try:
             if os.path.exists(ECLIPTICA_CONFIG_FILENAME):
                 with open(ECLIPTICA_CONFIG_FILENAME, "r", encoding="utf-8") as config_file:
                     config = json.load(config_file)
                 self.ecliptica_hud_enabled.set(bool(config.get("hud_enabled", False)))
+                panel_mode = str(config.get("panel_mode", "auto")).lower()
+                self.panel_mode_var.set(PANEL_MODE_LABELS.get(panel_mode, PANEL_MODE_LABELS["auto"]))
         except Exception:
             pass
 
@@ -1320,7 +1374,15 @@ class SlashCoMonitorCN:
         try:
             os.makedirs(os.path.dirname(ECLIPTICA_CONFIG_FILENAME), exist_ok=True)
             with open(ECLIPTICA_CONFIG_FILENAME, "w", encoding="utf-8") as config_file:
-                json.dump({"hud_enabled": bool(self.ecliptica_hud_enabled.get())}, config_file, ensure_ascii=False, indent=2)
+                json.dump(
+                    {
+                        "hud_enabled": bool(self.ecliptica_hud_enabled.get()),
+                        "panel_mode": self._panel_mode_preference(),
+                    },
+                    config_file,
+                    ensure_ascii=False,
+                    indent=2,
+                )
         except Exception as exc:
             if hasattr(self, "txt_log"):
                 self.log(f"保存 Ecliptica HUD 设置失败: {exc}")
@@ -1338,7 +1400,7 @@ class SlashCoMonitorCN:
             if (
                 self.ecliptica_hud
                 and self.ecliptica_hud_enabled.get()
-                and self.current_game_mode == "ecliptica"
+                and self.detected_game_mode == "ecliptica"
             ):
                 snapshot = self.ecliptica_state.snapshot()
                 self.ecliptica_hud.update(snapshot)
@@ -2253,7 +2315,7 @@ class SlashCoMonitorCN:
             return True
 
         strong_events = {"session", "session_blank", "stage", "boss", "intermission", "lobby"}
-        if self.current_game_mode != "ecliptica" and event.kind not in strong_events:
+        if self.detected_game_mode != "ecliptica" and event.kind not in strong_events:
             return False
         self._set_active_game_mode("ecliptica", reason="检测到 Ecliptica 日志")
         self.ecliptica_state.apply(event)
