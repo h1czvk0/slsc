@@ -222,6 +222,7 @@ class EclipticaDesktopHud:
     MUTED = "#a5adbd"
     ACCENT = "#7c5cff"
     BORDER = "#343b4d"
+    TEXT_OUTLINE = "#000000"
 
     def __init__(self, root, layout=None, opacity=0.9):
         self.root = root
@@ -233,10 +234,13 @@ class EclipticaDesktopHud:
         self.lock_background_window = None
         self.damage_window = None
         self.lock_window = None
-        self.damage_label = None
-        self.lock_label = None
-        self.lock_detail_label = None
-        self.damage_title = None
+        self.damage_canvas = None
+        self.lock_canvas = None
+        self.damage_title_text = "ECLIPTICA"
+        self.damage_text = ""
+        self.lock_text = "Boss 当前锁定：-"
+        self.lock_detail_text = "未确认"
+        self.lock_color = self.ACCENT
         self.resize_grips = {}
         self._pointer_operation = None
 
@@ -303,6 +307,87 @@ class EclipticaDesktopHud:
         )
         widget.bind("<B1-Motion>", self._drag_window)
         widget.configure(cursor="fleur")
+
+    def _draw_outlined_text(self, canvas, x, y, text, fill, font, anchor, justify=CENTER):
+        for dx, dy in (
+            (-1, -1),
+            (0, -1),
+            (1, -1),
+            (-1, 0),
+            (1, 0),
+            (-1, 1),
+            (0, 1),
+            (1, 1),
+        ):
+            canvas.create_text(
+                x + dx,
+                y + dy,
+                text=text,
+                fill=self.TEXT_OUTLINE,
+                font=font,
+                anchor=anchor,
+                justify=justify,
+                tags="hud_text",
+            )
+        canvas.create_text(
+            x,
+            y,
+            text=text,
+            fill=fill,
+            font=font,
+            anchor=anchor,
+            justify=justify,
+            tags="hud_text",
+        )
+
+    def _render_damage_text(self, _event=None):
+        if not self.damage_canvas or not self.damage_canvas.winfo_exists():
+            return
+        self.damage_canvas.delete("hud_text")
+        self._draw_outlined_text(
+            self.damage_canvas,
+            14,
+            11,
+            self.damage_title_text,
+            self.ACCENT,
+            ("Segoe UI", 10, "bold"),
+            NW,
+            LEFT,
+        )
+        self._draw_outlined_text(
+            self.damage_canvas,
+            14,
+            36,
+            self.damage_text,
+            self.FG,
+            ("Consolas", 10),
+            NW,
+            LEFT,
+        )
+
+    def _render_lock_text(self, _event=None):
+        if not self.lock_canvas or not self.lock_canvas.winfo_exists():
+            return
+        self.lock_canvas.delete("hud_text")
+        center_x = max(HUD_MIN_SIZES["boss_lock"][0], self.lock_canvas.winfo_width()) // 2
+        self._draw_outlined_text(
+            self.lock_canvas,
+            center_x,
+            8,
+            self.lock_text,
+            self.lock_color,
+            ("Microsoft YaHei UI", 15, "bold"),
+            N,
+        )
+        self._draw_outlined_text(
+            self.lock_canvas,
+            center_x,
+            48,
+            self.lock_detail_text,
+            self.MUTED,
+            ("Microsoft YaHei UI", 9),
+            N,
+        )
 
     def _create_resize_grip(self, window, key):
         grip = Label(
@@ -382,32 +467,22 @@ class EclipticaDesktopHud:
         background = self._create_background_window()
         window = Toplevel(self.root)
         self._configure_content_window(window)
-        self.damage_title = Label(
+        self.damage_canvas = Canvas(
             window,
-            text="ECLIPTICA",
             bg=self.TRANSPARENT,
-            fg=self.ACCENT,
-            font=("Segoe UI", 10, "bold"),
-            anchor=W,
+            width=HUD_MIN_SIZES["damage"][0],
+            height=HUD_MIN_SIZES["damage"][1],
+            highlightthickness=0,
         )
-        self.damage_title.pack(fill=X, padx=14, pady=(11, 2))
-        self.damage_label = Label(
-            window,
-            text="",
-            bg=self.TRANSPARENT,
-            fg=self.FG,
-            justify=LEFT,
-            anchor=W,
-            font=("Consolas", 10),
-        )
-        self.damage_label.pack(fill=BOTH, padx=14, pady=(2, 12))
+        self.damage_canvas.pack(fill=BOTH, expand=True)
+        self.damage_canvas.bind("<Configure>", self._render_damage_text)
         self.damage_background_window = background
         self.damage_window = window
         self._bind_drag(background, "damage", window)
         self._bind_drag(window, "damage", window)
-        self._bind_drag(self.damage_title, "damage", window)
-        self._bind_drag(self.damage_label, "damage", window)
+        self._bind_drag(self.damage_canvas, "damage", window)
         self._create_resize_grip(window, "damage")
+        self._render_damage_text()
         self._set_click_through(background, True)
         self._set_click_through(window, True)
 
@@ -415,32 +490,22 @@ class EclipticaDesktopHud:
         background = self._create_background_window()
         window = Toplevel(self.root)
         self._configure_content_window(window)
-        self.lock_label = Label(
+        self.lock_canvas = Canvas(
             window,
-            text="Boss 当前锁定：-",
             bg=self.TRANSPARENT,
-            fg=self.ACCENT,
-            font=("Microsoft YaHei UI", 15, "bold"),
-            padx=18,
-            pady=8,
+            width=HUD_MIN_SIZES["boss_lock"][0],
+            height=HUD_MIN_SIZES["boss_lock"][1],
+            highlightthickness=0,
         )
-        self.lock_label.pack()
-        self.lock_detail_label = Label(
-            window,
-            text="未确认",
-            bg=self.TRANSPARENT,
-            fg=self.MUTED,
-            font=("Microsoft YaHei UI", 9),
-            pady=0,
-        )
-        self.lock_detail_label.pack(pady=(0, 8))
+        self.lock_canvas.pack(fill=BOTH, expand=True)
+        self.lock_canvas.bind("<Configure>", self._render_lock_text)
         self.lock_background_window = background
         self.lock_window = window
         self._bind_drag(background, "boss_lock", window)
         self._bind_drag(window, "boss_lock", window)
-        self._bind_drag(self.lock_label, "boss_lock", window)
-        self._bind_drag(self.lock_detail_label, "boss_lock", window)
+        self._bind_drag(self.lock_canvas, "boss_lock", window)
         self._create_resize_grip(window, "boss_lock")
+        self._render_lock_text()
         self._set_click_through(background, True)
         self._set_click_through(window, True)
 
@@ -529,8 +594,10 @@ class EclipticaDesktopHud:
             self._set_click_through(background, False)
             self._set_click_through(window, False)
             self.resize_grips[key].place(relx=1.0, rely=1.0, anchor=SE)
-        self.damage_title.configure(text="ECLIPTICA  |  拖动调整位置")
-        self.lock_detail_label.configure(text="拖动调整位置，右下角调整大小")
+        self.damage_title_text = "ECLIPTICA  |  拖动调整位置"
+        self.lock_detail_text = "拖动调整位置，右下角调整大小"
+        self._render_damage_text()
+        self._render_lock_text()
 
     def _apply_display_visibility(self):
         show_damage = self.display_mode in ("both", "damage")
@@ -567,7 +634,8 @@ class EclipticaDesktopHud:
             background.configure(highlightbackground=self.BORDER, highlightthickness=1)
             self._set_click_through(background, True)
             self._set_click_through(window, True)
-        self.damage_title.configure(text="ECLIPTICA")
+        self.damage_title_text = "ECLIPTICA"
+        self._render_damage_text()
         return self.get_layout()
 
     def get_layout(self):
@@ -593,16 +661,19 @@ class EclipticaDesktopHud:
             f"受到伤害   {format_ecliptica_number(snapshot.get('session_damage_taken', 0))}\n"
             f"击败 BOSS  {snapshot.get('defeated_count', 0)}"
         )
-        self.damage_label.configure(text=damage_text)
+        self.damage_text = damage_text
 
         aggro = snapshot.get("aggro", {})
         target = aggro.get("target", "-")
         lock_color = "#ff5d73" if aggro.get("is_local") else self.ACCENT
-        self.lock_label.configure(text=f"Boss 当前锁定：{target}", fg=lock_color)
+        self.lock_text = f"Boss 当前锁定：{target}"
+        self.lock_color = lock_color
         detail = aggro.get("status", "未确认")
         if aggro.get("locked_secs", 0) > 0:
             detail = f"{detail} · {aggro['locked_secs']} 秒"
-        self.lock_detail_label.configure(text=detail)
+        self.lock_detail_text = detail
+        self._render_damage_text()
+        self._render_lock_text()
         self._place_windows()
         self._apply_display_visibility()
         if self.editing:
