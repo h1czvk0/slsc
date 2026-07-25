@@ -35,6 +35,12 @@ from slashco_log_parser import (
     normalize_item_id,
     parse_log_line,
 )
+from ecliptica_log_parser import (
+    EclipticaState,
+    is_ecliptica_room,
+    line_might_affect_ecliptica_state,
+    parse_ecliptica_line,
+)
 from slashco_updater import (
     APP_VERSION,
     download_update,
@@ -163,6 +169,162 @@ class GalleryWindow:
         # ESC 关闭
         self.top.bind("<Escape>", lambda e: self.top.destroy())
 
+
+class EclipticaDesktopHud:
+    BG = "#090c14"
+    FG = "#f4f5f8"
+    MUTED = "#a5adbd"
+    ACCENT = "#7c5cff"
+    BORDER = "#343b4d"
+
+    def __init__(self, root):
+        self.root = root
+        self.damage_window = None
+        self.lock_window = None
+        self.damage_label = None
+        self.lock_label = None
+        self.lock_detail_label = None
+
+    def _make_click_through(self, window):
+        if os.name != "nt":
+            return
+        try:
+            window.update_idletasks()
+            hwnd = window.winfo_id()
+            get_style = ctypes.windll.user32.GetWindowLongW
+            set_style = ctypes.windll.user32.SetWindowLongW
+            ex_style = get_style(hwnd, -20)
+            set_style(hwnd, -20, ex_style | 0x00000020 | 0x00000080 | 0x00080000)
+        except Exception:
+            pass
+
+    def _create_damage_window(self):
+        window = Toplevel(self.root)
+        window.withdraw()
+        window.overrideredirect(True)
+        window.attributes("-topmost", True)
+        window.attributes("-alpha", 0.9)
+        window.configure(bg=self.BG, highlightbackground=self.BORDER, highlightthickness=1)
+        title = Label(
+            window,
+            text="ECLIPTICA",
+            bg=self.BG,
+            fg=self.ACCENT,
+            font=("Segoe UI", 10, "bold"),
+            anchor=W,
+        )
+        title.pack(fill=X, padx=14, pady=(11, 2))
+        self.damage_label = Label(
+            window,
+            text="",
+            bg=self.BG,
+            fg=self.FG,
+            justify=LEFT,
+            anchor=W,
+            font=("Consolas", 10),
+        )
+        self.damage_label.pack(fill=BOTH, padx=14, pady=(2, 12))
+        self.damage_window = window
+        self._make_click_through(window)
+
+    def _create_lock_window(self):
+        window = Toplevel(self.root)
+        window.withdraw()
+        window.overrideredirect(True)
+        window.attributes("-topmost", True)
+        window.attributes("-alpha", 0.9)
+        window.configure(bg=self.BG, highlightbackground=self.BORDER, highlightthickness=1)
+        self.lock_label = Label(
+            window,
+            text="Boss 当前锁定：-",
+            bg=self.BG,
+            fg=self.ACCENT,
+            font=("Microsoft YaHei UI", 15, "bold"),
+            padx=18,
+            pady=8,
+        )
+        self.lock_label.pack()
+        self.lock_detail_label = Label(
+            window,
+            text="未确认",
+            bg=self.BG,
+            fg=self.MUTED,
+            font=("Microsoft YaHei UI", 9),
+            pady=0,
+        )
+        self.lock_detail_label.pack(pady=(0, 8))
+        self.lock_window = window
+        self._make_click_through(window)
+
+    def _ensure_windows(self):
+        if not self.damage_window or not self.damage_window.winfo_exists():
+            self._create_damage_window()
+        if not self.lock_window or not self.lock_window.winfo_exists():
+            self._create_lock_window()
+
+    def _place_windows(self):
+        self.damage_window.update_idletasks()
+        self.lock_window.update_idletasks()
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        damage_h = self.damage_window.winfo_reqheight()
+        lock_w = self.lock_window.winfo_reqwidth()
+        self.damage_window.geometry(f"+24+{max(24, (screen_h - damage_h) // 2)}")
+        self.lock_window.geometry(f"+{max(24, (screen_w - lock_w) // 2)}+24")
+
+    def update(self, snapshot):
+        self._ensure_windows()
+        boss_phase = snapshot.get("current_boss_phase")
+        phase_text = str(boss_phase) if boss_phase is not None else "-"
+        damage_text = (
+            f"当前职业   {snapshot.get('class_name', '-')}\n"
+            f"当前阶段   {snapshot.get('stage', '-')}\n"
+            f"当前 BOSS  {snapshot.get('current_boss', '-')}\n"
+            f"BOSS 阶段  {phase_text}\n"
+            f"当前伤害   {format_ecliptica_number(snapshot.get('current_boss_damage', 0))}\n"
+            f"本局总伤害 {format_ecliptica_number(snapshot.get('session_total_damage', 0))}\n"
+            f"最近 DPS   {snapshot.get('last_settlement_dps', 0.0):.1f}\n"
+            f"受到伤害   {format_ecliptica_number(snapshot.get('session_damage_taken', 0))}\n"
+            f"击败 BOSS  {snapshot.get('defeated_count', 0)}"
+        )
+        self.damage_label.configure(text=damage_text)
+
+        aggro = snapshot.get("aggro", {})
+        target = aggro.get("target", "-")
+        lock_color = "#ff5d73" if aggro.get("is_local") else self.ACCENT
+        self.lock_label.configure(text=f"Boss 当前锁定：{target}", fg=lock_color)
+        detail = aggro.get("status", "未确认")
+        if aggro.get("locked_secs", 0) > 0:
+            detail = f"{detail} · {aggro['locked_secs']} 秒"
+        self.lock_detail_label.configure(text=detail)
+        self._place_windows()
+        self.damage_window.deiconify()
+        self.lock_window.deiconify()
+
+    def hide(self):
+        for window in (self.damage_window, self.lock_window):
+            if window and window.winfo_exists():
+                window.withdraw()
+
+    def destroy(self):
+        for window in (self.damage_window, self.lock_window):
+            if window and window.winfo_exists():
+                try:
+                    window.destroy()
+                except Exception:
+                    pass
+        self.damage_window = None
+        self.lock_window = None
+
+
+def format_ecliptica_number(value):
+    number = float(value or 0)
+    if abs(number) >= 1_000_000:
+        return f"{number / 1_000_000:.2f}M"
+    if abs(number) >= 1_000:
+        return f"{number / 1_000:.1f}K"
+    return str(int(round(number)))
+
 # =====================
 # 配置
 # =====================
@@ -198,6 +360,8 @@ LOG_FILE_CHECK_INTERVAL_SECONDS = 3.0
 FUEL_HIBERNATE_CONFIRM_DELAY_MS = 700
 FUEL_REQUIRED_COUNT = 8
 ROUND_TIMEOUT_SECONDS = 25 * 60
+ECLIPTICA_CONFIG_FILENAME = os.path.join(DATA_DIR, "ecliptica_config.json")
+ECLIPTICA_HUD_REFRESH_MS = 500
 
 
 def _parse_port(value):
@@ -418,6 +582,7 @@ class SlashCoMonitorCN:
         self._log_queue_after_id = None
         self._pending_tick_after_id = None
         self._round_timer_after_id = None
+        self._ecliptica_hud_after_id = None
         self._sponsor_op_lock = threading.Lock()
 
 
@@ -446,6 +611,9 @@ class SlashCoMonitorCN:
         self.item_records = {}
         self.group_order = {"地图": [], "玩家": [], "未知": []}
         self.groups = {"地图": {}, "玩家": {}, "未知": {}}
+        self.ecliptica_state = EclipticaState()
+        self.current_game_mode = "slashco"
+        self.ecliptica_hud = None
 
         # 设置 AppUserModelID 以修复任务栏图标
         try:
@@ -484,8 +652,14 @@ class SlashCoMonitorCN:
 
         # 加载赞助者配置（UI 需要这些变量）
         self._load_sponsor_config()
+        self._load_ecliptica_config()
 
         self.setup_ui()
+        self.ecliptica_hud = EclipticaDesktopHud(self.root)
+        self._ecliptica_hud_after_id = self.root.after(
+            ECLIPTICA_HUD_REFRESH_MS,
+            self._ecliptica_hud_tick,
+        )
 
         # 日志队列 (线程安全) —— 必须在所有线程启动之前初始化!
         self._log_queue = queue.Queue()
@@ -719,6 +893,14 @@ class SlashCoMonitorCN:
         ttk.Button(top_bar, text="导出未翻译位置", command=self.export_untranslated).pack(side=LEFT)
 
         ttk.Button(top_bar, text="强制重置数据", command=self.force_reset).pack(side=RIGHT)
+        self.mode_status_var = StringVar(value="当前：SlashCo")
+        self.lbl_mode_status = ttk.Label(
+            top_bar,
+            textvariable=self.mode_status_var,
+            foreground="#6c4cff",
+            font=("微软雅黑", 9, "bold"),
+        )
+        self.lbl_mode_status.pack(side=RIGHT, padx=(8, 12))
 
         self.update_status_var = StringVar(value="")
         self.update_progress_var = DoubleVar(value=0.0)
@@ -734,7 +916,19 @@ class SlashCoMonitorCN:
         )
         self.update_progress.pack(fill=X, pady=(4, 0))
 
-        fuel_frame = ttk.LabelFrame(self.left_p, text="燃油进度", padding=5)
+        self.mode_left_container = ttk.Frame(self.left_p)
+        self.mode_left_container.pack(fill=X)
+        self.slashco_left_frame = ttk.Frame(self.mode_left_container)
+        self.ecliptica_left_frame = ttk.Frame(self.mode_left_container)
+        self.slashco_left_frame.pack(fill=X)
+
+        self.mode_right_container = ttk.Frame(self.right_p)
+        self.mode_right_container.pack(fill=BOTH, expand=True)
+        self.slashco_right_frame = ttk.Frame(self.mode_right_container)
+        self.ecliptica_right_frame = ttk.Frame(self.mode_right_container)
+        self.slashco_right_frame.pack(fill=BOTH, expand=True)
+
+        fuel_frame = ttk.LabelFrame(self.slashco_left_frame, text="燃油进度", padding=5)
         fuel_frame.pack(fill=X, padx=5, pady=5)
         fuel_row = ttk.Frame(fuel_frame)
         fuel_row.pack(fill=X, pady=2)
@@ -744,7 +938,7 @@ class SlashCoMonitorCN:
         self.lbl_fuel_progress = ttk.Label(fuel_row, text=f"{FUEL_REQUIRED_COUNT}/0", width=8, font=("Consolas", 9))
         self.lbl_fuel_progress.pack(side=LEFT)
 
-        gen_frame = ttk.LabelFrame(self.left_p, text="电池状态", padding=5)
+        gen_frame = ttk.LabelFrame(self.slashco_left_frame, text="电池状态", padding=5)
         gen_frame.pack(fill=X, padx=5, pady=5)
 
         self.ui_gens = {}
@@ -756,7 +950,7 @@ class SlashCoMonitorCN:
             bat.pack(side=LEFT)
             self.ui_gens[gid] = {"bat": bat}
 
-        stats_frame = ttk.LabelFrame(self.left_p, text="对局输出统计", padding=5)
+        stats_frame = ttk.LabelFrame(self.slashco_left_frame, text="对局输出统计", padding=5)
         stats_frame.pack(fill=X, padx=5, pady=2)
 
         # 取消左右分栏，直接垂直排列
@@ -789,6 +983,8 @@ class SlashCoMonitorCN:
         # 4. 玩家优惠（可少加油）
         self.lbl_stats_headstart = ttk.Label(stats_frame, text="", font=("微软雅黑", 12, "bold"), foreground="#27ae60")
         self.lbl_stats_headstart.pack(anchor=W, pady=2)
+
+        self._build_ecliptica_left_panel()
 
 
 
@@ -860,7 +1056,7 @@ class SlashCoMonitorCN:
         self.txt_log = scrolledtext.ScrolledText(log_frame, height=5, font=("Consolas", 8))
         self.txt_log.pack(fill=BOTH, expand=True)
 
-        item_frame = ttk.LabelFrame(self.right_p, text="本局物品清单", padding=5)
+        item_frame = ttk.LabelFrame(self.slashco_right_frame, text="本局物品清单", padding=5)
         item_frame.pack(fill=BOTH, expand=True, padx=5, pady=5)
 
         # 全屏画廊覆盖层 (初始隐藏)
@@ -912,6 +1108,252 @@ class SlashCoMonitorCN:
         self.tree.configure(yscroll=sc.set)
         self.tree.pack(side=LEFT, fill=BOTH, expand=True)
         sc.pack(side=RIGHT, fill=Y)
+        self._build_ecliptica_right_panel()
+        self._set_active_game_mode("slashco", log_change=False)
+
+    def _build_ecliptica_left_panel(self):
+        self.ecliptica_vars = {
+            "session": StringVar(value="-"),
+            "class": StringVar(value="-"),
+            "stage": StringVar(value="-"),
+            "boss": StringVar(value="-"),
+            "phase": StringVar(value="-"),
+            "boss_damage": StringVar(value="0"),
+            "total_damage": StringVar(value="0"),
+            "dps": StringVar(value="0.0"),
+            "damage_taken": StringVar(value="0"),
+            "defeated": StringVar(value="0"),
+            "aggro": StringVar(value="未确认"),
+        }
+
+        hud_frame = ttk.LabelFrame(self.ecliptica_left_frame, text="Ecliptica 桌面 HUD", padding=7)
+        hud_frame.pack(fill=X, padx=5, pady=5)
+        ttk.Checkbutton(
+            hud_frame,
+            text="启用透明置顶 HUD",
+            variable=self.ecliptica_hud_enabled,
+            command=self._on_ecliptica_hud_toggle,
+        ).pack(side=LEFT)
+        ttk.Label(
+            hud_frame,
+            text="伤害数据位于左侧，Boss 锁定位于屏幕顶部",
+            foreground="#666666",
+            font=("微软雅黑", 8),
+        ).pack(side=RIGHT)
+
+        summary = ttk.LabelFrame(self.ecliptica_left_frame, text="战斗概览", padding=8)
+        summary.pack(fill=X, padx=5, pady=2)
+        rows = (
+            ("会话 ID", "session"),
+            ("当前职业", "class"),
+            ("当前阶段", "stage"),
+            ("当前 BOSS", "boss"),
+            ("BOSS 阶段", "phase"),
+            ("当前 BOSS 累计伤害", "boss_damage"),
+            ("本局总伤害", "total_damage"),
+            ("最近结算 DPS", "dps"),
+            ("本局受到伤害", "damage_taken"),
+            ("已击败 BOSS", "defeated"),
+        )
+        for row_index, (label, key) in enumerate(rows):
+            ttk.Label(summary, text=label, width=18, foreground="#666666").grid(
+                row=row_index,
+                column=0,
+                sticky=W,
+                pady=2,
+            )
+            ttk.Label(
+                summary,
+                textvariable=self.ecliptica_vars[key],
+                font=("微软雅黑", 10, "bold"),
+            ).grid(row=row_index, column=1, sticky=E, pady=2)
+        summary.grid_columnconfigure(1, weight=1)
+
+        lock_frame = ttk.LabelFrame(self.ecliptica_left_frame, text="Boss 当前锁定", padding=8)
+        lock_frame.pack(fill=X, padx=5, pady=5)
+        self.lbl_ecliptica_aggro = ttk.Label(
+            lock_frame,
+            textvariable=self.ecliptica_vars["aggro"],
+            foreground="#6c4cff",
+            font=("微软雅黑", 13, "bold"),
+        )
+        self.lbl_ecliptica_aggro.pack(anchor=CENTER, pady=4)
+        ttk.Label(
+            lock_frame,
+            text="“其他玩家”由本地未继续受击推断，状态过期后显示未确认。",
+            foreground="#777777",
+            font=("微软雅黑", 8),
+        ).pack(anchor=CENTER)
+
+    def _build_ecliptica_right_panel(self):
+        frame = ttk.LabelFrame(self.ecliptica_right_frame, text="Ecliptica 伤害数据", padding=7)
+        frame.pack(fill=BOTH, expand=True, padx=5, pady=5)
+
+        ttk.Label(
+            frame,
+            text="BOSS 伤害结算",
+            foreground="#6c4cff",
+            font=("微软雅黑", 11, "bold"),
+        ).pack(anchor=W, pady=(0, 4))
+        settlement_columns = ("Boss", "Phase", "Strike", "NonStrike", "Total", "DPS")
+        self.ecliptica_settlement_tree = ttk.Treeview(
+            frame,
+            columns=settlement_columns,
+            show="headings",
+            height=10,
+        )
+        widths = {"Boss": 170, "Phase": 55, "Strike": 90, "NonStrike": 90, "Total": 90, "DPS": 70}
+        labels = {"Boss": "BOSS", "Phase": "阶段", "Strike": "直击", "NonStrike": "非直击", "Total": "总伤害", "DPS": "DPS"}
+        for column in settlement_columns:
+            self.ecliptica_settlement_tree.heading(column, text=labels[column])
+            self.ecliptica_settlement_tree.column(column, width=widths[column], anchor=CENTER)
+        self.ecliptica_settlement_tree.pack(fill=BOTH, expand=True)
+
+        ttk.Label(
+            frame,
+            text="受到伤害来源",
+            foreground="#c0392b",
+            font=("微软雅黑", 11, "bold"),
+        ).pack(anchor=W, pady=(12, 4))
+        source_columns = ("Source", "Damage")
+        self.ecliptica_source_tree = ttk.Treeview(
+            frame,
+            columns=source_columns,
+            show="headings",
+            height=7,
+        )
+        self.ecliptica_source_tree.heading("Source", text="来源")
+        self.ecliptica_source_tree.heading("Damage", text="累计伤害")
+        self.ecliptica_source_tree.column("Source", width=420, anchor=W)
+        self.ecliptica_source_tree.column("Damage", width=110, anchor=E)
+        self.ecliptica_source_tree.pack(fill=BOTH, expand=True)
+
+    def _set_active_game_mode(self, mode, reason="", log_change=True):
+        selected = "ecliptica" if mode == "ecliptica" else "slashco"
+        changed = selected != getattr(self, "current_game_mode", "slashco")
+        self.current_game_mode = selected
+        if not hasattr(self, "slashco_left_frame"):
+            return
+
+        self.slashco_left_frame.pack_forget()
+        self.ecliptica_left_frame.pack_forget()
+        self.slashco_right_frame.pack_forget()
+        self.ecliptica_right_frame.pack_forget()
+        if selected == "ecliptica":
+            self.ecliptica_left_frame.pack(fill=X)
+            self.ecliptica_right_frame.pack(fill=BOTH, expand=True)
+            self.mode_status_var.set("当前：Ecliptica")
+            self.lbl_mode_status.configure(foreground="#6c4cff")
+        else:
+            self.slashco_left_frame.pack(fill=X)
+            self.slashco_right_frame.pack(fill=BOTH, expand=True)
+            self.mode_status_var.set("当前：SlashCo")
+            self.lbl_mode_status.configure(foreground="#1f6f3a")
+            if self.ecliptica_hud:
+                self.ecliptica_hud.hide()
+
+        if changed and log_change and hasattr(self, "txt_log"):
+            suffix = f" ({reason})" if reason else ""
+            self.log(f"数据面板已自动切换为 {self.mode_status_var.get().replace('当前：', '')}{suffix}")
+
+    def _update_ecliptica_ui(self):
+        if not hasattr(self, "ecliptica_vars"):
+            return
+        snapshot = self.ecliptica_state.snapshot()
+        phase = snapshot.get("current_boss_phase")
+        stage_progress = snapshot.get("stage_progress")
+        stage_text = snapshot.get("stage", "-")
+        if stage_progress is not None:
+            stage_text = f"{stage_text} · 进度 {stage_progress}"
+        self.ecliptica_vars["session"].set(snapshot.get("session_id", "-"))
+        self.ecliptica_vars["class"].set(snapshot.get("class_name", "-"))
+        self.ecliptica_vars["stage"].set(stage_text)
+        self.ecliptica_vars["boss"].set(snapshot.get("current_boss", "-"))
+        self.ecliptica_vars["phase"].set(str(phase) if phase is not None else "-")
+        self.ecliptica_vars["boss_damage"].set(format_ecliptica_number(snapshot.get("current_boss_damage", 0)))
+        self.ecliptica_vars["total_damage"].set(format_ecliptica_number(snapshot.get("session_total_damage", 0)))
+        self.ecliptica_vars["dps"].set(f"{snapshot.get('last_settlement_dps', 0.0):.1f}")
+        self.ecliptica_vars["damage_taken"].set(format_ecliptica_number(snapshot.get("session_damage_taken", 0)))
+        self.ecliptica_vars["defeated"].set(str(snapshot.get("defeated_count", 0)))
+
+        aggro = snapshot.get("aggro", {})
+        target = aggro.get("target", "-")
+        aggro_text = f"{target} · {aggro.get('status', '未确认')}"
+        if aggro.get("locked_secs", 0) > 0:
+            aggro_text += f" · {aggro['locked_secs']} 秒"
+        self.ecliptica_vars["aggro"].set(aggro_text)
+        self.lbl_ecliptica_aggro.configure(foreground="#c0392b" if aggro.get("is_local") else "#6c4cff")
+
+        for item in self.ecliptica_settlement_tree.get_children():
+            self.ecliptica_settlement_tree.delete(item)
+        for settlement in self.ecliptica_state.settlements:
+            self.ecliptica_settlement_tree.insert(
+                "",
+                END,
+                values=(
+                    settlement["boss"],
+                    settlement["phase"],
+                    format_ecliptica_number(settlement["strike"]),
+                    format_ecliptica_number(settlement["non_strike"]),
+                    format_ecliptica_number(settlement["total"]),
+                    f"{settlement['dps']:.1f}",
+                ),
+            )
+
+        for item in self.ecliptica_source_tree.get_children():
+            self.ecliptica_source_tree.delete(item)
+        sources = sorted(self.ecliptica_state.damage_sources.items(), key=lambda item: item[1], reverse=True)
+        for source, amount in sources[:30]:
+            self.ecliptica_source_tree.insert("", END, values=(source, format_ecliptica_number(amount)))
+
+    def _load_ecliptica_config(self):
+        self.ecliptica_hud_enabled = BooleanVar(value=False)
+        try:
+            if os.path.exists(ECLIPTICA_CONFIG_FILENAME):
+                with open(ECLIPTICA_CONFIG_FILENAME, "r", encoding="utf-8") as config_file:
+                    config = json.load(config_file)
+                self.ecliptica_hud_enabled.set(bool(config.get("hud_enabled", False)))
+        except Exception:
+            pass
+
+    def _save_ecliptica_config(self):
+        try:
+            os.makedirs(os.path.dirname(ECLIPTICA_CONFIG_FILENAME), exist_ok=True)
+            with open(ECLIPTICA_CONFIG_FILENAME, "w", encoding="utf-8") as config_file:
+                json.dump({"hud_enabled": bool(self.ecliptica_hud_enabled.get())}, config_file, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            if hasattr(self, "txt_log"):
+                self.log(f"保存 Ecliptica HUD 设置失败: {exc}")
+
+    def _on_ecliptica_hud_toggle(self):
+        self._save_ecliptica_config()
+        if not self.ecliptica_hud_enabled.get() and self.ecliptica_hud:
+            self.ecliptica_hud.hide()
+
+    def _ecliptica_hud_tick(self):
+        self._ecliptica_hud_after_id = None
+        if self._is_shutting_down:
+            return
+        try:
+            if (
+                self.ecliptica_hud
+                and self.ecliptica_hud_enabled.get()
+                and self.current_game_mode == "ecliptica"
+            ):
+                snapshot = self.ecliptica_state.snapshot()
+                self.ecliptica_hud.update(snapshot)
+                self._update_ecliptica_ui()
+            elif self.ecliptica_hud:
+                self.ecliptica_hud.hide()
+        except Exception as exc:
+            self.log(f"Ecliptica HUD 更新失败: {exc}")
+        try:
+            self._ecliptica_hud_after_id = self.root.after(
+                ECLIPTICA_HUD_REFRESH_MS,
+                self._ecliptica_hud_tick,
+            )
+        except Exception:
+            self._ecliptica_hud_after_id = None
 
     def is_light_color(self, hex_color):
         """判断颜色是否为浅色"""
@@ -1347,7 +1789,14 @@ class SlashCoMonitorCN:
         threading.Thread(target=self._start_sponsor_server, daemon=True).start()
 
     def force_reset(self):
-        self.reset_game(force=True, reason="手动强制重置")
+        if getattr(self, "current_game_mode", "slashco") == "ecliptica":
+            world_name = self.ecliptica_state.world_name
+            self.ecliptica_state.reset(preserve_world=False)
+            self.ecliptica_state.world_name = world_name
+            self._update_ecliptica_ui()
+            self.log("=== 已手动重置 Ecliptica 战斗数据 ===")
+        else:
+            self.reset_game(force=True, reason="手动强制重置")
 
     def _format_round_elapsed(self, elapsed_seconds):
         total = max(0, int(elapsed_seconds))
@@ -1791,10 +2240,41 @@ class SlashCoMonitorCN:
             self._tree_rebuild_after_id = None
             self.rebuild_item_tree()
 
+    def _handle_ecliptica_event(self, event):
+        if event.kind == "room_entered":
+            room_name = event.groups[0]
+            if is_ecliptica_room(room_name):
+                self.ecliptica_state.apply(event)
+                self._set_active_game_mode("ecliptica", reason=room_name)
+                self._update_ecliptica_ui()
+            else:
+                self.ecliptica_state.reset(preserve_world=False)
+                self._set_active_game_mode("slashco", reason=room_name)
+            return True
+
+        strong_events = {"session", "session_blank", "stage", "boss", "intermission", "lobby"}
+        if self.current_game_mode != "ecliptica" and event.kind not in strong_events:
+            return False
+        self._set_active_game_mode("ecliptica", reason="检测到 Ecliptica 日志")
+        self.ecliptica_state.apply(event)
+        self._update_ecliptica_ui()
+        return True
+
+    def _reset_for_new_log(self):
+        self.reset_game(force=True, reason="新日志文件加载")
+        self.ecliptica_state.reset(preserve_world=False)
+        self._update_ecliptica_ui()
+        self._set_active_game_mode("slashco", log_change=False)
+
     def process_line(self, line: str):
+        ecliptica_event = parse_ecliptica_line(line)
+        if ecliptica_event and self._handle_ecliptica_event(ecliptica_event):
+            return
+
         event = parse_log_line(line)
         if not event:
             return
+        self._set_active_game_mode("slashco", reason="检测到 SlashCo 日志")
 
         if event.kind == "item":
             iid_raw, raw_name = event.groups
@@ -1928,7 +2408,7 @@ class SlashCoMonitorCN:
         return is_round_end_line(line)
 
     def _line_might_affect_state(self, line: str) -> bool:
-        return line_might_affect_state(line)
+        return line_might_affect_state(line) or line_might_affect_ecliptica_state(line)
 
     def _read_log_tail_text(self, path: str):
         try:
@@ -1966,15 +2446,33 @@ class SlashCoMonitorCN:
 
         last_start_pos = None
         last_end_pos = None
+        last_room_pos = None
+        last_room_name = ""
+        first_session_positions = {}
+        last_session_id = ""
         pos = 0
         for raw_line in text.splitlines(True):
             line = raw_line.strip()
             if line:
+                ecliptica_event = parse_ecliptica_line(line)
+                if ecliptica_event and ecliptica_event.kind == "room_entered":
+                    last_room_pos = pos
+                    last_room_name = ecliptica_event.groups[0]
+                elif ecliptica_event and ecliptica_event.kind == "session":
+                    last_session_id = ecliptica_event.groups[0]
+                    first_session_positions.setdefault(last_session_id, pos)
                 if self._is_round_start_line(line):
                     last_start_pos = pos
                 if self._is_round_end_line(line):
                     last_end_pos = pos
             pos += len(raw_line)
+
+        if last_room_pos is not None and is_ecliptica_room(last_room_name):
+            recovery_pos = first_session_positions.get(last_session_id, last_room_pos)
+            active_text = text[recovery_pos:]
+            lines = [line for line in active_text.splitlines() if self._line_might_affect_state(line)]
+            self.log(f"已从日志尾部恢复 Ecliptica 当前房间状态，共 {len(lines)} 行")
+            return lines
 
         if last_start_pos is None:
             self.log("尾部扫描未找到当前回合开始点，已从日志末尾开始监听")
@@ -2076,7 +2574,7 @@ class SlashCoMonitorCN:
                         try:
                             self._clear_pending_log_lines()
                             recovery_lines = self._get_active_round_recovery_lines(current_file_path)
-                            self._ui_after(self.reset_game, True, "新日志文件加载")
+                            self._ui_after(self._reset_for_new_log)
                             current_offset = os.path.getsize(current_file_path)
                             self._enqueue_log_lines(recovery_lines)
                         except Exception:
@@ -2528,7 +3026,14 @@ class SlashCoMonitorCN:
                 pass
 
         # 取消周期性 after 任务
-        for attr in ("_log_queue_after_id", "_log_lines_after_id", "_pending_tick_after_id", "_tree_rebuild_after_id", "_round_timer_after_id"):
+        for attr in (
+            "_log_queue_after_id",
+            "_log_lines_after_id",
+            "_pending_tick_after_id",
+            "_tree_rebuild_after_id",
+            "_round_timer_after_id",
+            "_ecliptica_hud_after_id",
+        ):
             after_id = getattr(self, attr, None)
             if after_id:
                 try:
@@ -2544,6 +3049,11 @@ class SlashCoMonitorCN:
             pass
         try:
             self.hide_img_tooltip()
+        except Exception:
+            pass
+        try:
+            if self.ecliptica_hud:
+                self.ecliptica_hud.destroy()
         except Exception:
             pass
 
