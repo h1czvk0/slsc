@@ -8,6 +8,7 @@ sys.path.insert(0, str(ROOT))
 
 from ecliptica_log_parser import EclipticaState, parse_ecliptica_line  # noqa: E402
 from slashco import (  # noqa: E402
+    EclipticaDesktopHud,
     PANEL_MODE_LABELS,
     SlashCoMonitorCN,
     normalize_hud_display_mode,
@@ -44,6 +45,22 @@ class FakeWidget:
 
     def hide(self):
         self.hide_calls += 1
+
+
+class FakeHudWindow:
+    def __init__(self):
+        self.alpha = 1.0
+        self.lifted_above = None
+
+    def winfo_exists(self):
+        return True
+
+    def attributes(self, name, value):
+        if name == "-alpha":
+            self.alpha = value
+
+    def lift(self, window):
+        self.lifted_above = window
 
 
 class EclipticaMonitorIntegrationTests(unittest.TestCase):
@@ -154,6 +171,23 @@ class PanelModeSelectionTests(unittest.TestCase):
 
 
 class HudLayoutTests(unittest.TestCase):
+    def test_hud_opacity_only_changes_background_windows(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud.opacity = 0.9
+        hud.damage_background_window = FakeHudWindow()
+        hud.lock_background_window = FakeHudWindow()
+        hud.damage_window = FakeHudWindow()
+        hud.lock_window = FakeHudWindow()
+
+        hud.set_opacity(0.45)
+
+        self.assertEqual(hud.damage_background_window.alpha, 0.45)
+        self.assertEqual(hud.lock_background_window.alpha, 0.45)
+        self.assertEqual(hud.damage_window.alpha, 1.0)
+        self.assertEqual(hud.lock_window.alpha, 1.0)
+        self.assertIs(hud.damage_window.lifted_above, hud.damage_background_window)
+        self.assertIs(hud.lock_window.lifted_above, hud.lock_background_window)
+
     def test_hud_opacity_is_clamped_and_invalid_values_use_default(self):
         self.assertEqual(normalize_hud_opacity(0.65), 0.65)
         self.assertEqual(normalize_hud_opacity(0.05), 0.2)

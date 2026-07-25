@@ -217,6 +217,7 @@ def normalize_hud_layout(layout):
 
 class EclipticaDesktopHud:
     BG = "#090c14"
+    TRANSPARENT = "#010203"
     FG = "#f4f5f8"
     MUTED = "#a5adbd"
     ACCENT = "#7c5cff"
@@ -228,6 +229,8 @@ class EclipticaDesktopHud:
         self.opacity = normalize_hud_opacity(opacity)
         self.editing = False
         self.display_mode = "both"
+        self.damage_background_window = None
+        self.lock_background_window = None
         self.damage_window = None
         self.lock_window = None
         self.damage_label = None
@@ -256,9 +259,42 @@ class EclipticaDesktopHud:
                 ex_style &= ~0x00000020
             set_style(hwnd, -20, ex_style)
             ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0033)
-            window.attributes("-alpha", self.opacity)
         except Exception:
             pass
+
+    def _create_background_window(self):
+        window = Toplevel(self.root)
+        window.withdraw()
+        window.overrideredirect(True)
+        window.attributes("-topmost", True)
+        window.attributes("-alpha", self.opacity)
+        window.configure(bg=self.BG, highlightbackground=self.BORDER, highlightthickness=1)
+        return window
+
+    def _configure_content_window(self, window):
+        window.withdraw()
+        window.overrideredirect(True)
+        window.attributes("-topmost", True)
+        window.attributes("-alpha", 1.0)
+        window.configure(bg=self.TRANSPARENT, highlightthickness=0)
+        if os.name == "nt":
+            window.attributes("-transparentcolor", self.TRANSPARENT)
+
+    def _background_window(self, key):
+        if key == "damage":
+            return self.damage_background_window
+        return self.lock_background_window
+
+    def _sync_background_window(self, key, content_window):
+        background = self._background_window(key)
+        if not background or not background.winfo_exists():
+            return
+        geometry = (
+            f"{content_window.winfo_width()}x{content_window.winfo_height()}"
+            f"+{content_window.winfo_x()}+{content_window.winfo_y()}"
+        )
+        background.geometry(geometry)
+        content_window.lift(background)
 
     def _bind_drag(self, widget, key, window):
         widget.bind(
@@ -272,7 +308,7 @@ class EclipticaDesktopHud:
         grip = Label(
             window,
             text="//",
-            bg=self.BG,
+            bg=self.TRANSPARENT,
             fg=self.ACCENT,
             font=("Consolas", 11, "bold"),
             cursor="size_nw_se",
@@ -311,6 +347,7 @@ class EclipticaDesktopHud:
         x = min(max(-window.winfo_width() + 80, x), screen_w - 80)
         y = min(max(0, y), screen_h - 40)
         window.geometry(f"+{x}+{y}")
+        self._sync_background_window(operation["key"], window)
         self._capture_window_layout(operation["key"], window)
 
     def _start_resize(self, event, key, window):
@@ -338,19 +375,17 @@ class EclipticaDesktopHud:
         width = min(width, self.root.winfo_screenwidth())
         height = min(height, self.root.winfo_screenheight())
         window.geometry(f"{width}x{height}")
+        self._sync_background_window(key, window)
         self._capture_window_layout(key, window)
 
     def _create_damage_window(self):
+        background = self._create_background_window()
         window = Toplevel(self.root)
-        window.withdraw()
-        window.overrideredirect(True)
-        window.attributes("-topmost", True)
-        window.attributes("-alpha", self.opacity)
-        window.configure(bg=self.BG, highlightbackground=self.BORDER, highlightthickness=1)
+        self._configure_content_window(window)
         self.damage_title = Label(
             window,
             text="ECLIPTICA",
-            bg=self.BG,
+            bg=self.TRANSPARENT,
             fg=self.ACCENT,
             font=("Segoe UI", 10, "bold"),
             anchor=W,
@@ -359,31 +394,31 @@ class EclipticaDesktopHud:
         self.damage_label = Label(
             window,
             text="",
-            bg=self.BG,
+            bg=self.TRANSPARENT,
             fg=self.FG,
             justify=LEFT,
             anchor=W,
             font=("Consolas", 10),
         )
         self.damage_label.pack(fill=BOTH, padx=14, pady=(2, 12))
+        self.damage_background_window = background
         self.damage_window = window
+        self._bind_drag(background, "damage", window)
         self._bind_drag(window, "damage", window)
         self._bind_drag(self.damage_title, "damage", window)
         self._bind_drag(self.damage_label, "damage", window)
         self._create_resize_grip(window, "damage")
+        self._set_click_through(background, True)
         self._set_click_through(window, True)
 
     def _create_lock_window(self):
+        background = self._create_background_window()
         window = Toplevel(self.root)
-        window.withdraw()
-        window.overrideredirect(True)
-        window.attributes("-topmost", True)
-        window.attributes("-alpha", self.opacity)
-        window.configure(bg=self.BG, highlightbackground=self.BORDER, highlightthickness=1)
+        self._configure_content_window(window)
         self.lock_label = Label(
             window,
             text="Boss 当前锁定：-",
-            bg=self.BG,
+            bg=self.TRANSPARENT,
             fg=self.ACCENT,
             font=("Microsoft YaHei UI", 15, "bold"),
             padx=18,
@@ -393,17 +428,20 @@ class EclipticaDesktopHud:
         self.lock_detail_label = Label(
             window,
             text="未确认",
-            bg=self.BG,
+            bg=self.TRANSPARENT,
             fg=self.MUTED,
             font=("Microsoft YaHei UI", 9),
             pady=0,
         )
         self.lock_detail_label.pack(pady=(0, 8))
+        self.lock_background_window = background
         self.lock_window = window
+        self._bind_drag(background, "boss_lock", window)
         self._bind_drag(window, "boss_lock", window)
         self._bind_drag(self.lock_label, "boss_lock", window)
         self._bind_drag(self.lock_detail_label, "boss_lock", window)
         self._create_resize_grip(window, "boss_lock")
+        self._set_click_through(background, True)
         self._set_click_through(window, True)
 
     def _ensure_windows(self):
@@ -454,6 +492,10 @@ class EclipticaDesktopHud:
         x = min(max(-width + 80, int(geometry["x"])), screen_w - 80)
         y = min(max(0, int(geometry["y"])), screen_h - 40)
         window.geometry(f"{width}x{height}+{x}+{y}")
+        background = self._background_window(key)
+        if background and background.winfo_exists():
+            background.geometry(f"{width}x{height}+{x}+{y}")
+            window.lift(background)
         self.layout[key] = {"x": x, "y": y, "width": width, "height": height}
 
     def _place_windows(self):
@@ -463,9 +505,14 @@ class EclipticaDesktopHud:
 
     def set_opacity(self, opacity):
         self.opacity = normalize_hud_opacity(opacity)
-        for window in (self.damage_window, self.lock_window):
-            if window and window.winfo_exists():
-                window.attributes("-alpha", self.opacity)
+        for background, content in (
+            (self.damage_background_window, self.damage_window),
+            (self.lock_background_window, self.lock_window),
+        ):
+            if background and background.winfo_exists():
+                background.attributes("-alpha", self.opacity)
+                if content and content.winfo_exists():
+                    content.lift(background)
 
     def reset_layout(self):
         self.layout = {}
@@ -477,7 +524,9 @@ class EclipticaDesktopHud:
 
     def _apply_edit_visuals(self):
         for key, window in (("damage", self.damage_window), ("boss_lock", self.lock_window)):
-            window.configure(highlightbackground=self.ACCENT, highlightthickness=2)
+            background = self._background_window(key)
+            background.configure(highlightbackground=self.ACCENT, highlightthickness=2)
+            self._set_click_through(background, False)
             self._set_click_through(window, False)
             self.resize_grips[key].place(relx=1.0, rely=1.0, anchor=SE)
         self.damage_title.configure(text="ECLIPTICA  |  拖动调整位置")
@@ -487,12 +536,18 @@ class EclipticaDesktopHud:
         show_damage = self.display_mode in ("both", "damage")
         show_boss_lock = self.display_mode in ("both", "boss_lock")
         if show_damage:
+            self.damage_background_window.deiconify()
             self.damage_window.deiconify()
+            self.damage_window.lift(self.damage_background_window)
         else:
+            self.damage_background_window.withdraw()
             self.damage_window.withdraw()
         if show_boss_lock:
+            self.lock_background_window.deiconify()
             self.lock_window.deiconify()
+            self.lock_window.lift(self.lock_background_window)
         else:
+            self.lock_background_window.withdraw()
             self.lock_window.withdraw()
 
     def begin_edit(self, snapshot, display_mode="both"):
@@ -508,7 +563,9 @@ class EclipticaDesktopHud:
         self._pointer_operation = None
         for key, window in (("damage", self.damage_window), ("boss_lock", self.lock_window)):
             self.resize_grips[key].place_forget()
-            window.configure(highlightbackground=self.BORDER, highlightthickness=1)
+            background = self._background_window(key)
+            background.configure(highlightbackground=self.BORDER, highlightthickness=1)
+            self._set_click_through(background, True)
             self._set_click_through(window, True)
         self.damage_title.configure(text="ECLIPTICA")
         return self.get_layout()
@@ -551,25 +608,42 @@ class EclipticaDesktopHud:
         if self.editing:
             self._apply_edit_visuals()
         else:
-            for window in (self.damage_window, self.lock_window):
+            for window in (
+                self.damage_background_window,
+                self.damage_window,
+                self.lock_background_window,
+                self.lock_window,
+            ):
                 if window.state() == "normal":
                     self._set_click_through(window, True)
 
     def hide(self, force=False):
         if self.editing and not force:
             return
-        for window in (self.damage_window, self.lock_window):
+        for window in (
+            self.damage_background_window,
+            self.damage_window,
+            self.lock_background_window,
+            self.lock_window,
+        ):
             if window and window.winfo_exists():
                 window.withdraw()
 
     def destroy(self):
-        for window in (self.damage_window, self.lock_window):
+        for window in (
+            self.damage_background_window,
+            self.damage_window,
+            self.lock_background_window,
+            self.lock_window,
+        ):
             if window and window.winfo_exists():
                 try:
                     window.destroy()
                 except Exception:
                     pass
+        self.damage_background_window = None
         self.damage_window = None
+        self.lock_background_window = None
         self.lock_window = None
 
 
@@ -1432,7 +1506,7 @@ class SlashCoMonitorCN:
         ).pack(side=RIGHT)
         hud_opacity_row = ttk.Frame(hud_frame)
         hud_opacity_row.pack(fill=X, pady=(7, 0))
-        ttk.Label(hud_opacity_row, text="透明度：").pack(side=LEFT)
+        ttk.Label(hud_opacity_row, text="背景透明度：").pack(side=LEFT)
         self.ecliptica_hud_opacity_scale = ttk.Scale(
             hud_opacity_row,
             from_=20,
@@ -1743,7 +1817,7 @@ class SlashCoMonitorCN:
         else:
             self.ecliptica_hud_layout = {}
         self._save_ecliptica_config()
-        self.log("HUD 位置、尺寸、透明度和显示内容已恢复默认")
+        self.log("HUD 位置、尺寸、背景透明度和显示内容已恢复默认")
 
     def _on_ecliptica_hud_display_changed(self, _event=None):
         self._save_ecliptica_config()
