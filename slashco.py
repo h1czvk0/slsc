@@ -187,6 +187,14 @@ def normalize_hud_display_mode(value):
     return mode if mode in HUD_DISPLAY_LABELS else "both"
 
 
+def normalize_hud_opacity(value):
+    try:
+        opacity = float(value)
+    except (TypeError, ValueError):
+        return 0.9
+    return min(1.0, max(0.2, opacity))
+
+
 def normalize_hud_layout(layout):
     normalized = {}
     if not isinstance(layout, dict):
@@ -214,9 +222,10 @@ class EclipticaDesktopHud:
     ACCENT = "#7c5cff"
     BORDER = "#343b4d"
 
-    def __init__(self, root, layout=None):
+    def __init__(self, root, layout=None, opacity=0.9):
         self.root = root
         self.layout = normalize_hud_layout(layout)
+        self.opacity = normalize_hud_opacity(opacity)
         self.editing = False
         self.display_mode = "both"
         self.damage_window = None
@@ -247,7 +256,7 @@ class EclipticaDesktopHud:
                 ex_style &= ~0x00000020
             set_style(hwnd, -20, ex_style)
             ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0033)
-            window.attributes("-alpha", 0.9)
+            window.attributes("-alpha", self.opacity)
         except Exception:
             pass
 
@@ -336,7 +345,7 @@ class EclipticaDesktopHud:
         window.withdraw()
         window.overrideredirect(True)
         window.attributes("-topmost", True)
-        window.attributes("-alpha", 0.9)
+        window.attributes("-alpha", self.opacity)
         window.configure(bg=self.BG, highlightbackground=self.BORDER, highlightthickness=1)
         self.damage_title = Label(
             window,
@@ -369,7 +378,7 @@ class EclipticaDesktopHud:
         window.withdraw()
         window.overrideredirect(True)
         window.attributes("-topmost", True)
-        window.attributes("-alpha", 0.9)
+        window.attributes("-alpha", self.opacity)
         window.configure(bg=self.BG, highlightbackground=self.BORDER, highlightthickness=1)
         self.lock_label = Label(
             window,
@@ -451,6 +460,20 @@ class EclipticaDesktopHud:
         defaults = self._default_layout()
         self._apply_window_layout("damage", self.damage_window, defaults)
         self._apply_window_layout("boss_lock", self.lock_window, defaults)
+
+    def set_opacity(self, opacity):
+        self.opacity = normalize_hud_opacity(opacity)
+        for window in (self.damage_window, self.lock_window):
+            if window and window.winfo_exists():
+                window.attributes("-alpha", self.opacity)
+
+    def reset_layout(self):
+        self.layout = {}
+        self._ensure_windows()
+        self._place_windows()
+        self.damage_window.update_idletasks()
+        self.lock_window.update_idletasks()
+        return self.get_layout()
 
     def _apply_edit_visuals(self):
         for key, window in (("damage", self.damage_window), ("boss_lock", self.lock_window)):
@@ -894,7 +917,11 @@ class SlashCoMonitorCN:
         self._load_ecliptica_config()
 
         self.setup_ui()
-        self.ecliptica_hud = EclipticaDesktopHud(self.root, self.ecliptica_hud_layout)
+        self.ecliptica_hud = EclipticaDesktopHud(
+            self.root,
+            self.ecliptica_hud_layout,
+            self._ecliptica_hud_opacity(),
+        )
         self._ecliptica_hud_after_id = self.root.after(
             ECLIPTICA_HUD_REFRESH_MS,
             self._ecliptica_hud_tick,
@@ -1403,6 +1430,36 @@ class SlashCoMonitorCN:
             foreground="#666666",
             font=("微软雅黑", 8),
         ).pack(side=RIGHT)
+        hud_opacity_row = ttk.Frame(hud_frame)
+        hud_opacity_row.pack(fill=X, pady=(7, 0))
+        ttk.Label(hud_opacity_row, text="透明度：").pack(side=LEFT)
+        self.ecliptica_hud_opacity_scale = ttk.Scale(
+            hud_opacity_row,
+            from_=20,
+            to=100,
+            variable=self.ecliptica_hud_opacity_var,
+            command=self._on_ecliptica_hud_opacity_changed,
+        )
+        self.ecliptica_hud_opacity_scale.pack(side=LEFT, fill=X, expand=True)
+        self.ecliptica_hud_opacity_scale.bind(
+            "<ButtonRelease-1>",
+            self._on_ecliptica_hud_opacity_saved,
+        )
+        self.ecliptica_hud_opacity_scale.bind(
+            "<KeyRelease>",
+            self._on_ecliptica_hud_opacity_saved,
+        )
+        ttk.Label(
+            hud_opacity_row,
+            textvariable=self.ecliptica_hud_opacity_text_var,
+            width=5,
+            anchor=E,
+        ).pack(side=LEFT, padx=(6, 8))
+        ttk.Button(
+            hud_opacity_row,
+            text="恢复默认",
+            command=self._restore_default_ecliptica_hud,
+        ).pack(side=RIGHT)
 
         summary = ttk.LabelFrame(self.ecliptica_left_frame, text="战斗概览", padding=8)
         summary.pack(fill=X, padx=5, pady=2)
@@ -1603,6 +1660,8 @@ class SlashCoMonitorCN:
         self.panel_mode_var = StringVar(value=PANEL_MODE_LABELS["auto"])
         self.ecliptica_hud_layout_button_var = StringVar(value="配置 HUD 布局")
         self.ecliptica_hud_display_var = StringVar(value=HUD_DISPLAY_LABELS["both"])
+        self.ecliptica_hud_opacity_var = DoubleVar(value=90.0)
+        self.ecliptica_hud_opacity_text_var = StringVar(value="90%")
         self.ecliptica_hud_layout = {}
         try:
             if os.path.exists(ECLIPTICA_CONFIG_FILENAME):
@@ -1613,6 +1672,9 @@ class SlashCoMonitorCN:
                 self.panel_mode_var.set(PANEL_MODE_LABELS.get(panel_mode, PANEL_MODE_LABELS["auto"]))
                 hud_display_mode = normalize_hud_display_mode(config.get("hud_display_mode", "both"))
                 self.ecliptica_hud_display_var.set(HUD_DISPLAY_LABELS[hud_display_mode])
+                hud_opacity = normalize_hud_opacity(config.get("hud_opacity", 0.9))
+                self.ecliptica_hud_opacity_var.set(hud_opacity * 100)
+                self.ecliptica_hud_opacity_text_var.set(f"{round(hud_opacity * 100)}%")
                 self.ecliptica_hud_layout = normalize_hud_layout(config.get("hud_layout", {}))
         except Exception:
             pass
@@ -1628,6 +1690,7 @@ class SlashCoMonitorCN:
                         "hud_enabled": bool(self.ecliptica_hud_enabled.get()),
                         "panel_mode": self._panel_mode_preference(),
                         "hud_display_mode": self._ecliptica_hud_display_mode(),
+                        "hud_opacity": self._ecliptica_hud_opacity(),
                         "hud_layout": self.ecliptica_hud_layout,
                     },
                     config_file,
@@ -1653,6 +1716,34 @@ class SlashCoMonitorCN:
     def _ecliptica_hud_display_mode(self):
         label = self.ecliptica_hud_display_var.get()
         return HUD_DISPLAY_KEYS.get(label, "both")
+
+    def _ecliptica_hud_opacity(self):
+        return normalize_hud_opacity(self.ecliptica_hud_opacity_var.get() / 100.0)
+
+    def _on_ecliptica_hud_opacity_changed(self, value):
+        percent = min(100, max(20, round(float(value))))
+        self.ecliptica_hud_opacity_text_var.set(f"{percent}%")
+        if self.ecliptica_hud:
+            self.ecliptica_hud.set_opacity(percent / 100.0)
+
+    def _on_ecliptica_hud_opacity_saved(self, _event=None):
+        self._save_ecliptica_config()
+
+    def _restore_default_ecliptica_hud(self):
+        self.ecliptica_hud_display_var.set(HUD_DISPLAY_LABELS["both"])
+        self.ecliptica_hud_opacity_var.set(90.0)
+        self.ecliptica_hud_opacity_text_var.set("90%")
+        if self.ecliptica_hud:
+            self.ecliptica_hud.set_opacity(0.9)
+            self.ecliptica_hud_layout = self.ecliptica_hud.reset_layout()
+            if self.ecliptica_hud_enabled.get() or self.ecliptica_hud_editing:
+                self.ecliptica_hud.update(self.ecliptica_state.snapshot(), "both")
+            else:
+                self.ecliptica_hud.hide(force=True)
+        else:
+            self.ecliptica_hud_layout = {}
+        self._save_ecliptica_config()
+        self.log("HUD 位置、尺寸、透明度和显示内容已恢复默认")
 
     def _on_ecliptica_hud_display_changed(self, _event=None):
         self._save_ecliptica_config()
