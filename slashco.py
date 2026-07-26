@@ -51,6 +51,13 @@ from slashco_updater import (
     launch_updater_and_exit,
     parse_update_info,
 )
+from osc_output import (
+    BossLockOscOutput,
+    DEFAULT_OSC_HOST,
+    DEFAULT_OSC_PORT,
+    normalize_osc_host,
+    normalize_osc_port,
+)
 
 try:
     import requests
@@ -1104,7 +1111,6 @@ def format_ecliptica_duration(value):
 # =====================
 # 配置
 # =====================
-DEFAULT_OSC_PORT = 9000
 PLAYER_ITEM_ID_THRESHOLD = 29
 IMAGE_FILENAME = resource_path("cover.png")
 ICON_FILENAME = resource_path("icon.ico")
@@ -1435,6 +1441,10 @@ class SlashCoMonitorCN:
         # 加载赞助者配置（UI 需要这些变量）
         self._load_sponsor_config()
         self._load_ecliptica_config()
+        self.ecliptica_osc = BossLockOscOutput(
+            self.ecliptica_osc_host_var.get(),
+            self.ecliptica_osc_port_var.get(),
+        )
 
         self.setup_ui()
         self.ecliptica_hud = EclipticaDesktopHud(
@@ -2025,6 +2035,33 @@ class SlashCoMonitorCN:
             font=("微软雅黑", 8),
         ).pack(anchor=CENTER)
 
+        osc_frame = ttk.LabelFrame(self.ecliptica_left_frame, text="OSC 输出", padding=7)
+        osc_frame.pack(fill=X, padx=5, pady=5)
+        osc_controls = ttk.Frame(osc_frame)
+        osc_controls.pack(fill=X)
+        ttk.Checkbutton(
+            osc_controls,
+            text="输出当前 Boss 锁定",
+            variable=self.ecliptica_osc_enabled,
+            command=self._on_ecliptica_osc_toggle,
+        ).pack(side=LEFT)
+        ttk.Label(osc_controls, text="主机").pack(side=LEFT, padx=(12, 3))
+        osc_host_entry = ttk.Entry(osc_controls, textvariable=self.ecliptica_osc_host_var, width=14)
+        osc_host_entry.pack(side=LEFT)
+        ttk.Label(osc_controls, text="端口").pack(side=LEFT, padx=(8, 3))
+        osc_port_entry = ttk.Entry(osc_controls, textvariable=self.ecliptica_osc_port_var, width=7)
+        osc_port_entry.pack(side=LEFT)
+        ttk.Button(osc_controls, text="测试", command=self._test_ecliptica_osc).pack(side=RIGHT)
+        for entry in (osc_host_entry, osc_port_entry):
+            entry.bind("<FocusOut>", self._on_ecliptica_osc_settings_changed)
+            entry.bind("<Return>", self._on_ecliptica_osc_settings_changed)
+        ttk.Label(
+            osc_frame,
+            textvariable=self.ecliptica_osc_status_var,
+            foreground="#666666",
+            font=("微软雅黑", 8),
+        ).pack(anchor=W, pady=(5, 0))
+
     def _build_ecliptica_right_panel(self):
         frame = ttk.LabelFrame(self.ecliptica_right_frame, text="Ecliptica 伤害数据", padding=7)
         frame.pack(fill=BOTH, expand=True, padx=5, pady=5)
@@ -2170,6 +2207,7 @@ class SlashCoMonitorCN:
             aggro_text += " · 状态可能已过时"
         self.ecliptica_vars["aggro"].set(aggro_text)
         self.lbl_ecliptica_aggro.configure(foreground="#c0392b" if aggro.get("is_local") else "#6c4cff")
+        self._publish_ecliptica_osc(snapshot)
 
         for item in self.ecliptica_settlement_tree.get_children():
             self.ecliptica_settlement_tree.delete(item)
@@ -2201,6 +2239,10 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_display_var = StringVar(value=HUD_DISPLAY_LABELS["both"])
         self.ecliptica_hud_opacity_var = DoubleVar(value=10.0)
         self.ecliptica_hud_opacity_text_var = StringVar(value="10%")
+        self.ecliptica_osc_enabled = BooleanVar(value=False)
+        self.ecliptica_osc_host_var = StringVar(value=DEFAULT_OSC_HOST)
+        self.ecliptica_osc_port_var = StringVar(value=str(DEFAULT_OSC_PORT))
+        self.ecliptica_osc_status_var = StringVar(value="未启用")
         self.ecliptica_hud_layout = {}
         try:
             if os.path.exists(ECLIPTICA_CONFIG_FILENAME):
@@ -2219,6 +2261,11 @@ class SlashCoMonitorCN:
                 self.ecliptica_hud_opacity_var.set(hud_transparency)
                 self.ecliptica_hud_opacity_text_var.set(f"{round(hud_transparency)}%")
                 self.ecliptica_hud_layout = normalize_hud_layout(config.get("hud_layout", {}))
+                osc_enabled = bool(config.get("osc_enabled", False))
+                self.ecliptica_osc_enabled.set(osc_enabled)
+                self.ecliptica_osc_host_var.set(normalize_osc_host(config.get("osc_host")))
+                self.ecliptica_osc_port_var.set(str(normalize_osc_port(config.get("osc_port"))))
+                self.ecliptica_osc_status_var.set("等待锁定目标" if osc_enabled else "未启用")
         except Exception:
             pass
 
@@ -2236,6 +2283,9 @@ class SlashCoMonitorCN:
                         "hud_transparency": self._ecliptica_hud_transparency(),
                         "hud_opacity": self._ecliptica_hud_opacity(),
                         "hud_layout": self.ecliptica_hud_layout,
+                        "osc_enabled": bool(self.ecliptica_osc_enabled.get()),
+                        "osc_host": normalize_osc_host(self.ecliptica_osc_host_var.get()),
+                        "osc_port": normalize_osc_port(self.ecliptica_osc_port_var.get()),
                     },
                     config_file,
                     ensure_ascii=False,
@@ -2244,6 +2294,51 @@ class SlashCoMonitorCN:
         except Exception as exc:
             if hasattr(self, "txt_log"):
                 self.log(f"保存 Ecliptica HUD 设置失败: {exc}")
+
+    def _configure_ecliptica_osc(self):
+        host = normalize_osc_host(self.ecliptica_osc_host_var.get())
+        port = normalize_osc_port(self.ecliptica_osc_port_var.get())
+        self.ecliptica_osc_host_var.set(host)
+        self.ecliptica_osc_port_var.set(str(port))
+        self.ecliptica_osc.configure(host, port)
+        return host, port
+
+    def _publish_ecliptica_osc(self, snapshot=None, force=False):
+        if not self.ecliptica_osc_enabled.get():
+            self.ecliptica_osc_status_var.set("未启用")
+            return False
+        if snapshot is None:
+            snapshot = self.ecliptica_state.snapshot()
+        target = snapshot.get("aggro", {}).get("target", "-")
+        try:
+            sent = self.ecliptica_osc.publish_target(target, force=force)
+            if sent:
+                self.ecliptica_osc_status_var.set(f"已发送：{target}")
+            return sent
+        except Exception as exc:
+            self.ecliptica_osc_status_var.set(f"发送失败：{exc}")
+            return False
+
+    def _on_ecliptica_osc_toggle(self):
+        self._configure_ecliptica_osc()
+        self.ecliptica_osc.reset()
+        self._save_ecliptica_config()
+        if self.ecliptica_osc_enabled.get():
+            self._publish_ecliptica_osc(force=True)
+        else:
+            self.ecliptica_osc_status_var.set("未启用")
+
+    def _on_ecliptica_osc_settings_changed(self, _event=None):
+        self._configure_ecliptica_osc()
+        self._save_ecliptica_config()
+        if self.ecliptica_osc_enabled.get():
+            self._publish_ecliptica_osc(force=True)
+
+    def _test_ecliptica_osc(self):
+        host, port = self._configure_ecliptica_osc()
+        self._save_ecliptica_config()
+        if self._publish_ecliptica_osc(force=True):
+            self.log(f"OSC 测试已发送到 {host}:{port}")
 
     def _on_ecliptica_hud_toggle(self):
         self._save_ecliptica_config()
@@ -2331,6 +2426,7 @@ class SlashCoMonitorCN:
         if self._is_shutting_down:
             return
         try:
+            snapshot = None
             if (
                 self.ecliptica_hud
                 and self.ecliptica_hud_enabled.get()
@@ -2340,6 +2436,10 @@ class SlashCoMonitorCN:
                 self._update_ecliptica_ui()
             elif self.ecliptica_hud:
                 self.ecliptica_hud.hide()
+            if self.ecliptica_osc_enabled.get():
+                if snapshot is None:
+                    snapshot = self.ecliptica_state.snapshot()
+                self._publish_ecliptica_osc(snapshot)
         except Exception as exc:
             self.log(f"Ecliptica HUD 更新失败: {exc}")
         try:
@@ -3237,6 +3337,7 @@ class SlashCoMonitorCN:
             else:
                 self.ecliptica_state.reset(preserve_world=False)
                 self._set_active_game_mode("slashco", reason=room_name)
+                self._update_ecliptica_ui()
             return True
 
         strong_events = {"session", "session_blank", "stage", "boss", "intermission", "lobby"}
