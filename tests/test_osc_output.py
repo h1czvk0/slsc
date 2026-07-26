@@ -53,6 +53,18 @@ class OscOutputTests(unittest.TestCase):
         self.assertEqual(tags, ",sTF")
         self.assertEqual(message, "Boss 当前锁定：ಣಪರೀಕ್ಷೆ")
 
+    def test_name_only_mode_omits_boss_lock_prefix(self):
+        sent = []
+        output = BossLockOscOutput(socket_factory=lambda *_args: FakeSocket(sent))
+
+        output.publish_target("ಣಪರೀಕ್ಷೆ", name_only=True)
+
+        packet, _destination = sent[0]
+        _address, offset = read_osc_string(packet)
+        _tags, offset = read_osc_string(packet, offset)
+        message, _offset = read_osc_string(packet, offset)
+        self.assertEqual(message, "ಣಪರೀಕ್ಷೆ")
+
     def test_unchanged_target_is_not_sent_twice(self):
         sent = []
         output = BossLockOscOutput(socket_factory=lambda *_args: FakeSocket(sent))

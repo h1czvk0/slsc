@@ -75,9 +75,9 @@ class BossLockOscOutput:
         self.last_text = None
         self.last_attempt_at = None
 
-    def publish_target(self, target, force=False, now=None):
+    def publish_target(self, target, force=False, now=None, name_only=False):
         player_name = normalize_osc_text(target) or "-"
-        text = f"Boss 当前锁定：{player_name}"
+        text = player_name if name_only else f"Boss 当前锁定：{player_name}"
         current_time = float(time.monotonic() if now is None else now)
         recently_attempted = (
             text == self.last_text

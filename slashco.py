@@ -2055,12 +2055,20 @@ class SlashCoMonitorCN:
         for entry in (osc_host_entry, osc_port_entry):
             entry.bind("<FocusOut>", self._on_ecliptica_osc_settings_changed)
             entry.bind("<Return>", self._on_ecliptica_osc_settings_changed)
+        osc_options = ttk.Frame(osc_frame)
+        osc_options.pack(fill=X, pady=(5, 0))
+        ttk.Checkbutton(
+            osc_options,
+            text="仅输出玩家名",
+            variable=self.ecliptica_osc_name_only,
+            command=self._on_ecliptica_osc_format_changed,
+        ).pack(side=LEFT)
         ttk.Label(
-            osc_frame,
+            osc_options,
             textvariable=self.ecliptica_osc_status_var,
             foreground="#666666",
             font=("微软雅黑", 8),
-        ).pack(anchor=W, pady=(5, 0))
+        ).pack(side=RIGHT)
 
     def _build_ecliptica_right_panel(self):
         frame = ttk.LabelFrame(self.ecliptica_right_frame, text="Ecliptica 伤害数据", padding=7)
@@ -2240,6 +2248,7 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_opacity_var = DoubleVar(value=10.0)
         self.ecliptica_hud_opacity_text_var = StringVar(value="10%")
         self.ecliptica_osc_enabled = BooleanVar(value=False)
+        self.ecliptica_osc_name_only = BooleanVar(value=False)
         self.ecliptica_osc_host_var = StringVar(value=DEFAULT_OSC_HOST)
         self.ecliptica_osc_port_var = StringVar(value=str(DEFAULT_OSC_PORT))
         self.ecliptica_osc_status_var = StringVar(value="未启用")
@@ -2263,6 +2272,7 @@ class SlashCoMonitorCN:
                 self.ecliptica_hud_layout = normalize_hud_layout(config.get("hud_layout", {}))
                 osc_enabled = bool(config.get("osc_enabled", False))
                 self.ecliptica_osc_enabled.set(osc_enabled)
+                self.ecliptica_osc_name_only.set(bool(config.get("osc_name_only", False)))
                 self.ecliptica_osc_host_var.set(normalize_osc_host(config.get("osc_host")))
                 self.ecliptica_osc_port_var.set(str(normalize_osc_port(config.get("osc_port"))))
                 self.ecliptica_osc_status_var.set("等待锁定目标" if osc_enabled else "未启用")
@@ -2284,6 +2294,7 @@ class SlashCoMonitorCN:
                         "hud_opacity": self._ecliptica_hud_opacity(),
                         "hud_layout": self.ecliptica_hud_layout,
                         "osc_enabled": bool(self.ecliptica_osc_enabled.get()),
+                        "osc_name_only": bool(self.ecliptica_osc_name_only.get()),
                         "osc_host": normalize_osc_host(self.ecliptica_osc_host_var.get()),
                         "osc_port": normalize_osc_port(self.ecliptica_osc_port_var.get()),
                     },
@@ -2311,7 +2322,11 @@ class SlashCoMonitorCN:
             snapshot = self.ecliptica_state.snapshot()
         target = snapshot.get("aggro", {}).get("target", "-")
         try:
-            sent = self.ecliptica_osc.publish_target(target, force=force)
+            sent = self.ecliptica_osc.publish_target(
+                target,
+                force=force,
+                name_only=bool(self.ecliptica_osc_name_only.get()),
+            )
             if sent:
                 self.ecliptica_osc_status_var.set(f"已发送：{target}")
             return sent
@@ -2335,6 +2350,12 @@ class SlashCoMonitorCN:
 
     def _on_ecliptica_osc_settings_changed(self, _event=None):
         self._configure_ecliptica_osc()
+        self._save_ecliptica_config()
+        if self.ecliptica_osc_enabled.get():
+            self._publish_ecliptica_osc(force=True)
+
+    def _on_ecliptica_osc_format_changed(self):
+        self.ecliptica_osc.reset()
         self._save_ecliptica_config()
         if self.ecliptica_osc_enabled.get():
             self._publish_ecliptica_osc(force=True)
