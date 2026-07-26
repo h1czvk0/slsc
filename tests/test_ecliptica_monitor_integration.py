@@ -52,6 +52,9 @@ class FakeWidget:
     def hide(self):
         self.hide_calls += 1
 
+    def winfo_manager(self):
+        return "pack" if self.packed else ""
+
 
 class FakeOscOutput:
     def __init__(self):
@@ -266,6 +269,24 @@ class PanelModeSelectionTests(unittest.TestCase):
         self.assertEqual(monitor.detected_game_mode, "ecliptica")
         self.assertEqual(monitor.current_game_mode, "slashco")
         self.assertTrue(monitor.slashco_right_frame.packed)
+
+    def test_slasher_info_is_only_visible_in_slashco_mode(self):
+        monitor = self.make_monitor(preference="auto")
+        monitor.btn_toggle_img = FakeWidget()
+        monitor.btn_toggle_img.packed = True
+        monitor.img_container = FakeWidget()
+        monitor.img_container.packed = True
+        monitor.log_frame = FakeWidget()
+        monitor.img_visible = True
+
+        monitor._show_game_panel("ecliptica", log_change=False)
+        self.assertFalse(monitor.btn_toggle_img.packed)
+        self.assertFalse(monitor.img_container.packed)
+
+        monitor._show_game_panel("slashco", log_change=False)
+        self.assertTrue(monitor.btn_toggle_img.packed)
+        self.assertTrue(monitor.img_container.packed)
+        self.assertEqual(monitor.btn_toggle_img.config["text"], "隐藏 Slasher 信息 ▲")
 
 
 class OscPublishingTests(unittest.TestCase):

@@ -1525,7 +1525,8 @@ class SlashCoMonitorCN:
             return
         try:
             if not self.update_frame.winfo_ismapped():
-                self.update_frame.pack(fill=X, padx=5, pady=2, after=self.update_frame_after_widget)
+                self.update_frame.pack(fill=X, padx=5, pady=2, before=self.mode_left_container)
+                self._refresh_left_scrollregion()
         except Exception:
             pass
 
@@ -1537,6 +1538,7 @@ class SlashCoMonitorCN:
             self.update_progress_var.set(0.0)
             if self.update_frame.winfo_ismapped():
                 self.update_frame.pack_forget()
+                self._refresh_left_scrollregion()
         except Exception:
             pass
 
@@ -1707,9 +1709,29 @@ class SlashCoMonitorCN:
         ttk.Button(top_bar, text="导出未翻译位置", command=self.export_untranslated).pack(side=LEFT)
         ttk.Button(top_bar, text="强制重置数据", command=self.force_reset).pack(side=RIGHT)
 
+        self.left_scroll_host = Frame(self.left_p)
+        self.left_scroll_host.pack(fill=BOTH, expand=True)
+        self.left_canvas = Canvas(self.left_scroll_host, highlightthickness=0, borderwidth=0)
+        self.left_scrollbar = ttk.Scrollbar(
+            self.left_scroll_host,
+            orient=VERTICAL,
+            command=self.left_canvas.yview,
+        )
+        self.left_canvas.configure(yscrollcommand=self.left_scrollbar.set)
+        self.left_scrollbar.pack(side=RIGHT, fill=Y)
+        self.left_canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        self.left_content = ttk.Frame(self.left_canvas)
+        self.left_content_window = self.left_canvas.create_window(
+            (0, 0),
+            window=self.left_content,
+            anchor=NW,
+        )
+        self.left_canvas.bind("<Configure>", self._on_left_canvas_configure)
+        self.left_content.bind("<Configure>", lambda _event: self._refresh_left_scrollregion())
+
         self.update_status_var = StringVar(value="")
         self.update_progress_var = DoubleVar(value=0.0)
-        self.update_frame = ttk.LabelFrame(self.left_p, text="软件更新", padding=5)
+        self.update_frame = ttk.LabelFrame(self.left_content, text="软件更新", padding=5)
         update_row = ttk.Frame(self.update_frame)
         update_row.pack(fill=X)
         ttk.Label(update_row, textvariable=self.update_status_var, font=("微软雅黑", 9)).pack(side=LEFT, fill=X, expand=True)
@@ -1721,7 +1743,7 @@ class SlashCoMonitorCN:
         )
         self.update_progress.pack(fill=X, pady=(4, 0))
 
-        self.mode_left_container = ttk.Frame(self.left_p)
+        self.mode_left_container = ttk.Frame(self.left_content)
         self.mode_left_container.pack(fill=X)
         self.slashco_left_frame = ttk.Frame(self.mode_left_container)
         self.ecliptica_left_frame = ttk.Frame(self.mode_left_container)
@@ -1797,7 +1819,7 @@ class SlashCoMonitorCN:
         
         # 赞助者名单覆盖设置
         if HAS_SPONSOR_PROXY:
-            sponsor_frame = ttk.LabelFrame(self.left_p, text="赞助者名单覆盖", padding=5)
+            sponsor_frame = ttk.LabelFrame(self.left_content, text="赞助者名单覆盖", padding=5)
             sponsor_frame.pack(fill=X, padx=5, pady=2)
             
             row1 = ttk.Frame(sponsor_frame)
@@ -1844,10 +1866,14 @@ class SlashCoMonitorCN:
 
         # 参考图折叠区域
         self.img_visible = False
-        self.btn_toggle_img = ttk.Button(self.left_p, text="显示参考图 ▼", command=self.toggle_reference_image)
+        self.btn_toggle_img = ttk.Button(
+            self.left_content,
+            text="显示 Slasher 信息 ▼",
+            command=self.toggle_reference_image,
+        )
         self.btn_toggle_img.pack(fill=X, padx=5, pady=(5, 0))
 
-        self.img_container = Frame(self.left_p, bg="black")
+        self.img_container = Frame(self.left_content, bg="black")
         # 默认不显示 img_container
         # self.img_container.pack(fill=X, padx=5, pady=2)
 
@@ -1856,9 +1882,9 @@ class SlashCoMonitorCN:
 
         self.load_fixed_height_image()
 
-        log_frame = ttk.LabelFrame(self.left_p, text="系统日志", padding=5)
-        log_frame.pack(fill=BOTH, expand=True, padx=5, pady=5)
-        self.txt_log = scrolledtext.ScrolledText(log_frame, height=5, font=("Consolas", 8))
+        self.log_frame = ttk.LabelFrame(self.left_content, text="系统日志", padding=5)
+        self.log_frame.pack(fill=BOTH, expand=True, padx=5, pady=5)
+        self.txt_log = scrolledtext.ScrolledText(self.log_frame, height=5, font=("Consolas", 8))
         self.txt_log.pack(fill=BOTH, expand=True)
 
         item_frame = ttk.LabelFrame(self.slashco_right_frame, text="本局物品清单", padding=5)
@@ -1914,7 +1940,37 @@ class SlashCoMonitorCN:
         self.tree.pack(side=LEFT, fill=BOTH, expand=True)
         sc.pack(side=RIGHT, fill=Y)
         self._build_ecliptica_right_panel()
+        self._bind_left_mousewheel(self.left_content)
+        self._refresh_left_scrollregion()
         self._set_active_game_mode("slashco", log_change=False)
+
+    def _on_left_canvas_configure(self, event):
+        self.left_canvas.itemconfigure(self.left_content_window, width=max(1, event.width))
+        self._refresh_left_scrollregion()
+
+    def _refresh_left_scrollregion(self):
+        if not hasattr(self, "left_canvas"):
+            return
+        try:
+            self.left_canvas.configure(scrollregion=self.left_canvas.bbox("all"))
+        except Exception:
+            pass
+
+    def _on_left_mousewheel(self, event):
+        if not hasattr(self, "left_canvas"):
+            return
+        delta = int(-event.delta / 120) if event.delta else 0
+        if delta:
+            self.left_canvas.yview_scroll(delta, "units")
+            return "break"
+
+    def _bind_left_mousewheel(self, widget):
+        try:
+            widget.bind("<MouseWheel>", self._on_left_mousewheel, add="+")
+            for child in widget.winfo_children():
+                self._bind_left_mousewheel(child)
+        except Exception:
+            pass
 
     def _build_ecliptica_left_panel(self):
         self.ecliptica_vars = {
@@ -2167,6 +2223,9 @@ class SlashCoMonitorCN:
             self.slashco_right_frame.pack(fill=BOTH, expand=True)
             self.mode_status_var.set("当前：SlashCo")
             self.lbl_mode_status.configure(foreground="#1f6f3a")
+
+        self._update_slasher_info_visibility()
+        self._refresh_left_scrollregion()
 
         if changed and log_change and hasattr(self, "txt_log"):
             suffix = f" ({reason})" if reason else ""
@@ -2634,12 +2693,25 @@ class SlashCoMonitorCN:
 
     def toggle_reference_image(self):
         self.img_visible = not self.img_visible
+        self._update_slasher_info_visibility()
+        self._refresh_left_scrollregion()
+
+    def _update_slasher_info_visibility(self):
+        if not hasattr(self, "btn_toggle_img"):
+            return
+        if getattr(self, "current_game_mode", "slashco") != "slashco":
+            self.btn_toggle_img.pack_forget()
+            self.img_container.pack_forget()
+            return
+
+        if not self.btn_toggle_img.winfo_manager():
+            self.btn_toggle_img.pack(fill=X, padx=5, pady=(5, 0), before=self.log_frame)
         if self.img_visible:
             self.img_container.pack(fill=X, padx=5, pady=2, after=self.btn_toggle_img)
-            self.btn_toggle_img.configure(text="隐藏参考图 ▲")
+            self.btn_toggle_img.configure(text="隐藏 Slasher 信息 ▲")
         else:
             self.img_container.pack_forget()
-            self.btn_toggle_img.configure(text="显示参考图 ▼")
+            self.btn_toggle_img.configure(text="显示 Slasher 信息 ▼")
 
     def copy_current_column(self):
         if not self.current_click_col: return
