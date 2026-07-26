@@ -66,6 +66,18 @@ class FakeOscOutput:
         return True
 
 
+class FakeAfterRoot:
+    def __init__(self):
+        self.callback = None
+
+    def after(self, _delay, callback):
+        self.callback = callback
+        return "after-test"
+
+    def after_cancel(self, _after_id):
+        self.callback = None
+
+
 class FakeHudWindow:
     def __init__(self):
         self.alpha = 1.0
@@ -277,6 +289,25 @@ class OscPublishingTests(unittest.TestCase):
 
         self.assertEqual(monitor.ecliptica_osc.clear_calls, 0)
         self.assertEqual(monitor.ecliptica_osc.published[0][0], "ಣಪರೀಕ್ಷೆ")
+
+    def test_button_sends_visible_sample_while_output_is_disabled(self):
+        monitor = self.make_monitor()
+        monitor.ecliptica_osc_enabled.set(False)
+        monitor.root = FakeAfterRoot()
+        monitor._ecliptica_osc_test_after_id = None
+        monitor._ecliptica_osc_test_active = False
+        monitor._configure_ecliptica_osc = lambda: ("127.0.0.1", 9000)
+        monitor._save_ecliptica_config = lambda: None
+        monitor.log = lambda _message: None
+
+        monitor._test_ecliptica_osc()
+
+        self.assertEqual(monitor.ecliptica_osc.published[0][0], "测试玩家")
+        self.assertTrue(monitor._ecliptica_osc_test_active)
+        self.assertEqual(monitor.ecliptica_osc_status_var.get(), "测试已发送，3 秒后自动清除")
+        monitor.root.callback()
+        self.assertEqual(monitor.ecliptica_osc.clear_calls, 1)
+        self.assertEqual(monitor.ecliptica_osc_status_var.get(), "测试结束，已清除")
 
 
 class HudLayoutTests(unittest.TestCase):

@@ -1371,6 +1371,8 @@ class SlashCoMonitorCN:
         self._pending_tick_after_id = None
         self._round_timer_after_id = None
         self._ecliptica_hud_after_id = None
+        self._ecliptica_osc_test_after_id = None
+        self._ecliptica_osc_test_active = False
         self._sponsor_op_lock = threading.Lock()
 
 
@@ -2318,6 +2320,8 @@ class SlashCoMonitorCN:
         if not self.ecliptica_osc_enabled.get():
             self.ecliptica_osc_status_var.set("未启用")
             return False
+        if getattr(self, "_ecliptica_osc_test_active", False):
+            return False
         if snapshot is None:
             snapshot = self.ecliptica_state.snapshot()
         aggro = snapshot.get("aggro", {})
@@ -2344,6 +2348,7 @@ class SlashCoMonitorCN:
             return False
 
     def _on_ecliptica_osc_toggle(self):
+        self._cancel_ecliptica_osc_test()
         self._configure_ecliptica_osc()
         if self.ecliptica_osc_enabled.get():
             self.ecliptica_osc.reset()
@@ -2358,22 +2363,65 @@ class SlashCoMonitorCN:
             self._save_ecliptica_config()
 
     def _on_ecliptica_osc_settings_changed(self, _event=None):
+        self._cancel_ecliptica_osc_test(clear=True)
         self._configure_ecliptica_osc()
         self._save_ecliptica_config()
         if self.ecliptica_osc_enabled.get():
             self._publish_ecliptica_osc(force=True)
 
     def _on_ecliptica_osc_format_changed(self):
+        self._cancel_ecliptica_osc_test(clear=True)
         self.ecliptica_osc.reset()
         self._save_ecliptica_config()
         if self.ecliptica_osc_enabled.get():
             self._publish_ecliptica_osc(force=True)
 
     def _test_ecliptica_osc(self):
+        self._cancel_ecliptica_osc_test(clear=True)
         host, port = self._configure_ecliptica_osc()
         self._save_ecliptica_config()
-        if self._publish_ecliptica_osc(force=True):
+        try:
+            self.ecliptica_osc.publish_target(
+                "测试玩家",
+                force=True,
+                name_only=bool(self.ecliptica_osc_name_only.get()),
+            )
+            self._ecliptica_osc_test_active = True
+            self.ecliptica_osc_status_var.set("测试已发送，3 秒后自动清除")
+            self._ecliptica_osc_test_after_id = self.root.after(3000, self._finish_ecliptica_osc_test)
             self.log(f"OSC 测试已发送到 {host}:{port}")
+        except Exception as exc:
+            self._ecliptica_osc_test_active = False
+            self.ecliptica_osc_status_var.set(f"测试发送失败：{exc}")
+
+    def _cancel_ecliptica_osc_test(self, clear=False):
+        after_id = getattr(self, "_ecliptica_osc_test_after_id", None)
+        if after_id:
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+        was_active = getattr(self, "_ecliptica_osc_test_active", False)
+        self._ecliptica_osc_test_after_id = None
+        self._ecliptica_osc_test_active = False
+        if clear and was_active:
+            try:
+                self.ecliptica_osc.clear(force=True)
+            except Exception:
+                pass
+
+    def _finish_ecliptica_osc_test(self):
+        self._ecliptica_osc_test_after_id = None
+        self._ecliptica_osc_test_active = False
+        try:
+            self.ecliptica_osc.clear(force=True)
+        except Exception as exc:
+            self.ecliptica_osc_status_var.set(f"测试清除失败：{exc}")
+            return
+        if self.ecliptica_osc_enabled.get():
+            self._publish_ecliptica_osc(force=True)
+        else:
+            self.ecliptica_osc_status_var.set("测试结束，已清除")
 
     def _on_ecliptica_hud_toggle(self):
         self._save_ecliptica_config()
@@ -4149,6 +4197,7 @@ class SlashCoMonitorCN:
             "_tree_rebuild_after_id",
             "_round_timer_after_id",
             "_ecliptica_hud_after_id",
+            "_ecliptica_osc_test_after_id",
         ):
             after_id = getattr(self, attr, None)
             if after_id:
