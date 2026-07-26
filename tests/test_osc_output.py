@@ -62,6 +62,24 @@ class OscOutputTests(unittest.TestCase):
         self.assertTrue(output.publish_target("Player A", now=10))
         self.assertEqual(len(sent), 2)
 
+    def test_clear_sends_empty_chatbox_message_immediately(self):
+        sent = []
+        output = BossLockOscOutput(socket_factory=lambda *_args: FakeSocket(sent))
+        output.publish_target("Player A", now=0)
+
+        output.clear()
+
+        packet, destination = sent[-1]
+        address, offset = read_osc_string(packet)
+        tags, offset = read_osc_string(packet, offset)
+        message, _offset = read_osc_string(packet, offset)
+        self.assertEqual(destination, ("127.0.0.1", 9000))
+        self.assertEqual(address, "/chatbox/input")
+        self.assertEqual(tags, ",sTF")
+        self.assertEqual(message, "")
+        self.assertIsNone(output.last_text)
+        self.assertIsNone(output.last_attempt_at)
+
     def test_invalid_destination_values_use_defaults(self):
         self.assertEqual(normalize_osc_host(""), "127.0.0.1")
         self.assertEqual(normalize_osc_port("invalid"), 9000)

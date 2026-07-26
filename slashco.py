@@ -2321,12 +2321,17 @@ class SlashCoMonitorCN:
 
     def _on_ecliptica_osc_toggle(self):
         self._configure_ecliptica_osc()
-        self.ecliptica_osc.reset()
-        self._save_ecliptica_config()
         if self.ecliptica_osc_enabled.get():
+            self.ecliptica_osc.reset()
+            self._save_ecliptica_config()
             self._publish_ecliptica_osc(force=True)
         else:
-            self.ecliptica_osc_status_var.set("未启用")
+            try:
+                self.ecliptica_osc.clear()
+                self.ecliptica_osc_status_var.set("已停止并清除显示")
+            except Exception as exc:
+                self.ecliptica_osc_status_var.set(f"已停止，清除失败：{exc}")
+            self._save_ecliptica_config()
 
     def _on_ecliptica_osc_settings_changed(self, _event=None):
         self._configure_ecliptica_osc()

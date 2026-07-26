@@ -1,5 +1,9 @@
 # 更新日志
 
+## 3.9.10
+
+- 关闭 Boss 锁定 OSC 输出时立即向 VRChat Chatbox 发送清空消息，文字不再等待自动超时。
+
 ## 3.9.9
 
 - 新增 Ecliptica Boss 当前锁定 OSC 输出，可配置目标主机和端口，默认使用 VRChat Chatbox 的 `/chatbox/input`。

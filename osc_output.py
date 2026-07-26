@@ -93,3 +93,9 @@ class BossLockOscOutput:
         with self.socket_factory(socket.AF_INET, socket.SOCK_DGRAM) as osc_socket:
             osc_socket.sendto(packet, (self.host, self.port))
         return True
+
+    def clear(self):
+        packet = build_osc_message(VRCHAT_CHATBOX_ADDRESS, "", True, False)
+        self.reset()
+        with self.socket_factory(socket.AF_INET, socket.SOCK_DGRAM) as osc_socket:
+            osc_socket.sendto(packet, (self.host, self.port))
