@@ -52,6 +52,20 @@ class FakeWidget:
         self.hide_calls += 1
 
 
+class FakeOscOutput:
+    def __init__(self):
+        self.published = []
+        self.clear_calls = 0
+
+    def publish_target(self, target, **kwargs):
+        self.published.append((target, kwargs))
+        return True
+
+    def clear(self, **_kwargs):
+        self.clear_calls += 1
+        return True
+
+
 class FakeHudWindow:
     def __init__(self):
         self.alpha = 1.0
@@ -236,6 +250,33 @@ class PanelModeSelectionTests(unittest.TestCase):
         self.assertEqual(monitor.detected_game_mode, "ecliptica")
         self.assertEqual(monitor.current_game_mode, "slashco")
         self.assertTrue(monitor.slashco_right_frame.packed)
+
+
+class OscPublishingTests(unittest.TestCase):
+    def make_monitor(self):
+        monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
+        monitor.ecliptica_osc_enabled = FakeVar(True)
+        monitor.ecliptica_osc_name_only = FakeVar(False)
+        monitor.ecliptica_osc_status_var = FakeVar("")
+        monitor.ecliptica_osc = FakeOscOutput()
+        return monitor
+
+    def test_inactive_boss_state_clears_without_publishing_dash(self):
+        monitor = self.make_monitor()
+
+        monitor._publish_ecliptica_osc({"aggro": {"state": "inactive", "target": "-"}})
+
+        self.assertEqual(monitor.ecliptica_osc.clear_calls, 1)
+        self.assertEqual(monitor.ecliptica_osc.published, [])
+        self.assertEqual(monitor.ecliptica_osc_status_var.get(), "等待 Boss 战")
+
+    def test_active_boss_state_publishes_target(self):
+        monitor = self.make_monitor()
+
+        monitor._publish_ecliptica_osc({"aggro": {"state": "other", "target": "ಣಪರೀಕ್ಷೆ"}})
+
+        self.assertEqual(monitor.ecliptica_osc.clear_calls, 0)
+        self.assertEqual(monitor.ecliptica_osc.published[0][0], "ಣಪರೀಕ್ಷೆ")
 
 
 class HudLayoutTests(unittest.TestCase):

@@ -91,6 +91,15 @@ class OscOutputTests(unittest.TestCase):
         self.assertEqual(message, "")
         self.assertIsNone(output.last_text)
         self.assertIsNone(output.last_attempt_at)
+        self.assertFalse(output.display_active)
+
+    def test_inactive_display_is_only_cleared_once(self):
+        sent = []
+        output = BossLockOscOutput(socket_factory=lambda *_args: FakeSocket(sent))
+
+        self.assertTrue(output.clear())
+        self.assertFalse(output.clear())
+        self.assertEqual(len(sent), 1)
 
     def test_invalid_destination_values_use_defaults(self):
         self.assertEqual(normalize_osc_host(""), "127.0.0.1")

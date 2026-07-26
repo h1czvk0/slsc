@@ -2320,7 +2320,16 @@ class SlashCoMonitorCN:
             return False
         if snapshot is None:
             snapshot = self.ecliptica_state.snapshot()
-        target = snapshot.get("aggro", {}).get("target", "-")
+        aggro = snapshot.get("aggro", {})
+        if aggro.get("state") == "inactive":
+            try:
+                cleared = self.ecliptica_osc.clear()
+                self.ecliptica_osc_status_var.set("等待 Boss 战")
+                return cleared
+            except Exception as exc:
+                self.ecliptica_osc_status_var.set(f"清除失败：{exc}")
+                return False
+        target = aggro.get("target", "某玩家")
         try:
             sent = self.ecliptica_osc.publish_target(
                 target,
@@ -2342,7 +2351,7 @@ class SlashCoMonitorCN:
             self._publish_ecliptica_osc(force=True)
         else:
             try:
-                self.ecliptica_osc.clear()
+                self.ecliptica_osc.clear(force=True)
                 self.ecliptica_osc_status_var.set("已停止并清除显示")
             except Exception as exc:
                 self.ecliptica_osc_status_var.set(f"已停止，清除失败：{exc}")

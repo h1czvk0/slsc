@@ -62,6 +62,7 @@ class BossLockOscOutput:
         self.port = normalize_osc_port(port)
         self.last_text = None
         self.last_attempt_at = None
+        self.display_active = None
 
     def configure(self, host, port):
         normalized = (normalize_osc_host(host), normalize_osc_port(port))
@@ -69,11 +70,13 @@ class BossLockOscOutput:
             self.host, self.port = normalized
             self.last_text = None
             self.last_attempt_at = None
+            self.display_active = None
         return normalized
 
     def reset(self):
         self.last_text = None
         self.last_attempt_at = None
+        self.display_active = None
 
     def publish_target(self, target, force=False, now=None, name_only=False):
         player_name = normalize_osc_text(target) or "-"
@@ -92,10 +95,16 @@ class BossLockOscOutput:
         self.last_attempt_at = current_time
         with self.socket_factory(socket.AF_INET, socket.SOCK_DGRAM) as osc_socket:
             osc_socket.sendto(packet, (self.host, self.port))
+        self.display_active = True
         return True
 
-    def clear(self):
+    def clear(self, force=False):
+        if not force and self.display_active is False:
+            return False
         packet = build_osc_message(VRCHAT_CHATBOX_ADDRESS, "", True, False)
-        self.reset()
+        self.last_text = None
+        self.last_attempt_at = None
         with self.socket_factory(socket.AF_INET, socket.SOCK_DGRAM) as osc_socket:
             osc_socket.sendto(packet, (self.host, self.port))
+        self.display_active = False
+        return True
