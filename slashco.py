@@ -472,7 +472,7 @@ class EclipticaDesktopHud:
         self.damage_title_text = "ECLIPTICA"
         self.damage_rows = []
         self.lock_text = "Boss 当前锁定：-"
-        self.lock_detail_text = "等待 Boss 战"
+        self.boss_lock_active = False
         self.resize_grips = {}
         self._pointer_operation = None
 
@@ -611,13 +611,8 @@ class EclipticaDesktopHud:
                 )
         else:
             canvas.create_text(
-                width // 2, self._scaled(8, scale), text=self.lock_text, fill=self.FG,
-                font=("Microsoft YaHei UI", self._scaled(15, scale), "bold"), anchor=N,
-            )
-            canvas.create_text(
-                width // 2, self._scaled(48, scale),
-                text="拖动调整位置，右下角调整大小", fill=self.FG,
-                font=("Microsoft YaHei UI", self._scaled(9, scale)), anchor=N,
+                width // 2, height // 2, text=self.lock_text, fill=self.FG,
+                font=("Microsoft YaHei UI", self._scaled(15, scale), "bold"), anchor=CENTER,
             )
         for inset in (7, 12, 17):
             canvas.create_line(
@@ -693,20 +688,11 @@ class EclipticaDesktopHud:
         self._draw_text(
             draw,
             center_x,
-            self._scaled(8, scale),
+            height // 2,
             self.lock_text,
             self.FG,
             _load_hud_font(self._scaled(21, scale), bold=True),
-            "ma",
-        )
-        self._draw_text(
-            draw,
-            center_x,
-            self._scaled(48, scale),
-            self.lock_detail_text,
-            self.FG,
-            _load_hud_font(self._scaled(13, scale)),
-            "ma",
+            "mm",
         )
         self._draw_edit_grip(draw, width, height)
         self._render_layered_image(self.lock_window, image)
@@ -964,7 +950,10 @@ class EclipticaDesktopHud:
 
     def _apply_display_visibility(self):
         show_damage = self.display_mode in ("both", "damage")
-        show_boss_lock = self.display_mode in ("both", "boss_lock")
+        show_boss_lock = (
+            self.display_mode in ("both", "boss_lock")
+            and (self.editing or self.boss_lock_active)
+        )
         if show_damage:
             self.damage_background_window.deiconify()
             if self.editing:
@@ -1039,12 +1028,7 @@ class EclipticaDesktopHud:
         aggro = snapshot.get("aggro", {})
         target = aggro.get("target", "-")
         self.lock_text = f"Boss 当前锁定：{target}"
-        detail = aggro.get("status", "未确认")
-        if aggro.get("locked_secs", 0) > 0:
-            detail = f"{detail} · {aggro['locked_secs']} 秒"
-        if aggro.get("stale") and aggro.get("state") not in ("inactive", None):
-            detail = f"{detail} · 状态可能已过时"
-        self.lock_detail_text = detail
+        self.boss_lock_active = aggro.get("state") not in ("inactive", None)
         self._render_damage_text()
         self._render_lock_text()
         self._place_windows()

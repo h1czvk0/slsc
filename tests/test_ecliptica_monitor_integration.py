@@ -86,6 +86,7 @@ class FakeHudWindow:
     def __init__(self):
         self.alpha = 1.0
         self.lifted_above = None
+        self.window_state = "withdrawn"
 
     def winfo_exists(self):
         return True
@@ -97,8 +98,14 @@ class FakeHudWindow:
     def lift(self, window):
         self.lifted_above = window
 
+    def deiconify(self):
+        self.window_state = "normal"
+
+    def withdraw(self):
+        self.window_state = "withdrawn"
+
     def state(self):
-        return "withdrawn"
+        return self.window_state
 
 
 class FakeGeometryWindow:
@@ -387,6 +394,41 @@ class HudLayoutTests(unittest.TestCase):
                 ("当前耗时", "02:06"),
             ],
         )
+
+    def test_boss_lock_hud_is_hidden_outside_boss_battle(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud.display_mode = "both"
+        hud.editing = False
+        hud.boss_lock_active = False
+        hud.damage_background_window = FakeHudWindow()
+        hud.damage_window = FakeHudWindow()
+        hud.lock_background_window = FakeHudWindow()
+        hud.lock_window = FakeHudWindow()
+
+        hud._apply_display_visibility()
+
+        self.assertEqual(hud.damage_window.state(), "normal")
+        self.assertEqual(hud.lock_background_window.state(), "withdrawn")
+        self.assertEqual(hud.lock_window.state(), "withdrawn")
+
+    def test_boss_lock_hud_only_keeps_the_target_line(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud._ensure_windows = lambda: None
+        hud._render_damage_text = lambda: None
+        hud._render_lock_text = lambda: None
+        hud._place_windows = lambda: None
+        hud._apply_display_visibility = lambda: None
+        hud.editing = False
+        hud.damage_background_window = FakeHudWindow()
+        hud.damage_window = FakeHudWindow()
+        hud.lock_background_window = FakeHudWindow()
+        hud.lock_window = FakeHudWindow()
+
+        hud.update({"aggro": {"state": "other", "target": "Player A", "status": "其他玩家"}})
+
+        self.assertEqual(hud.lock_text, "Boss 当前锁定：Player A")
+        self.assertTrue(hud.boss_lock_active)
+        self.assertFalse(hasattr(hud, "lock_detail_text"))
 
     def test_hud_scale_follows_the_smaller_window_dimension(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
