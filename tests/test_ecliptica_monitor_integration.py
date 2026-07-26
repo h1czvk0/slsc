@@ -14,6 +14,7 @@ from slashco import (  # noqa: E402
     PANEL_MODE_LABELS,
     SlashCoMonitorCN,
     _premultiplied_bgra,
+    format_ecliptica_clock,
     format_ecliptica_duration,
     normalize_hud_display_mode,
     normalize_hud_layout,
@@ -319,6 +320,12 @@ class HudLayoutTests(unittest.TestCase):
         self.assertEqual(format_ecliptica_duration(126), "2分06秒")
         self.assertEqual(format_ecliptica_duration(None), "0秒")
 
+    def test_ecliptica_clock_format(self):
+        self.assertEqual(format_ecliptica_clock(None), "00:00")
+        self.assertEqual(format_ecliptica_clock(5.9), "00:05")
+        self.assertEqual(format_ecliptica_clock(126), "02:06")
+        self.assertEqual(format_ecliptica_clock(3930), "65:30")
+
     def test_damage_hud_uses_current_boss_phase_metrics(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
         hud._ensure_windows = lambda: None
@@ -356,7 +363,7 @@ class HudLayoutTests(unittest.TestCase):
                 ("本局 BOSS 总伤害", "128.2K"),
                 ("本局 BOSS 总受伤", "6.9K"),
                 ("近 5 秒 DPS", "354.2"),
-                ("当前耗时", "2分06秒"),
+                ("当前耗时", "02:06"),
             ],
         )
 

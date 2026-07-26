@@ -1033,7 +1033,7 @@ class EclipticaDesktopHud:
             ("本局 BOSS 总伤害", format_ecliptica_number(snapshot.get("current_phase_damage", 0))),
             ("本局 BOSS 总受伤", format_ecliptica_number(snapshot.get("current_phase_damage_taken", 0))),
             ("近 5 秒 DPS", f"{snapshot.get('recent_5s_dps', 0.0):.1f}"),
-            ("当前耗时", format_ecliptica_duration(snapshot.get("current_phase_elapsed", 0))),
+            ("当前耗时", format_ecliptica_clock(snapshot.get("current_phase_elapsed", 0))),
         ]
 
         aggro = snapshot.get("aggro", {})
@@ -1106,6 +1106,12 @@ def format_ecliptica_duration(value):
     if minutes:
         return f"{minutes}分{seconds:02d}秒"
     return f"{seconds}秒"
+
+
+def format_ecliptica_clock(value):
+    total_seconds = max(0, int(float(value or 0)))
+    minutes, seconds = divmod(total_seconds, 60)
+    return f"{minutes:02d}:{seconds:02d}"
 
 # =====================
 # 配置
