@@ -320,6 +320,8 @@ def _update_layered_window(window, image):
     user32.GetDC.argtypes = (wintypes.HWND,)
     user32.GetDC.restype = wintypes.HDC
     user32.ReleaseDC.argtypes = (wintypes.HWND, wintypes.HDC)
+    user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+    user32.GetWindowRect.restype = wintypes.BOOL
     gdi32.CreateCompatibleDC.argtypes = (wintypes.HDC,)
     gdi32.CreateCompatibleDC.restype = wintypes.HDC
     gdi32.CreateDIBSection.argtypes = (
@@ -376,7 +378,11 @@ def _update_layered_window(window, image):
         old_bitmap = gdi32.SelectObject(memory_dc, bitmap)
         pixel_data = _premultiplied_bgra(image)
         ctypes.memmove(bits.value, bytes(pixel_data), len(pixel_data))
-        destination = _LayeredPoint(window.winfo_x(), window.winfo_y())
+        window_rect = wintypes.RECT()
+        if user32.GetWindowRect(hwnd, ctypes.byref(window_rect)):
+            destination = _LayeredPoint(window_rect.left, window_rect.top)
+        else:
+            destination = _LayeredPoint(window.winfo_x(), window.winfo_y())
         source = _LayeredPoint(0, 0)
         size = _LayeredSize(width, height)
         blend = _BlendFunction(0, 0, 255, 1)
@@ -470,17 +476,20 @@ class EclipticaDesktopHud:
             return self.damage_background_window
         return self.lock_background_window
 
-    def _sync_background_window(self, key, content_window):
+    def _set_window_pair_geometry(self, key, content_window, x, y, width, height):
         background = self._background_window(key)
-        if not background or not background.winfo_exists():
-            return
-        content_window.update_idletasks()
-        geometry = (
-            f"{content_window.winfo_width()}x{content_window.winfo_height()}"
-            f"+{content_window.winfo_x()}+{content_window.winfo_y()}"
-        )
-        background.geometry(geometry)
-        content_window.lift(background)
+        geometry = f"{width}x{height}+{x}+{y}"
+        if background and background.winfo_exists():
+            background.geometry(geometry)
+        content_window.geometry(geometry)
+        if background and background.winfo_exists():
+            content_window.lift(background)
+        self.layout[key] = {
+            "x": int(x),
+            "y": int(y),
+            "width": int(width),
+            "height": int(height),
+        }
 
     def _bind_drag(self, widget, key, window):
         widget.bind(
@@ -618,14 +627,17 @@ class EclipticaDesktopHud:
     def _start_drag(self, event, key, window):
         if not self.editing:
             return
+        current = self.layout.get(key, {})
         self._pointer_operation = {
             "kind": "drag",
             "key": key,
             "window": window,
             "pointer_x": event.x_root,
             "pointer_y": event.y_root,
-            "x": window.winfo_x(),
-            "y": window.winfo_y(),
+            "x": int(current.get("x", window.winfo_x())),
+            "y": int(current.get("y", window.winfo_y())),
+            "width": int(current.get("width", window.winfo_width())),
+            "height": int(current.get("height", window.winfo_height())),
         }
 
     def _drag_window(self, event):
@@ -637,11 +649,16 @@ class EclipticaDesktopHud:
         y = operation["y"] + event.y_root - operation["pointer_y"]
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        x = min(max(-window.winfo_width() + 80, x), screen_w - 80)
+        x = min(max(-operation["width"] + 80, x), screen_w - 80)
         y = min(max(0, y), screen_h - 40)
-        window.geometry(f"+{x}+{y}")
-        self._sync_background_window(operation["key"], window)
-        self._capture_window_layout(operation["key"], window)
+        self._set_window_pair_geometry(
+            operation["key"],
+            window,
+            x,
+            y,
+            operation["width"],
+            operation["height"],
+        )
 
     def _start_resize(self, event, key, window):
         if not self.editing:
@@ -667,13 +684,13 @@ class EclipticaDesktopHud:
         height = max(min_height, operation["height"] + event.y_root - operation["pointer_y"])
         width = min(width, self.root.winfo_screenwidth())
         height = min(height, self.root.winfo_screenheight())
-        window.geometry(f"{width}x{height}")
-        self._sync_background_window(key, window)
+        x = self.layout.get(key, {}).get("x", window.winfo_x())
+        y = self.layout.get(key, {}).get("y", window.winfo_y())
+        self._set_window_pair_geometry(key, window, x, y, width, height)
         if key == "damage":
             self._render_damage_text()
         else:
             self._render_lock_text()
-        self._capture_window_layout(key, window)
 
     def _create_damage_window(self):
         background = self._create_background_window()
@@ -732,10 +749,8 @@ class EclipticaDesktopHud:
         self.lock_window.update_idletasks()
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        damage_w = max(HUD_MIN_SIZES["damage"][0], self.damage_window.winfo_reqwidth())
-        damage_h = max(HUD_MIN_SIZES["damage"][1], self.damage_window.winfo_reqheight())
-        lock_w = max(HUD_MIN_SIZES["boss_lock"][0], self.lock_window.winfo_reqwidth())
-        lock_h = max(HUD_MIN_SIZES["boss_lock"][1], self.lock_window.winfo_reqheight())
+        damage_w, damage_h = HUD_MIN_SIZES["damage"]
+        lock_w, lock_h = HUD_MIN_SIZES["boss_lock"]
         return {
             "damage": {
                 "x": 24,
@@ -752,6 +767,9 @@ class EclipticaDesktopHud:
         }
 
     def _capture_window_layout(self, key, window):
+        background = self._background_window(key)
+        if background and background.winfo_exists():
+            window = background
         self.layout[key] = {
             "x": window.winfo_x(),
             "y": window.winfo_y(),
@@ -768,12 +786,7 @@ class EclipticaDesktopHud:
         height = min(screen_h, max(min_height, int(geometry["height"])))
         x = min(max(-width + 80, int(geometry["x"])), screen_w - 80)
         y = min(max(0, int(geometry["y"])), screen_h - 40)
-        window.geometry(f"{width}x{height}+{x}+{y}")
-        background = self._background_window(key)
-        if background and background.winfo_exists():
-            background.geometry(f"{width}x{height}+{x}+{y}")
-            window.lift(background)
-        self.layout[key] = {"x": x, "y": y, "width": width, "height": height}
+        self._set_window_pair_geometry(key, window, x, y, width, height)
 
     def _place_windows(self):
         defaults = self._default_layout()
@@ -793,12 +806,16 @@ class EclipticaDesktopHud:
                     content.lift(background)
 
     def reset_layout(self):
-        self.layout = {}
         self._ensure_windows()
-        self._place_windows()
+        defaults = self._default_layout()
+        self.layout = {key: dict(value) for key, value in defaults.items()}
+        self._apply_window_layout("damage", self.damage_window, defaults)
+        self._apply_window_layout("boss_lock", self.lock_window, defaults)
         self.damage_window.update_idletasks()
         self.lock_window.update_idletasks()
-        return self.get_layout()
+        self._render_damage_text()
+        self._render_lock_text()
+        return {key: dict(value) for key, value in self.layout.items()}
 
     def _apply_edit_visuals(self):
         for key, window in (("damage", self.damage_window), ("boss_lock", self.lock_window)):

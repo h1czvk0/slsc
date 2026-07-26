@@ -67,6 +67,50 @@ class FakeHudWindow:
         self.lifted_above = window
 
 
+class FakeGeometryWindow:
+    def __init__(self, geometry="250x210+0+0"):
+        self.geometry_value = geometry
+        self.lifted_above = None
+
+    def winfo_exists(self):
+        return True
+
+    def geometry(self, value=None):
+        if value is not None:
+            self.geometry_value = value
+        return self.geometry_value
+
+    def lift(self, window):
+        self.lifted_above = window
+
+    def update_idletasks(self):
+        pass
+
+    def _parts(self):
+        width, height, x, y = self.geometry_value.replace("x", "+").split("+")
+        return int(width), int(height), int(x), int(y)
+
+    def winfo_width(self):
+        return self._parts()[0]
+
+    def winfo_height(self):
+        return self._parts()[1]
+
+    def winfo_x(self):
+        return self._parts()[2]
+
+    def winfo_y(self):
+        return self._parts()[3]
+
+
+class FakeScreenRoot:
+    def winfo_screenwidth(self):
+        return 1920
+
+    def winfo_screenheight(self):
+        return 1080
+
+
 class FakeDraw:
     def __init__(self):
         self.text_items = []
@@ -183,6 +227,40 @@ class PanelModeSelectionTests(unittest.TestCase):
 
 
 class HudLayoutTests(unittest.TestCase):
+    def test_hud_pair_geometry_moves_background_and_text_together(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud.layout = {}
+        hud.damage_background_window = FakeGeometryWindow()
+        content = FakeGeometryWindow()
+
+        hud._set_window_pair_geometry("damage", content, 640, 360, 300, 240)
+
+        self.assertEqual(content.geometry(), "300x240+640+360")
+        self.assertEqual(hud.damage_background_window.geometry(), content.geometry())
+        self.assertEqual(
+            hud.layout["damage"],
+            {"x": 640, "y": 360, "width": 300, "height": 240},
+        )
+
+    def test_reset_layout_restores_default_positions_and_sizes(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud.root = FakeScreenRoot()
+        hud.layout = {"damage": {"x": 900, "y": 700, "width": 500, "height": 400}}
+        hud.damage_background_window = FakeGeometryWindow()
+        hud.lock_background_window = FakeGeometryWindow("320x90+0+0")
+        hud.damage_window = FakeGeometryWindow("500x400+900+700")
+        hud.lock_window = FakeGeometryWindow("500x150+800+500")
+        hud._ensure_windows = lambda: None
+        hud._render_damage_text = lambda: None
+        hud._render_lock_text = lambda: None
+
+        layout = hud.reset_layout()
+
+        self.assertEqual(layout["damage"], {"x": 24, "y": 435, "width": 250, "height": 210})
+        self.assertEqual(layout["boss_lock"], {"x": 800, "y": 24, "width": 320, "height": 90})
+        self.assertEqual(hud.damage_window.geometry(), hud.damage_background_window.geometry())
+        self.assertEqual(hud.lock_window.geometry(), hud.lock_background_window.geometry())
+
     def test_hud_text_color_is_pure_white(self):
         self.assertEqual(EclipticaDesktopHud.FG, "#ffffff")
 
