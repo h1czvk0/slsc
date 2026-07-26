@@ -93,6 +93,9 @@ class FakeHudWindow:
     def lift(self, window):
         self.lifted_above = window
 
+    def state(self):
+        return "withdrawn"
+
 
 class FakeGeometryWindow:
     def __init__(self, geometry="250x210+0+0"):
@@ -316,12 +319,53 @@ class HudLayoutTests(unittest.TestCase):
         self.assertEqual(format_ecliptica_duration(126), "2分06秒")
         self.assertEqual(format_ecliptica_duration(None), "0秒")
 
+    def test_damage_hud_uses_current_boss_phase_metrics(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud._ensure_windows = lambda: None
+        hud._render_damage_text = lambda: None
+        hud._render_lock_text = lambda: None
+        hud._place_windows = lambda: None
+        hud._apply_display_visibility = lambda: None
+        hud.editing = False
+        hud.damage_background_window = FakeHudWindow()
+        hud.damage_window = FakeHudWindow()
+        hud.lock_background_window = FakeHudWindow()
+        hud.lock_window = FakeHudWindow()
+
+        hud.update(
+            {
+                "class_name": "Thaumaturge",
+                "stage": "Bringer",
+                "current_boss": "JimBringer",
+                "current_boss_phase": 2,
+                "current_phase_damage": 128200,
+                "current_phase_damage_taken": 6900,
+                "recent_5s_dps": 354.25,
+                "current_phase_elapsed": 126,
+                "aggro": {},
+            }
+        )
+
+        self.assertEqual(
+            hud.damage_rows,
+            [
+                ("当前职业", "Thaumaturge"),
+                ("当前阶段", "Bringer"),
+                ("当前 BOSS", "JimBringer"),
+                ("BOSS 阶段", "2"),
+                ("本局 BOSS 总伤害", "128.2K"),
+                ("本局 BOSS 总受伤", "6.9K"),
+                ("近 5 秒 DPS", "354.2"),
+                ("当前耗时", "2分06秒"),
+            ],
+        )
+
     def test_hud_scale_follows_the_smaller_window_dimension(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
 
-        self.assertEqual(hud._hud_scale("damage", 250, 210), 1.0)
-        self.assertEqual(hud._hud_scale("damage", 500, 420), 2.0)
-        self.assertEqual(hud._hud_scale("damage", 500, 210), 1.0)
+        self.assertEqual(hud._hud_scale("damage", 300, 210), 1.0)
+        self.assertEqual(hud._hud_scale("damage", 600, 420), 2.0)
+        self.assertEqual(hud._hud_scale("damage", 600, 210), 1.0)
         self.assertEqual(hud._hud_scale("boss_lock", 640, 180), 2.0)
 
     def test_preview_geometry_updates_visible_background_without_text_window(self):
@@ -368,7 +412,7 @@ class HudLayoutTests(unittest.TestCase):
 
         layout = hud.reset_layout()
 
-        self.assertEqual(layout["damage"], {"x": 24, "y": 435, "width": 250, "height": 210})
+        self.assertEqual(layout["damage"], {"x": 24, "y": 435, "width": 300, "height": 210})
         self.assertEqual(layout["boss_lock"], {"x": 800, "y": 24, "width": 320, "height": 90})
         self.assertEqual(hud.damage_window.geometry(), hud.damage_background_window.geometry())
         self.assertEqual(hud.lock_window.geometry(), hud.lock_background_window.geometry())
@@ -442,7 +486,7 @@ class HudLayoutTests(unittest.TestCase):
 
         self.assertEqual(
             layout["damage"],
-            {"x": 35, "y": 42, "width": 250, "height": 210},
+            {"x": 35, "y": 42, "width": 300, "height": 210},
         )
         self.assertEqual(
             layout["boss_lock"],

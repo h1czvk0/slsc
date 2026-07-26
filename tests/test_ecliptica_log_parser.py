@@ -46,10 +46,12 @@ class EclipticaParserTests(unittest.TestCase):
             "Boss M41D dead, personal damage dealt:",
             "STRIKE DMG: 14515",
             "NON-STRIKE DMG: 1270",
+            "Dealing 204 STRIKE damage",
             "damage has been taken: 20, from source: (M-41-D) attack_DashKick",
         )
         self.assertTrue(all(line_might_affect_ecliptica_state(line) for line in lines))
         self.assertEqual(parse_ecliptica_line("NON-STRIKE DMG: 1270").kind, "non_strike_damage")
+        self.assertEqual(parse_ecliptica_line("Dealing 204 STRIKE damage").groups, ("204", "STRIKE"))
 
     def test_parses_authentication_and_boss_ownership(self):
         authenticated = parse_ecliptica_line(
@@ -93,6 +95,36 @@ class EclipticaStateTests(unittest.TestCase):
         self.assertEqual(snapshot["last_settlement_dps"], 550.0)
         self.assertEqual(state.settlements[0]["phase"], 1)
         self.assertEqual(state.settlements[0]["duration"], 10.0)
+
+    def test_current_phase_tracks_live_damage_taken_dps_and_elapsed_time(self):
+        state = EclipticaState()
+        state.apply(self.make_event("boss", "JimBringerPhase2(Clone)", "0.5", timestamp=100.0))
+        state.apply(self.make_event("damage_dealt", "200", "STRIKE", timestamp=101.0))
+        state.apply(self.make_event("damage_dealt", "300", "STRIKE", timestamp=104.0))
+        state.apply(self.make_event("damage_taken", "75", "attack_chop", timestamp=104.0))
+
+        snapshot = state.snapshot(now=105.0)
+        self.assertEqual(snapshot["current_phase_damage"], 500)
+        self.assertEqual(snapshot["current_phase_damage_taken"], 75)
+        self.assertEqual(snapshot["recent_5s_dps"], 100.0)
+        self.assertEqual(snapshot["current_phase_elapsed"], 5.0)
+
+        expired = state.snapshot(now=110.0)
+        self.assertEqual(expired["recent_5s_dps"], 0.0)
+        self.assertEqual(expired["current_phase_damage"], 500)
+
+    def test_new_boss_phase_has_independent_live_totals(self):
+        state = EclipticaState()
+        state.apply(self.make_event("boss", "JimBringer(Clone)", "0.5", timestamp=10.0))
+        state.apply(self.make_event("damage_dealt", "1000", "STRIKE", timestamp=11.0))
+        state.apply(self.make_event("damage_taken", "40", "attack_chop", timestamp=12.0))
+        state.apply(self.make_event("boss", "JimBringerPhase2(Clone)", "0.8", timestamp=20.0))
+
+        snapshot = state.snapshot(now=21.0)
+        self.assertEqual(snapshot["current_phase_damage"], 0)
+        self.assertEqual(snapshot["current_phase_damage_taken"], 0)
+        self.assertEqual(snapshot["recent_5s_dps"], 0.0)
+        self.assertEqual(snapshot["current_phase_elapsed"], 1.0)
 
     def test_phase_two_keeps_current_boss_total_and_intermission_counts_once(self):
         state = EclipticaState()

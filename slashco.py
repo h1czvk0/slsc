@@ -179,7 +179,7 @@ class GalleryWindow:
 
 
 HUD_MIN_SIZES = {
-    "damage": (250, 210),
+    "damage": (300, 210),
     "boss_lock": (320, 90),
 }
 HUD_DISPLAY_LABELS = {
@@ -605,7 +605,7 @@ class EclipticaDesktopHud:
                     font=("Microsoft YaHei UI", self._scaled(9, scale)), anchor=NW,
                 )
                 canvas.create_text(
-                    self._scaled(118, scale), y - self._scaled(1, scale),
+                    self._scaled(160, scale), y - self._scaled(1, scale),
                     text=value, fill=self.FG,
                     font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NW,
                 )
@@ -671,7 +671,7 @@ class EclipticaDesktopHud:
             )
             self._draw_text(
                 draw,
-                self._scaled(118, scale),
+                self._scaled(160, scale),
                 y - self._scaled(1, scale),
                 value,
                 self.FG,
@@ -1030,11 +1030,10 @@ class EclipticaDesktopHud:
             ("当前阶段", str(snapshot.get("stage", "-"))),
             ("当前 BOSS", str(snapshot.get("current_boss", "-"))),
             ("BOSS 阶段", phase_text),
-            ("当前伤害", format_ecliptica_number(snapshot.get("current_boss_damage", 0))),
-            ("本局总伤害", format_ecliptica_number(snapshot.get("session_total_damage", 0))),
-            ("最近 DPS", f"{snapshot.get('last_settlement_dps', 0.0):.1f}"),
-            ("受到伤害", format_ecliptica_number(snapshot.get("session_damage_taken", 0))),
-            ("击败 BOSS", str(snapshot.get("defeated_count", 0))),
+            ("本局 BOSS 总伤害", format_ecliptica_number(snapshot.get("current_phase_damage", 0))),
+            ("本局 BOSS 总受伤", format_ecliptica_number(snapshot.get("current_phase_damage_taken", 0))),
+            ("近 5 秒 DPS", f"{snapshot.get('recent_5s_dps', 0.0):.1f}"),
+            ("当前耗时", format_ecliptica_duration(snapshot.get("current_phase_elapsed", 0))),
         ]
 
         aggro = snapshot.get("aggro", {})
