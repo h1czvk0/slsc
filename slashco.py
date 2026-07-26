@@ -305,6 +305,39 @@ def _native_toplevel_hwnd(window):
     return parent_hwnd or hwnd
 
 
+def _native_window_rect(window):
+    if os.name != "nt" or not hasattr(window, "winfo_id"):
+        return (
+            window.winfo_x(), window.winfo_y(),
+            window.winfo_width(), window.winfo_height(),
+        )
+    user32 = ctypes.windll.user32
+    user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+    user32.GetWindowRect.restype = wintypes.BOOL
+    rect = wintypes.RECT()
+    if user32.GetWindowRect(_native_toplevel_hwnd(window), ctypes.byref(rect)):
+        return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+    return window.winfo_x(), window.winfo_y(), window.winfo_width(), window.winfo_height()
+
+
+def _set_native_window_rect(window, x, y, width, height):
+    geometry = f"{width}x{height}+{x}+{y}"
+    window.geometry(geometry)
+    if os.name != "nt" or not hasattr(window, "winfo_id"):
+        return
+    user32 = ctypes.windll.user32
+    user32.SetWindowPos.argtypes = (
+        wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, wintypes.UINT,
+    )
+    user32.SetWindowPos.restype = wintypes.BOOL
+    user32.SetWindowPos(
+        _native_toplevel_hwnd(window), None,
+        int(x), int(y), int(width), int(height),
+        0x0004 | 0x0010 | 0x0200,
+    )
+
+
 def _update_layered_window(window, image):
     if os.name != "nt":
         return False
@@ -427,6 +460,8 @@ class EclipticaDesktopHud:
         self.lock_window = None
         self.damage_canvas = None
         self.lock_canvas = None
+        self.damage_preview_canvas = None
+        self.lock_preview_canvas = None
         self.damage_title_text = "ECLIPTICA"
         self.damage_rows = []
         self.lock_text = "Boss 当前锁定：-"
@@ -478,10 +513,9 @@ class EclipticaDesktopHud:
 
     def _set_window_pair_geometry(self, key, content_window, x, y, width, height):
         background = self._background_window(key)
-        geometry = f"{width}x{height}+{x}+{y}"
         if background and background.winfo_exists():
-            background.geometry(geometry)
-        content_window.geometry(geometry)
+            _set_native_window_rect(background, x, y, width, height)
+        _set_native_window_rect(content_window, x, y, width, height)
         if background and background.winfo_exists():
             content_window.lift(background)
         self.layout[key] = {
@@ -499,20 +533,22 @@ class EclipticaDesktopHud:
         widget.bind("<B1-Motion>", self._drag_window)
         widget.configure(cursor="fleur")
 
-    def _bind_edit_surface(self, widget, key, window):
+    def _bind_edit_surface(self, widget, key):
         widget.bind(
             "<ButtonPress-1>",
-            lambda event: self._start_edit_surface_action(event, key, window),
+            lambda event: self._start_edit_surface_action(event, key),
         )
         widget.bind("<B1-Motion>", self._continue_pointer_operation)
+        widget.configure(cursor="fleur")
 
-    def _start_edit_surface_action(self, event, key, window):
+    def _start_edit_surface_action(self, event, key):
         if not self.editing:
             return
+        window = self._background_window(key)
         if event.x >= event.widget.winfo_width() - 28 and event.y >= event.widget.winfo_height() - 28:
-            self._start_resize(event, key, window)
+            self._start_resize(event, key, window, preview=True)
         else:
-            self._start_drag(event, key, window)
+            self._start_drag(event, key, window, preview=True)
 
     def _continue_pointer_operation(self, event):
         operation = self._pointer_operation
@@ -523,6 +559,48 @@ class EclipticaDesktopHud:
 
     def _draw_text(self, draw, x, y, text, fill, font, anchor="la"):
         draw.text((x, y), text, fill=fill, font=font, anchor=anchor)
+
+    def _preview_canvas(self, key):
+        return self.damage_preview_canvas if key == "damage" else self.lock_preview_canvas
+
+    def _render_edit_preview(self, key):
+        canvas = self._preview_canvas(key)
+        if not canvas or not canvas.winfo_exists():
+            return
+        canvas.delete("all")
+        if not self.editing:
+            return
+        width = max(1, canvas.winfo_width())
+        height = max(1, canvas.winfo_height())
+        if key == "damage":
+            canvas.create_text(
+                14, 12, text="ECLIPTICA  |  拖动调整位置", fill=self.FG,
+                font=("Microsoft YaHei UI", 10, "bold"), anchor=NW,
+            )
+            for index, (label, value) in enumerate(self.damage_rows):
+                y = 39 + index * 19
+                canvas.create_text(
+                    14, y, text=label, fill=self.FG,
+                    font=("Microsoft YaHei UI", 9), anchor=NW,
+                )
+                canvas.create_text(
+                    118, y - 1, text=value, fill=self.FG,
+                    font=("Microsoft YaHei UI", 10, "bold"), anchor=NW,
+                )
+        else:
+            canvas.create_text(
+                width // 2, 8, text=self.lock_text, fill=self.FG,
+                font=("Microsoft YaHei UI", 15, "bold"), anchor=N,
+            )
+            canvas.create_text(
+                width // 2, 48, text="拖动调整位置，右下角调整大小", fill=self.FG,
+                font=("Microsoft YaHei UI", 9), anchor=N,
+            )
+        for inset in (7, 12, 17):
+            canvas.create_line(
+                width - inset, height - 3, width - 3, height - inset,
+                fill=self.ACCENT, width=2,
+            )
 
     def _render_layered_image(self, window, image):
         if _update_layered_window(window, image):
@@ -624,7 +702,7 @@ class EclipticaDesktopHud:
         grip.bind("<B1-Motion>", self._resize_window)
         self.resize_grips[key] = grip
 
-    def _start_drag(self, event, key, window):
+    def _start_drag(self, event, key, window, preview=False):
         if not self.editing:
             return
         current = self.layout.get(key, {})
@@ -638,6 +716,7 @@ class EclipticaDesktopHud:
             "y": int(current.get("y", window.winfo_y())),
             "width": int(current.get("width", window.winfo_width())),
             "height": int(current.get("height", window.winfo_height())),
+            "preview": bool(preview),
         }
 
     def _drag_window(self, event):
@@ -651,16 +730,16 @@ class EclipticaDesktopHud:
         screen_h = self.root.winfo_screenheight()
         x = min(max(-operation["width"] + 80, x), screen_w - 80)
         y = min(max(0, y), screen_h - 40)
-        self._set_window_pair_geometry(
-            operation["key"],
-            window,
-            x,
-            y,
-            operation["width"],
-            operation["height"],
-        )
+        if operation.get("preview"):
+            self._set_preview_geometry(
+                operation["key"], x, y, operation["width"], operation["height"]
+            )
+        else:
+            self._set_window_pair_geometry(
+                operation["key"], window, x, y, operation["width"], operation["height"]
+            )
 
-    def _start_resize(self, event, key, window):
+    def _start_resize(self, event, key, window, preview=False):
         if not self.editing:
             return
         self._pointer_operation = {
@@ -671,6 +750,7 @@ class EclipticaDesktopHud:
             "pointer_y": event.y_root,
             "width": window.winfo_width(),
             "height": window.winfo_height(),
+            "preview": bool(preview),
         }
 
     def _resize_window(self, event):
@@ -686,11 +766,23 @@ class EclipticaDesktopHud:
         height = min(height, self.root.winfo_screenheight())
         x = self.layout.get(key, {}).get("x", window.winfo_x())
         y = self.layout.get(key, {}).get("y", window.winfo_y())
-        self._set_window_pair_geometry(key, window, x, y, width, height)
-        if key == "damage":
-            self._render_damage_text()
+        if operation.get("preview"):
+            self._set_preview_geometry(key, x, y, width, height)
         else:
-            self._render_lock_text()
+            self._set_window_pair_geometry(key, window, x, y, width, height)
+            if key == "damage":
+                self._render_damage_text()
+            else:
+                self._render_lock_text()
+
+    def _set_preview_geometry(self, key, x, y, width, height):
+        window = self._background_window(key)
+        _set_native_window_rect(window, x, y, width, height)
+        self.layout[key] = {
+            "x": int(x), "y": int(y), "width": int(width), "height": int(height),
+        }
+        window.update_idletasks()
+        self._render_edit_preview(key)
 
     def _create_damage_window(self):
         background = self._create_background_window()
@@ -707,7 +799,13 @@ class EclipticaDesktopHud:
         self.damage_canvas.bind("<Configure>", self._render_damage_text)
         self.damage_background_window = background
         self.damage_window = window
-        self._bind_edit_surface(background, "damage", window)
+        self.damage_preview_canvas = Canvas(background, bg=self.BG, highlightthickness=0)
+        self.damage_preview_canvas.pack(fill=BOTH, expand=True)
+        self.damage_preview_canvas.bind(
+            "<Configure>", lambda _event: self._render_edit_preview("damage")
+        )
+        self._bind_edit_surface(background, "damage")
+        self._bind_edit_surface(self.damage_preview_canvas, "damage")
         self._bind_drag(window, "damage", window)
         self._bind_drag(self.damage_canvas, "damage", window)
         self._create_resize_grip(window, "damage")
@@ -730,7 +828,13 @@ class EclipticaDesktopHud:
         self.lock_canvas.bind("<Configure>", self._render_lock_text)
         self.lock_background_window = background
         self.lock_window = window
-        self._bind_edit_surface(background, "boss_lock", window)
+        self.lock_preview_canvas = Canvas(background, bg=self.BG, highlightthickness=0)
+        self.lock_preview_canvas.pack(fill=BOTH, expand=True)
+        self.lock_preview_canvas.bind(
+            "<Configure>", lambda _event: self._render_edit_preview("boss_lock")
+        )
+        self._bind_edit_surface(background, "boss_lock")
+        self._bind_edit_surface(self.lock_preview_canvas, "boss_lock")
         self._bind_drag(window, "boss_lock", window)
         self._bind_drag(self.lock_canvas, "boss_lock", window)
         self._create_resize_grip(window, "boss_lock")
@@ -770,11 +874,12 @@ class EclipticaDesktopHud:
         background = self._background_window(key)
         if background and background.winfo_exists():
             window = background
+        x, y, width, height = _native_window_rect(window)
         self.layout[key] = {
-            "x": window.winfo_x(),
-            "y": window.winfo_y(),
-            "width": window.winfo_width(),
-            "height": window.winfo_height(),
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
         }
 
     def _apply_window_layout(self, key, window, defaults):
@@ -807,6 +912,7 @@ class EclipticaDesktopHud:
 
     def reset_layout(self):
         self._ensure_windows()
+        self._pointer_operation = None
         defaults = self._default_layout()
         self.layout = {key: dict(value) for key, value in defaults.items()}
         self._apply_window_layout("damage", self.damage_window, defaults)
@@ -815,6 +921,9 @@ class EclipticaDesktopHud:
         self.lock_window.update_idletasks()
         self._render_damage_text()
         self._render_lock_text()
+        if getattr(self, "editing", False):
+            self._render_edit_preview("damage")
+            self._render_edit_preview("boss_lock")
         return {key: dict(value) for key, value in self.layout.items()}
 
     def _apply_edit_visuals(self):
@@ -823,27 +932,29 @@ class EclipticaDesktopHud:
             background.configure(highlightbackground=self.ACCENT, highlightthickness=2)
             background.attributes("-alpha", max(0.2, self.opacity))
             self._set_click_through(background, False)
-            self._set_click_through(window, False)
-            self.resize_grips[key].place(relx=1.0, rely=1.0, anchor=SE)
-        self.damage_title_text = "ECLIPTICA  |  拖动调整位置"
-        self.lock_detail_text = "拖动调整位置，右下角调整大小"
-        self._render_damage_text()
-        self._render_lock_text()
+            window.withdraw()
+            self._render_edit_preview(key)
 
     def _apply_display_visibility(self):
         show_damage = self.display_mode in ("both", "damage")
         show_boss_lock = self.display_mode in ("both", "boss_lock")
         if show_damage:
             self.damage_background_window.deiconify()
-            self.damage_window.deiconify()
-            self.damage_window.lift(self.damage_background_window)
+            if self.editing:
+                self.damage_window.withdraw()
+            else:
+                self.damage_window.deiconify()
+                self.damage_window.lift(self.damage_background_window)
         else:
             self.damage_background_window.withdraw()
             self.damage_window.withdraw()
         if show_boss_lock:
             self.lock_background_window.deiconify()
-            self.lock_window.deiconify()
-            self.lock_window.lift(self.lock_background_window)
+            if self.editing:
+                self.lock_window.withdraw()
+            else:
+                self.lock_window.deiconify()
+                self.lock_window.lift(self.lock_background_window)
         else:
             self.lock_background_window.withdraw()
             self.lock_window.withdraw()
@@ -866,9 +977,13 @@ class EclipticaDesktopHud:
             background.attributes("-alpha", self.opacity)
             self._set_click_through(background, True)
             self._set_click_through(window, True)
-        self.damage_title_text = "ECLIPTICA"
+            self._render_edit_preview(key)
+        defaults = self._default_layout()
+        self._apply_window_layout("damage", self.damage_window, defaults)
+        self._apply_window_layout("boss_lock", self.lock_window, defaults)
         self._render_damage_text()
         self._render_lock_text()
+        self._apply_display_visibility()
         return self.get_layout()
 
     def get_layout(self):

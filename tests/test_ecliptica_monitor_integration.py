@@ -227,6 +227,20 @@ class PanelModeSelectionTests(unittest.TestCase):
 
 
 class HudLayoutTests(unittest.TestCase):
+    def test_preview_geometry_updates_visible_background_without_text_window(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud.layout = {}
+        hud.damage_background_window = FakeGeometryWindow()
+        hud._render_edit_preview = lambda _key: None
+
+        hud._set_preview_geometry("damage", 720, 480, 360, 280)
+
+        self.assertEqual(hud.damage_background_window.geometry(), "360x280+720+480")
+        self.assertEqual(
+            hud.layout["damage"],
+            {"x": 720, "y": 480, "width": 360, "height": 280},
+        )
+
     def test_hud_pair_geometry_moves_background_and_text_together(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
         hud.layout = {}
@@ -250,6 +264,7 @@ class HudLayoutTests(unittest.TestCase):
         hud.lock_background_window = FakeGeometryWindow("320x90+0+0")
         hud.damage_window = FakeGeometryWindow("500x400+900+700")
         hud.lock_window = FakeGeometryWindow("500x150+800+500")
+        hud._pointer_operation = {"kind": "drag"}
         hud._ensure_windows = lambda: None
         hud._render_damage_text = lambda: None
         hud._render_lock_text = lambda: None
@@ -260,6 +275,7 @@ class HudLayoutTests(unittest.TestCase):
         self.assertEqual(layout["boss_lock"], {"x": 800, "y": 24, "width": 320, "height": 90})
         self.assertEqual(hud.damage_window.geometry(), hud.damage_background_window.geometry())
         self.assertEqual(hud.lock_window.geometry(), hud.lock_background_window.geometry())
+        self.assertIsNone(hud._pointer_operation)
 
     def test_hud_text_color_is_pure_white(self):
         self.assertEqual(EclipticaDesktopHud.FG, "#ffffff")
