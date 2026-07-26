@@ -6,6 +6,8 @@ from datetime import datetime
 
 ROOM_PATTERN = re.compile(r"\[Behaviour\]\s+Entering Room:\s+(.+?)\s*$", re.IGNORECASE)
 PATTERNS = {
+    "authenticated": re.compile(r"User Authenticated:\s*(.+?)\s*\((usr_[^)]+)\)\s*$", re.IGNORECASE),
+    "ownership": re.compile(r"ownership of\s+(.+?)\s+transferred to\s+(.+?)\s*$", re.IGNORECASE),
     "session": re.compile(r"ECLIPTICA\s+(?:loaded|saving)\s+SESSION ID\s+(\d+)", re.IGNORECASE),
     "session_blank": re.compile(r"ECLIPTICA\s+loaded blank session ID", re.IGNORECASE),
     "stage": re.compile(
@@ -90,12 +92,13 @@ def line_might_affect_ecliptica_state(line: str) -> bool:
 
 
 class EclipticaState:
-    AGGRO_LOCAL_SECONDS = 6.0
-    AGGRO_STALE_SECONDS = 15.0
+    AGGRO_STALE_SECONDS = 9.0
     SETTLEMENT_DEDUP_SECONDS = 90.0
 
     def __init__(self):
         self.world_name = ""
+        self.local_player_name = ""
+        self.local_player_id = ""
         self.reset(preserve_world=True)
 
     def reset(self, preserve_world=False):
@@ -130,7 +133,9 @@ class EclipticaState:
         self._recent_settlements = {}
         self._settled_phases = set()
         self._aggro_since = None
-        self._aggro_last_hit_at = None
+        self._aggro_updated_at = None
+        self._aggro_target_player = ""
+        self._aggro_state = "unknown"
 
     def _event_time(self, event: EclipticaEvent):
         return float(event.timestamp if event.timestamp is not None else time.time())
@@ -144,7 +149,9 @@ class EclipticaState:
 
     def _reset_aggro(self):
         self._aggro_since = None
-        self._aggro_last_hit_at = None
+        self._aggro_updated_at = None
+        self._aggro_target_player = ""
+        self._aggro_state = "unknown"
 
     def _finalize_settlement(self, event: EclipticaEvent):
         if self._pending_strike is None or self._pending_non_strike is None:
@@ -201,6 +208,10 @@ class EclipticaState:
         kind = event.kind
         now = self._event_time(event)
 
+        if kind == "authenticated":
+            self.local_player_name = event.groups[0].strip()
+            self.local_player_id = event.groups[1].strip()
+            return True
         if kind == "room_entered":
             room_name = event.groups[0]
             if is_ecliptica_room(room_name):
@@ -247,6 +258,26 @@ class EclipticaState:
             self._pending_strike = None
             self._pending_non_strike = None
             return True
+        if kind == "ownership":
+            _owner_boss_name, owner_boss_key, owner_boss_phase = split_boss_name(event.groups[0])
+            if owner_boss_key != self.current_boss_key or owner_boss_phase != self.current_boss_phase:
+                return False
+
+            target_player = event.groups[1].strip()
+            if not target_player:
+                return False
+            target_changed = target_player.casefold() != self._aggro_target_player.casefold()
+            if target_changed or self._aggro_since is None:
+                self._aggro_since = now
+            self._aggro_updated_at = now
+            self._aggro_target_player = target_player
+            if not self.local_player_name:
+                self._aggro_state = "unknown"
+            elif target_player.casefold() == self.local_player_name.strip().casefold():
+                self._aggro_state = "local"
+            else:
+                self._aggro_state = "other"
+            return True
         if kind == "strike_damage":
             self._pending_strike = float(event.groups[0])
             return self._finalize_settlement(event) or True
@@ -260,10 +291,6 @@ class EclipticaState:
             self.hit_count += 1
             self.max_hit_taken = max(self.max_hit_taken, amount)
             self.damage_sources[source] = self.damage_sources.get(source, 0) + amount
-            if self.current_boss_key:
-                if self._aggro_last_hit_at is None or now - self._aggro_last_hit_at > self.AGGRO_LOCAL_SECONDS:
-                    self._aggro_since = now
-                self._aggro_last_hit_at = now
             return True
         if kind == "stage_progress":
             self.stage_progress = int(event.groups[0])
@@ -292,7 +319,7 @@ class EclipticaState:
                 "stale": True,
                 "locked_secs": 0,
             }
-        if self._aggro_last_hit_at is None:
+        if not self._aggro_target_player or self._aggro_updated_at is None:
             age = max(0.0, current_time - (self.current_boss_started_at or current_time))
             return {
                 "state": "unknown",
@@ -303,24 +330,16 @@ class EclipticaState:
                 "locked_secs": int(age),
             }
 
-        age = max(0.0, current_time - self._aggro_last_hit_at)
-        if age <= self.AGGRO_LOCAL_SECONDS:
-            since = self._aggro_since if self._aggro_since is not None else self._aggro_last_hit_at
-            return {
-                "state": "local",
-                "target": "你",
-                "is_local": True,
-                "status": "正在追击你",
-                "stale": False,
-                "locked_secs": max(0, int(current_time - since)),
-            }
+        updated_age = max(0.0, current_time - self._aggro_updated_at)
+        since = self._aggro_since if self._aggro_since is not None else self._aggro_updated_at
+        is_local = self._aggro_state == "local"
         return {
-            "state": "other",
-            "target": "其他玩家",
-            "is_local": False,
-            "status": "追击其他玩家",
-            "stale": age > self.AGGRO_STALE_SECONDS,
-            "locked_secs": int(age),
+            "state": self._aggro_state,
+            "target": self._aggro_target_player,
+            "is_local": is_local,
+            "status": "正在追击你" if is_local else ("追击其他玩家" if self._aggro_state == "other" else "仇恨中"),
+            "stale": updated_age >= self.AGGRO_STALE_SECONDS,
+            "locked_secs": max(0, int(current_time - since)),
         }
 
     def snapshot(self, now=None):

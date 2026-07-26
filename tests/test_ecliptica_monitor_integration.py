@@ -179,6 +179,17 @@ class EclipticaMonitorIntegrationTests(unittest.TestCase):
         self.assertEqual(monitor.current_game_mode, "slashco")
         self.assertEqual(monitor.ecliptica_state.session_damage_taken, 0)
 
+    def test_authentication_updates_identity_without_switching_panel(self):
+        monitor = self.make_monitor()
+        event = parse_ecliptica_line(
+            "2026.07.26 16:04:50 Debug - User Authenticated: TestPlayer "
+            "(usr_00000000-0000-0000-0000-000000000001)"
+        )
+
+        self.assertFalse(monitor._handle_ecliptica_event(event))
+        self.assertEqual(monitor.current_game_mode, "slashco")
+        self.assertEqual(monitor.ecliptica_state.local_player_name, "TestPlayer")
+
 
 class PanelModeSelectionTests(unittest.TestCase):
     def make_monitor(self, preference="auto", detected="slashco"):

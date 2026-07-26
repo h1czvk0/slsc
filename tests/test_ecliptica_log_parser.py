@@ -51,6 +51,20 @@ class EclipticaParserTests(unittest.TestCase):
         self.assertTrue(all(line_might_affect_ecliptica_state(line) for line in lines))
         self.assertEqual(parse_ecliptica_line("NON-STRIKE DMG: 1270").kind, "non_strike_damage")
 
+    def test_parses_authentication_and_boss_ownership(self):
+        authenticated = parse_ecliptica_line(
+            "2026.07.26 16:04:50 Debug - User Authenticated: TestPlayer "
+            "(usr_00000000-0000-0000-0000-000000000001)"
+        )
+        ownership = parse_ecliptica_line(
+            "2026.07.26 16:22:02 Debug - ownership of Obisidus transferred to BangYaSan"
+        )
+
+        self.assertEqual(authenticated.kind, "authenticated")
+        self.assertEqual(authenticated.groups[0], "TestPlayer")
+        self.assertEqual(ownership.kind, "ownership")
+        self.assertEqual(ownership.groups, ("Obisidus", "BangYaSan"))
+
 
 class EclipticaStateTests(unittest.TestCase):
     def make_event(self, kind, *groups, timestamp=0.0):
@@ -111,8 +125,9 @@ class EclipticaStateTests(unittest.TestCase):
         self.assertEqual(state.session_total_damage, 4500)
         self.assertEqual(len(state.settlements), 1)
 
-    def test_damage_taken_drives_expiring_local_aggro_inference(self):
+    def test_boss_ownership_drives_exact_aggro_player(self):
         state = EclipticaState()
+        state.apply(self.make_event("authenticated", "Local Player", "usr_local", timestamp=1.0))
         state.apply(self.make_event("boss", "JimBringer(Clone)", "1", timestamp=10.0))
 
         unknown = state.aggro_snapshot(now=12.0)
@@ -120,21 +135,51 @@ class EclipticaStateTests(unittest.TestCase):
         self.assertEqual(unknown["target"], "某玩家")
         self.assertEqual(unknown["status"], "仇恨中")
 
-        state.apply(self.make_event("damage_taken", "43", "(Jim) attack_chop", timestamp=20.0))
+        state.apply(self.make_event("ownership", "JimBringer", "Local Player", timestamp=20.0))
 
         local = state.aggro_snapshot(now=24.0)
         self.assertTrue(local["is_local"])
         self.assertEqual(local["state"], "local")
-        self.assertEqual(local["target"], "你")
-        inferred_other = state.aggro_snapshot(now=29.0)
-        self.assertFalse(inferred_other["is_local"])
-        self.assertEqual(inferred_other["state"], "other")
-        self.assertEqual(inferred_other["target"], "其他玩家")
-        self.assertEqual(inferred_other["status"], "追击其他玩家")
-        stale = state.aggro_snapshot(now=40.0)
+        self.assertEqual(local["target"], "Local Player")
+
+        state.apply(self.make_event("ownership", "JimBringer", "Other Player", timestamp=29.0))
+        other = state.aggro_snapshot(now=30.0)
+        self.assertFalse(other["is_local"])
+        self.assertEqual(other["state"], "other")
+        self.assertEqual(other["target"], "Other Player")
+        self.assertEqual(other["status"], "追击其他玩家")
+        stale = state.aggro_snapshot(now=38.0)
         self.assertTrue(stale["stale"])
         self.assertEqual(stale["state"], "other")
-        self.assertEqual(stale["target"], "其他玩家")
+        self.assertEqual(stale["target"], "Other Player")
+
+    def test_same_owner_refreshes_state_without_resetting_lock_duration(self):
+        state = EclipticaState()
+        state.apply(self.make_event("boss", "ObisidusPhase2(Clone)", "1", timestamp=10.0))
+        state.apply(self.make_event("ownership", "ObisidusPhase2", "Player A", timestamp=20.0))
+        state.apply(self.make_event("ownership", "ObisidusPhase2", "Player A", timestamp=25.0))
+
+        aggro = state.aggro_snapshot(now=26.0)
+        self.assertEqual(aggro["target"], "Player A")
+        self.assertEqual(aggro["locked_secs"], 6)
+        self.assertFalse(aggro["stale"])
+
+    def test_ownership_from_another_boss_or_phase_is_ignored(self):
+        state = EclipticaState()
+        state.apply(self.make_event("boss", "ObisidusPhase2(Clone)", "1", timestamp=10.0))
+
+        self.assertFalse(state.apply(self.make_event("ownership", "Obisidus", "Wrong Phase", timestamp=20.0)))
+        self.assertFalse(state.apply(self.make_event("ownership", "ObisidusLightning", "Wrong Object", timestamp=21.0)))
+        self.assertEqual(state.aggro_snapshot(now=22.0)["target"], "某玩家")
+
+    def test_damage_taken_does_not_replace_exact_ownership_target(self):
+        state = EclipticaState()
+        state.apply(self.make_event("boss", "JimBringer(Clone)", "1", timestamp=10.0))
+        state.apply(self.make_event("ownership", "JimBringer", "Other Player", timestamp=20.0))
+        state.apply(self.make_event("damage_taken", "43", "(Jim) attack_chop", timestamp=21.0))
+
+        aggro = state.aggro_snapshot(now=22.0)
+        self.assertEqual(aggro["target"], "Other Player")
         self.assertEqual(state.session_damage_taken, 43)
         self.assertEqual(state.max_hit_taken, 43)
 

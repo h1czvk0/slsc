@@ -2012,7 +2012,7 @@ class SlashCoMonitorCN:
         self.lbl_ecliptica_aggro.pack(anchor=CENTER, pady=4)
         ttk.Label(
             lock_frame,
-            text="目标根据本机受击日志推测；未受击时显示某玩家，短时间未继续受击时显示其他玩家。",
+            text="目标来自当前 Boss 的所有权转移日志；长时间未更新时会标记状态可能已过时。",
             foreground="#777777",
             font=("微软雅黑", 8),
         ).pack(anchor=CENTER)
@@ -3200,6 +3200,9 @@ class SlashCoMonitorCN:
             self.rebuild_item_tree()
 
     def _handle_ecliptica_event(self, event):
+        if event.kind == "authenticated":
+            self.ecliptica_state.apply(event)
+            return False
         if event.kind == "room_entered":
             room_name = event.groups[0]
             if is_ecliptica_room(room_name):
@@ -3407,6 +3410,7 @@ class SlashCoMonitorCN:
         last_end_pos = None
         last_room_pos = None
         last_room_name = ""
+        last_authenticated_line = ""
         first_session_positions = {}
         last_session_id = ""
         pos = 0
@@ -3414,7 +3418,9 @@ class SlashCoMonitorCN:
             line = raw_line.strip()
             if line:
                 ecliptica_event = parse_ecliptica_line(line)
-                if ecliptica_event and ecliptica_event.kind == "room_entered":
+                if ecliptica_event and ecliptica_event.kind == "authenticated":
+                    last_authenticated_line = line
+                elif ecliptica_event and ecliptica_event.kind == "room_entered":
                     last_room_pos = pos
                     last_room_name = ecliptica_event.groups[0]
                 elif ecliptica_event and ecliptica_event.kind == "session":
@@ -3430,6 +3436,8 @@ class SlashCoMonitorCN:
             recovery_pos = first_session_positions.get(last_session_id, last_room_pos)
             active_text = text[recovery_pos:]
             lines = [line for line in active_text.splitlines() if self._line_might_affect_state(line)]
+            if last_authenticated_line and last_authenticated_line not in lines:
+                lines.insert(0, last_authenticated_line)
             self.log(f"已从日志尾部恢复 Ecliptica 当前房间状态，共 {len(lines)} 行")
             return lines
 
