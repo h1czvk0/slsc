@@ -193,7 +193,15 @@ def normalize_hud_opacity(value):
         opacity = float(value)
     except (TypeError, ValueError):
         return 0.9
-    return min(1.0, max(0.2, opacity))
+    return min(1.0, max(0.0, opacity))
+
+
+def normalize_hud_transparency(value):
+    try:
+        transparency = float(value)
+    except (TypeError, ValueError):
+        return 10.0
+    return min(100.0, max(0.0, transparency))
 
 
 def normalize_hud_layout(layout):
@@ -774,12 +782,13 @@ class EclipticaDesktopHud:
 
     def set_opacity(self, opacity):
         self.opacity = normalize_hud_opacity(opacity)
+        visible_opacity = max(0.2, self.opacity) if getattr(self, "editing", False) else self.opacity
         for background, content in (
             (self.damage_background_window, self.damage_window),
             (self.lock_background_window, self.lock_window),
         ):
             if background and background.winfo_exists():
-                background.attributes("-alpha", self.opacity)
+                background.attributes("-alpha", visible_opacity)
                 if content and content.winfo_exists():
                     content.lift(background)
 
@@ -795,6 +804,7 @@ class EclipticaDesktopHud:
         for key, window in (("damage", self.damage_window), ("boss_lock", self.lock_window)):
             background = self._background_window(key)
             background.configure(highlightbackground=self.ACCENT, highlightthickness=2)
+            background.attributes("-alpha", max(0.2, self.opacity))
             self._set_click_through(background, False)
             self._set_click_through(window, False)
             self.resize_grips[key].place(relx=1.0, rely=1.0, anchor=SE)
@@ -836,6 +846,7 @@ class EclipticaDesktopHud:
             self.resize_grips[key].place_forget()
             background = self._background_window(key)
             background.configure(highlightbackground=self.BORDER, highlightthickness=1)
+            background.attributes("-alpha", self.opacity)
             self._set_click_through(background, True)
             self._set_click_through(window, True)
         self.damage_title_text = "ECLIPTICA"
@@ -1782,7 +1793,7 @@ class SlashCoMonitorCN:
         ttk.Label(hud_opacity_row, text="背景透明度：").pack(side=LEFT)
         self.ecliptica_hud_opacity_scale = ttk.Scale(
             hud_opacity_row,
-            from_=20,
+            from_=0,
             to=100,
             variable=self.ecliptica_hud_opacity_var,
             command=self._on_ecliptica_hud_opacity_changed,
@@ -2007,8 +2018,8 @@ class SlashCoMonitorCN:
         self.panel_mode_var = StringVar(value=PANEL_MODE_LABELS["auto"])
         self.ecliptica_hud_layout_button_var = StringVar(value="配置 HUD 布局")
         self.ecliptica_hud_display_var = StringVar(value=HUD_DISPLAY_LABELS["both"])
-        self.ecliptica_hud_opacity_var = DoubleVar(value=90.0)
-        self.ecliptica_hud_opacity_text_var = StringVar(value="90%")
+        self.ecliptica_hud_opacity_var = DoubleVar(value=10.0)
+        self.ecliptica_hud_opacity_text_var = StringVar(value="10%")
         self.ecliptica_hud_layout = {}
         try:
             if os.path.exists(ECLIPTICA_CONFIG_FILENAME):
@@ -2019,9 +2030,13 @@ class SlashCoMonitorCN:
                 self.panel_mode_var.set(PANEL_MODE_LABELS.get(panel_mode, PANEL_MODE_LABELS["auto"]))
                 hud_display_mode = normalize_hud_display_mode(config.get("hud_display_mode", "both"))
                 self.ecliptica_hud_display_var.set(HUD_DISPLAY_LABELS[hud_display_mode])
-                hud_opacity = normalize_hud_opacity(config.get("hud_opacity", 0.9))
-                self.ecliptica_hud_opacity_var.set(hud_opacity * 100)
-                self.ecliptica_hud_opacity_text_var.set(f"{round(hud_opacity * 100)}%")
+                if "hud_transparency" in config:
+                    hud_transparency = normalize_hud_transparency(config["hud_transparency"])
+                else:
+                    legacy_opacity = normalize_hud_opacity(config.get("hud_opacity", 0.9))
+                    hud_transparency = (1.0 - legacy_opacity) * 100.0
+                self.ecliptica_hud_opacity_var.set(hud_transparency)
+                self.ecliptica_hud_opacity_text_var.set(f"{round(hud_transparency)}%")
                 self.ecliptica_hud_layout = normalize_hud_layout(config.get("hud_layout", {}))
         except Exception:
             pass
@@ -2037,6 +2052,7 @@ class SlashCoMonitorCN:
                         "hud_enabled": bool(self.ecliptica_hud_enabled.get()),
                         "panel_mode": self._panel_mode_preference(),
                         "hud_display_mode": self._ecliptica_hud_display_mode(),
+                        "hud_transparency": self._ecliptica_hud_transparency(),
                         "hud_opacity": self._ecliptica_hud_opacity(),
                         "hud_layout": self.ecliptica_hud_layout,
                     },
@@ -2065,21 +2081,24 @@ class SlashCoMonitorCN:
         return HUD_DISPLAY_KEYS.get(label, "both")
 
     def _ecliptica_hud_opacity(self):
-        return normalize_hud_opacity(self.ecliptica_hud_opacity_var.get() / 100.0)
+        return normalize_hud_opacity(1.0 - self._ecliptica_hud_transparency() / 100.0)
+
+    def _ecliptica_hud_transparency(self):
+        return normalize_hud_transparency(self.ecliptica_hud_opacity_var.get())
 
     def _on_ecliptica_hud_opacity_changed(self, value):
-        percent = min(100, max(20, round(float(value))))
+        percent = round(normalize_hud_transparency(value))
         self.ecliptica_hud_opacity_text_var.set(f"{percent}%")
         if self.ecliptica_hud:
-            self.ecliptica_hud.set_opacity(percent / 100.0)
+            self.ecliptica_hud.set_opacity(1.0 - percent / 100.0)
 
     def _on_ecliptica_hud_opacity_saved(self, _event=None):
         self._save_ecliptica_config()
 
     def _restore_default_ecliptica_hud(self):
         self.ecliptica_hud_display_var.set(HUD_DISPLAY_LABELS["both"])
-        self.ecliptica_hud_opacity_var.set(90.0)
-        self.ecliptica_hud_opacity_text_var.set("90%")
+        self.ecliptica_hud_opacity_var.set(10.0)
+        self.ecliptica_hud_opacity_text_var.set("10%")
         if self.ecliptica_hud:
             self.ecliptica_hud.set_opacity(0.9)
             self.ecliptica_hud_layout = self.ecliptica_hud.reset_layout()

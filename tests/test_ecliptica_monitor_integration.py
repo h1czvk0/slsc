@@ -17,6 +17,7 @@ from slashco import (  # noqa: E402
     normalize_hud_display_mode,
     normalize_hud_layout,
     normalize_hud_opacity,
+    normalize_hud_transparency,
 )
 
 
@@ -223,9 +224,16 @@ class HudLayoutTests(unittest.TestCase):
 
     def test_hud_opacity_is_clamped_and_invalid_values_use_default(self):
         self.assertEqual(normalize_hud_opacity(0.65), 0.65)
-        self.assertEqual(normalize_hud_opacity(0.05), 0.2)
+        self.assertEqual(normalize_hud_opacity(-0.05), 0.0)
+        self.assertEqual(normalize_hud_opacity(0.05), 0.05)
         self.assertEqual(normalize_hud_opacity(1.5), 1.0)
         self.assertEqual(normalize_hud_opacity("bad"), 0.9)
+
+    def test_hud_transparency_supports_fully_transparent_background(self):
+        self.assertEqual(normalize_hud_transparency(100), 100.0)
+        self.assertEqual(normalize_hud_transparency(-1), 0.0)
+        self.assertEqual(normalize_hud_transparency(101), 100.0)
+        self.assertEqual(normalize_hud_transparency("bad"), 10.0)
 
     def test_hud_display_mode_defaults_to_both_for_invalid_values(self):
         self.assertEqual(normalize_hud_display_mode("damage"), "damage")
