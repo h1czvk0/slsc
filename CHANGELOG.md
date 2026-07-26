@@ -1,5 +1,9 @@
 # 更新日志
 
+## 3.9.8
+
+- Ecliptica Boss 伤害结算表新增“耗时”列，显示每个 Boss 阶段从开始到结算使用的时间。
+
 ## 3.9.7
 
 - Boss 当前锁定改为解析 `ownership of <Boss> transferred to <玩家名>`，现在可显示 Boss 正在锁定的具体玩家。

@@ -84,6 +84,7 @@ class EclipticaStateTests(unittest.TestCase):
         self.assertEqual(snapshot["session_total_damage"], 5500)
         self.assertEqual(snapshot["last_settlement_dps"], 550.0)
         self.assertEqual(state.settlements[0]["phase"], 1)
+        self.assertEqual(state.settlements[0]["duration"], 10.0)
 
     def test_phase_two_keeps_current_boss_total_and_intermission_counts_once(self):
         state = EclipticaState()
@@ -101,6 +102,18 @@ class EclipticaStateTests(unittest.TestCase):
         state.apply(self.make_event("intermission", timestamp=32.0))
         state.apply(self.make_event("intermission", timestamp=33.0))
         self.assertEqual(state.snapshot(now=33.0)["defeated_count"], 1)
+
+    def test_previous_phase_duration_survives_next_phase_starting_before_settlement(self):
+        state = EclipticaState()
+        state.apply(self.make_event("boss", "JimBringerPhase2(Clone)", "0.5", timestamp=100.0))
+        state.apply(self.make_event("boss", "JimBringerPhase3(Clone)", "1", timestamp=130.0))
+        state.apply(self.make_event("boss_dead", "JimBringerPhase2", timestamp=130.0))
+        state.apply(self.make_event("strike_damage", "3000", timestamp=130.0))
+        state.apply(self.make_event("non_strike_damage", "0", timestamp=130.0))
+
+        self.assertEqual(state.settlements[0]["phase"], 2)
+        self.assertEqual(state.settlements[0]["duration"], 30.0)
+        self.assertEqual(state.settlements[0]["dps"], 100.0)
 
     def test_lobby_completes_final_boss_without_intermission(self):
         state = EclipticaState()

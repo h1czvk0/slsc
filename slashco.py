@@ -1093,6 +1093,14 @@ def format_ecliptica_number(value):
         return f"{number / 1_000:.1f}K"
     return str(int(round(number)))
 
+
+def format_ecliptica_duration(value):
+    total_seconds = max(0, int(round(float(value or 0))))
+    minutes, seconds = divmod(total_seconds, 60)
+    if minutes:
+        return f"{minutes}分{seconds:02d}秒"
+    return f"{seconds}秒"
+
 # =====================
 # 配置
 # =====================
@@ -2027,15 +2035,31 @@ class SlashCoMonitorCN:
             foreground="#6c4cff",
             font=("微软雅黑", 11, "bold"),
         ).pack(anchor=W, pady=(0, 4))
-        settlement_columns = ("Boss", "Phase", "Strike", "NonStrike", "Total", "DPS")
+        settlement_columns = ("Boss", "Phase", "Strike", "NonStrike", "Total", "Duration", "DPS")
         self.ecliptica_settlement_tree = ttk.Treeview(
             frame,
             columns=settlement_columns,
             show="headings",
             height=10,
         )
-        widths = {"Boss": 170, "Phase": 55, "Strike": 90, "NonStrike": 90, "Total": 90, "DPS": 70}
-        labels = {"Boss": "BOSS", "Phase": "阶段", "Strike": "直击", "NonStrike": "非直击", "Total": "总伤害", "DPS": "DPS"}
+        widths = {
+            "Boss": 145,
+            "Phase": 50,
+            "Strike": 75,
+            "NonStrike": 75,
+            "Total": 75,
+            "Duration": 80,
+            "DPS": 60,
+        }
+        labels = {
+            "Boss": "BOSS",
+            "Phase": "阶段",
+            "Strike": "直击",
+            "NonStrike": "非直击",
+            "Total": "总伤害",
+            "Duration": "耗时",
+            "DPS": "DPS",
+        }
         for column in settlement_columns:
             self.ecliptica_settlement_tree.heading(column, text=labels[column])
             self.ecliptica_settlement_tree.column(column, width=widths[column], anchor=CENTER)
@@ -2159,6 +2183,7 @@ class SlashCoMonitorCN:
                     format_ecliptica_number(settlement["strike"]),
                     format_ecliptica_number(settlement["non_strike"]),
                     format_ecliptica_number(settlement["total"]),
+                    format_ecliptica_duration(settlement.get("duration", 0)),
                     f"{settlement['dps']:.1f}",
                 ),
             )

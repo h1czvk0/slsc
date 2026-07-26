@@ -132,6 +132,7 @@ class EclipticaState:
         self._pending_non_strike = None
         self._recent_settlements = {}
         self._settled_phases = set()
+        self._boss_phase_started_at = {}
         self._aggro_since = None
         self._aggro_updated_at = None
         self._aggro_target_player = ""
@@ -180,9 +181,10 @@ class EclipticaState:
 
         total = strike + non_strike
         self._settled_phases.add(phase_identity)
-        duration = 0.0
-        if self.current_boss_started_at is not None:
-            duration = max(0.0, now - self.current_boss_started_at)
+        started_at = self._boss_phase_started_at.get(phase_identity)
+        if started_at is None and phase_identity == (self.current_boss_key, self.current_boss_phase):
+            started_at = self.current_boss_started_at
+        duration = max(0.0, now - started_at) if started_at is not None else 0.0
         dps = total / duration if duration > 0 else 0.0
         self.session_total_damage += total
         if boss_key and boss_key == self.current_boss_key:
@@ -197,6 +199,7 @@ class EclipticaState:
                 "strike": strike,
                 "non_strike": non_strike,
                 "total": total,
+                "duration": duration,
                 "dps": dps,
                 "timestamp": now,
             },
@@ -248,6 +251,7 @@ class EclipticaState:
             self.intermission = False
             if changed:
                 self.current_boss_started_at = now
+                self._boss_phase_started_at.setdefault((boss_key, boss_phase), now)
                 self._reset_aggro()
             return True
         if kind == "boss_dead":

@@ -14,6 +14,7 @@ from slashco import (  # noqa: E402
     PANEL_MODE_LABELS,
     SlashCoMonitorCN,
     _premultiplied_bgra,
+    format_ecliptica_duration,
     normalize_hud_display_mode,
     normalize_hud_layout,
     normalize_hud_opacity,
@@ -238,6 +239,11 @@ class PanelModeSelectionTests(unittest.TestCase):
 
 
 class HudLayoutTests(unittest.TestCase):
+    def test_ecliptica_duration_format(self):
+        self.assertEqual(format_ecliptica_duration(45), "45秒")
+        self.assertEqual(format_ecliptica_duration(126), "2分06秒")
+        self.assertEqual(format_ecliptica_duration(None), "0秒")
+
     def test_hud_scale_follows_the_smaller_window_dimension(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
 
