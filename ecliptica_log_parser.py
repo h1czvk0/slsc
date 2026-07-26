@@ -284,29 +284,44 @@ class EclipticaState:
     def aggro_snapshot(self, now=None):
         current_time = float(time.time() if now is None else now)
         if not self.current_boss_key:
-            return {"target": "-", "is_local": False, "status": "未在 Boss 战", "stale": True, "locked_secs": 0}
+            return {
+                "state": "inactive",
+                "target": "-",
+                "is_local": False,
+                "status": "未在 Boss 战",
+                "stale": True,
+                "locked_secs": 0,
+            }
         if self._aggro_last_hit_at is None:
-            return {"target": "-", "is_local": False, "status": "未确认", "stale": True, "locked_secs": 0}
+            age = max(0.0, current_time - (self.current_boss_started_at or current_time))
+            return {
+                "state": "unknown",
+                "target": "某玩家",
+                "is_local": False,
+                "status": "仇恨中",
+                "stale": age > self.AGGRO_STALE_SECONDS,
+                "locked_secs": int(age),
+            }
 
         age = max(0.0, current_time - self._aggro_last_hit_at)
         if age <= self.AGGRO_LOCAL_SECONDS:
             since = self._aggro_since if self._aggro_since is not None else self._aggro_last_hit_at
             return {
+                "state": "local",
                 "target": "你",
                 "is_local": True,
                 "status": "正在追击你",
                 "stale": False,
                 "locked_secs": max(0, int(current_time - since)),
             }
-        if age <= self.AGGRO_STALE_SECONDS:
-            return {
-                "target": "其他玩家（推测）",
-                "is_local": False,
-                "status": "最近未命中你",
-                "stale": False,
-                "locked_secs": int(age),
-            }
-        return {"target": "-", "is_local": False, "status": "状态已过期", "stale": True, "locked_secs": int(age)}
+        return {
+            "state": "other",
+            "target": "其他玩家",
+            "is_local": False,
+            "status": "追击其他玩家",
+            "stale": age > self.AGGRO_STALE_SECONDS,
+            "locked_secs": int(age),
+        }
 
     def snapshot(self, now=None):
         aggro = self.aggro_snapshot(now)

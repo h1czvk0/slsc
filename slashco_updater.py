@@ -8,7 +8,7 @@ import tempfile
 from dataclasses import dataclass
 
 
-APP_VERSION = "3.9.5"
+APP_VERSION = "3.9.6"
 GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/h1czvk0/slsc/releases/latest"
 GITHUB_PROXY_PREFIXES = (
     "https://gh-proxy.org/",

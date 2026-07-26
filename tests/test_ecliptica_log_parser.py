@@ -114,17 +114,27 @@ class EclipticaStateTests(unittest.TestCase):
     def test_damage_taken_drives_expiring_local_aggro_inference(self):
         state = EclipticaState()
         state.apply(self.make_event("boss", "JimBringer(Clone)", "1", timestamp=10.0))
+
+        unknown = state.aggro_snapshot(now=12.0)
+        self.assertEqual(unknown["state"], "unknown")
+        self.assertEqual(unknown["target"], "某玩家")
+        self.assertEqual(unknown["status"], "仇恨中")
+
         state.apply(self.make_event("damage_taken", "43", "(Jim) attack_chop", timestamp=20.0))
 
         local = state.aggro_snapshot(now=24.0)
         self.assertTrue(local["is_local"])
+        self.assertEqual(local["state"], "local")
         self.assertEqual(local["target"], "你")
         inferred_other = state.aggro_snapshot(now=29.0)
         self.assertFalse(inferred_other["is_local"])
-        self.assertIn("推测", inferred_other["target"])
+        self.assertEqual(inferred_other["state"], "other")
+        self.assertEqual(inferred_other["target"], "其他玩家")
+        self.assertEqual(inferred_other["status"], "追击其他玩家")
         stale = state.aggro_snapshot(now=40.0)
         self.assertTrue(stale["stale"])
-        self.assertEqual(stale["target"], "-")
+        self.assertEqual(stale["state"], "other")
+        self.assertEqual(stale["target"], "其他玩家")
         self.assertEqual(state.session_damage_taken, 43)
         self.assertEqual(state.max_hit_taken, 43)
 

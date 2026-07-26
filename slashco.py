@@ -465,7 +465,7 @@ class EclipticaDesktopHud:
         self.damage_title_text = "ECLIPTICA"
         self.damage_rows = []
         self.lock_text = "Boss 当前锁定：-"
-        self.lock_detail_text = "未确认"
+        self.lock_detail_text = "等待 Boss 战"
         self.resize_grips = {}
         self._pointer_operation = None
 
@@ -1036,6 +1036,8 @@ class EclipticaDesktopHud:
         detail = aggro.get("status", "未确认")
         if aggro.get("locked_secs", 0) > 0:
             detail = f"{detail} · {aggro['locked_secs']} 秒"
+        if aggro.get("stale") and aggro.get("state") not in ("inactive", None):
+            detail = f"{detail} · 状态可能已过时"
         self.lock_detail_text = detail
         self._render_damage_text()
         self._render_lock_text()
@@ -1901,7 +1903,7 @@ class SlashCoMonitorCN:
             "dps": StringVar(value="0.0"),
             "damage_taken": StringVar(value="0"),
             "defeated": StringVar(value="0"),
-            "aggro": StringVar(value="未确认"),
+            "aggro": StringVar(value="等待 Boss 战"),
         }
 
         hud_frame = ttk.LabelFrame(self.ecliptica_left_frame, text="Ecliptica 桌面 HUD", padding=7)
@@ -2010,7 +2012,7 @@ class SlashCoMonitorCN:
         self.lbl_ecliptica_aggro.pack(anchor=CENTER, pady=4)
         ttk.Label(
             lock_frame,
-            text="“其他玩家”由本地未继续受击推断，状态过期后显示未确认。",
+            text="目标根据本机受击日志推测；未受击时显示某玩家，短时间未继续受击时显示其他玩家。",
             foreground="#777777",
             font=("微软雅黑", 8),
         ).pack(anchor=CENTER)
@@ -2140,6 +2142,8 @@ class SlashCoMonitorCN:
         aggro_text = f"{target} · {aggro.get('status', '未确认')}"
         if aggro.get("locked_secs", 0) > 0:
             aggro_text += f" · {aggro['locked_secs']} 秒"
+        if aggro.get("stale") and aggro.get("state") not in ("inactive", None):
+            aggro_text += " · 状态可能已过时"
         self.ecliptica_vars["aggro"].set(aggro_text)
         self.lbl_ecliptica_aggro.configure(foreground="#c0392b" if aggro.get("is_local") else "#6c4cff")
 
