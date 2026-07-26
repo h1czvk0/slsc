@@ -563,6 +563,13 @@ class EclipticaDesktopHud:
     def _preview_canvas(self, key):
         return self.damage_preview_canvas if key == "damage" else self.lock_preview_canvas
 
+    def _hud_scale(self, key, width, height):
+        base_width, base_height = HUD_MIN_SIZES[key]
+        return max(1.0, min(float(width) / base_width, float(height) / base_height))
+
+    def _scaled(self, value, scale):
+        return max(1, int(round(value * scale)))
+
     def _render_edit_preview(self, key):
         canvas = self._preview_canvas(key)
         if not canvas or not canvas.winfo_exists():
@@ -572,29 +579,38 @@ class EclipticaDesktopHud:
             return
         width = max(1, canvas.winfo_width())
         height = max(1, canvas.winfo_height())
+        layout = self.layout.get(key, {})
+        scale = self._hud_scale(
+            key,
+            layout.get("width", width),
+            layout.get("height", height),
+        )
         if key == "damage":
             canvas.create_text(
-                14, 12, text="ECLIPTICA  |  拖动调整位置", fill=self.FG,
-                font=("Microsoft YaHei UI", 10, "bold"), anchor=NW,
+                self._scaled(14, scale), self._scaled(12, scale),
+                text="ECLIPTICA  |  拖动调整位置", fill=self.FG,
+                font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NW,
             )
             for index, (label, value) in enumerate(self.damage_rows):
-                y = 39 + index * 19
+                y = self._scaled(39 + index * 19, scale)
                 canvas.create_text(
-                    14, y, text=label, fill=self.FG,
-                    font=("Microsoft YaHei UI", 9), anchor=NW,
+                    self._scaled(14, scale), y, text=label, fill=self.FG,
+                    font=("Microsoft YaHei UI", self._scaled(9, scale)), anchor=NW,
                 )
                 canvas.create_text(
-                    118, y - 1, text=value, fill=self.FG,
-                    font=("Microsoft YaHei UI", 10, "bold"), anchor=NW,
+                    self._scaled(118, scale), y - self._scaled(1, scale),
+                    text=value, fill=self.FG,
+                    font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NW,
                 )
         else:
             canvas.create_text(
-                width // 2, 8, text=self.lock_text, fill=self.FG,
-                font=("Microsoft YaHei UI", 15, "bold"), anchor=N,
+                width // 2, self._scaled(8, scale), text=self.lock_text, fill=self.FG,
+                font=("Microsoft YaHei UI", self._scaled(15, scale), "bold"), anchor=N,
             )
             canvas.create_text(
-                width // 2, 48, text="拖动调整位置，右下角调整大小", fill=self.FG,
-                font=("Microsoft YaHei UI", 9), anchor=N,
+                width // 2, self._scaled(48, scale),
+                text="拖动调整位置，右下角调整大小", fill=self.FG,
+                font=("Microsoft YaHei UI", self._scaled(9, scale)), anchor=N,
             )
         for inset in (7, 12, 17):
             canvas.create_line(
@@ -622,35 +638,37 @@ class EclipticaDesktopHud:
     def _render_damage_text(self, _event=None):
         if not self.damage_canvas or not self.damage_canvas.winfo_exists():
             return
-        width = max(1, self.damage_window.winfo_width())
-        height = max(1, self.damage_window.winfo_height())
+        geometry = self.layout.get("damage", {})
+        width = max(1, int(geometry.get("width", self.damage_window.winfo_width())))
+        height = max(1, int(geometry.get("height", self.damage_window.winfo_height())))
+        scale = self._hud_scale("damage", width, height)
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         self._draw_text(
             draw,
-            14,
-            12,
+            self._scaled(14, scale),
+            self._scaled(12, scale),
             self.damage_title_text,
             self.FG,
-            _load_hud_font(14, bold=True),
+            _load_hud_font(self._scaled(14, scale), bold=True),
         )
         for index, (label, value) in enumerate(self.damage_rows):
-            y = 39 + index * 19
+            y = self._scaled(39 + index * 19, scale)
             self._draw_text(
                 draw,
-                14,
+                self._scaled(14, scale),
                 y,
                 label,
                 self.FG,
-                _load_hud_font(13),
+                _load_hud_font(self._scaled(13, scale)),
             )
             self._draw_text(
                 draw,
-                118,
-                y - 1,
+                self._scaled(118, scale),
+                y - self._scaled(1, scale),
                 value,
                 self.FG,
-                _load_hud_font(14, bold=True),
+                _load_hud_font(self._scaled(14, scale), bold=True),
             )
         self._draw_edit_grip(draw, width, height)
         self._render_layered_image(self.damage_window, image)
@@ -658,27 +676,29 @@ class EclipticaDesktopHud:
     def _render_lock_text(self, _event=None):
         if not self.lock_canvas or not self.lock_canvas.winfo_exists():
             return
-        width = max(1, self.lock_window.winfo_width())
-        height = max(1, self.lock_window.winfo_height())
+        geometry = self.layout.get("boss_lock", {})
+        width = max(1, int(geometry.get("width", self.lock_window.winfo_width())))
+        height = max(1, int(geometry.get("height", self.lock_window.winfo_height())))
+        scale = self._hud_scale("boss_lock", width, height)
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         center_x = width // 2
         self._draw_text(
             draw,
             center_x,
-            8,
+            self._scaled(8, scale),
             self.lock_text,
             self.FG,
-            _load_hud_font(21, bold=True),
+            _load_hud_font(self._scaled(21, scale), bold=True),
             "ma",
         )
         self._draw_text(
             draw,
             center_x,
-            48,
+            self._scaled(48, scale),
             self.lock_detail_text,
             self.FG,
-            _load_hud_font(13),
+            _load_hud_font(self._scaled(13, scale)),
             "ma",
         )
         self._draw_edit_grip(draw, width, height)

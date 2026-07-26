@@ -227,6 +227,14 @@ class PanelModeSelectionTests(unittest.TestCase):
 
 
 class HudLayoutTests(unittest.TestCase):
+    def test_hud_scale_follows_the_smaller_window_dimension(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+
+        self.assertEqual(hud._hud_scale("damage", 250, 210), 1.0)
+        self.assertEqual(hud._hud_scale("damage", 500, 420), 2.0)
+        self.assertEqual(hud._hud_scale("damage", 500, 210), 1.0)
+        self.assertEqual(hud._hud_scale("boss_lock", 640, 180), 2.0)
+
     def test_preview_geometry_updates_visible_background_without_text_window(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
         hud.layout = {}
