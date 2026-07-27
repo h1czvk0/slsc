@@ -269,6 +269,8 @@ class _BitmapInfo(ctypes.Structure):
 
 
 _HUD_FONT_CACHE = {}
+_HUD_FALLBACK_FONT_CACHE = {}
+_HUD_GLYPH_SUPPORT_CACHE = {}
 
 
 def _load_hud_font(size, bold=False):
@@ -288,6 +290,67 @@ def _load_hud_font(size, bold=False):
     font = ImageFont.load_default()
     _HUD_FONT_CACHE[key] = font
     return font
+
+
+def _load_hud_fallback_fonts(size, bold=False):
+    key = (int(size), bool(bold))
+    cached = _HUD_FALLBACK_FONT_CACHE.get(key)
+    if cached:
+        return cached
+    font_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+    candidates = (
+        ("Nirmala.ttc", 1 if bold else 0),
+        ("seguisym.ttf", 0),
+        ("seguiemj.ttf", 0),
+    )
+    fonts = []
+    for name, index in candidates:
+        try:
+            fonts.append(ImageFont.truetype(os.path.join(font_dir, name), key[0], index=index))
+        except OSError:
+            continue
+    _HUD_FALLBACK_FONT_CACHE[key] = tuple(fonts)
+    return _HUD_FALLBACK_FONT_CACHE[key]
+
+
+def _hud_font_supports_character(font, character):
+    if character.isspace():
+        return True
+    cache_key = (id(font), character)
+    cached = _HUD_GLYPH_SUPPORT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        glyph = font.getmask(character, mode="L")
+        missing = font.getmask("\U0010ffff", mode="L")
+        supported = glyph.size != missing.size or bytes(glyph) != bytes(missing)
+    except (AttributeError, OSError, ValueError):
+        supported = True
+    _HUD_GLYPH_SUPPORT_CACHE[cache_key] = supported
+    return supported
+
+
+def _hud_text_runs(text, base_font):
+    value = str(text)
+    if not value:
+        return [(value, base_font)]
+    try:
+        size = int(base_font.size)
+        bold = "bold" in str(base_font.getname()[1]).casefold()
+    except (AttributeError, IndexError, TypeError):
+        return [(value, base_font)]
+    fonts = (base_font,) + _load_hud_fallback_fonts(size, bold)
+    runs = []
+    for character in value:
+        selected = next(
+            (font for font in fonts if _hud_font_supports_character(font, character)),
+            base_font,
+        )
+        if runs and runs[-1][1] is selected:
+            runs[-1] = (runs[-1][0] + character, selected)
+        else:
+            runs.append((character, selected))
+    return runs
 
 
 def _premultiplied_bgra(image):
@@ -565,7 +628,22 @@ class EclipticaDesktopHud:
             self._drag_window(event)
 
     def _draw_text(self, draw, x, y, text, fill, font, anchor="la"):
-        draw.text((x, y), text, fill=fill, font=font, anchor=anchor)
+        runs = _hud_text_runs(text, font)
+        if len(runs) == 1:
+            draw.text((x, y), text, fill=fill, font=runs[0][1], anchor=anchor)
+            return
+        widths = [draw.textlength(run, font=run_font) for run, run_font in runs]
+        horizontal_anchor = anchor[0] if anchor else "l"
+        if horizontal_anchor == "m":
+            cursor_x = x - sum(widths) / 2
+        elif horizontal_anchor == "r":
+            cursor_x = x - sum(widths)
+        else:
+            cursor_x = x
+        vertical_anchor = anchor[1] if len(anchor) > 1 else "a"
+        for (run, run_font), width in zip(runs, widths):
+            draw.text((cursor_x, y), run, fill=fill, font=run_font, anchor=f"l{vertical_anchor}")
+            cursor_x += width
 
     def _preview_canvas(self, key):
         return self.damage_preview_canvas if key == "damage" else self.lock_preview_canvas
@@ -1028,7 +1106,10 @@ class EclipticaDesktopHud:
         aggro = snapshot.get("aggro", {})
         target = aggro.get("target", "-")
         self.lock_text = f"Boss 当前锁定：{target}"
-        self.boss_lock_active = aggro.get("state") not in ("inactive", None)
+        self.boss_lock_active = (
+            aggro.get("state") not in ("inactive", None)
+            and str(target).strip() not in ("", "-", "某玩家")
+        )
         self._render_damage_text()
         self._render_lock_text()
         self._place_windows()
@@ -2373,15 +2454,16 @@ class SlashCoMonitorCN:
         if snapshot is None:
             snapshot = self.ecliptica_state.snapshot()
         aggro = snapshot.get("aggro", {})
-        if aggro.get("state") == "inactive":
+        target = str(aggro.get("target", "")).strip()
+        if aggro.get("state") == "inactive" or target in ("", "-", "某玩家"):
             try:
                 cleared = self.ecliptica_osc.clear()
-                self.ecliptica_osc_status_var.set("等待 Boss 战")
+                status = "等待 Boss 战" if aggro.get("state") == "inactive" else "等待锁定目标"
+                self.ecliptica_osc_status_var.set(status)
                 return cleared
             except Exception as exc:
                 self.ecliptica_osc_status_var.set(f"清除失败：{exc}")
                 return False
-        target = aggro.get("target", "某玩家")
         try:
             sent = self.ecliptica_osc.publish_target(
                 target,

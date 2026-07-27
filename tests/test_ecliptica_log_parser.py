@@ -185,8 +185,8 @@ class EclipticaStateTests(unittest.TestCase):
 
         unknown = state.aggro_snapshot(now=12.0)
         self.assertEqual(unknown["state"], "unknown")
-        self.assertEqual(unknown["target"], "某玩家")
-        self.assertEqual(unknown["status"], "仇恨中")
+        self.assertEqual(unknown["target"], "-")
+        self.assertEqual(unknown["status"], "等待锁定目标")
 
         state.apply(self.make_event("ownership", "JimBringer", "Local Player", timestamp=20.0))
 
@@ -223,7 +223,7 @@ class EclipticaStateTests(unittest.TestCase):
 
         self.assertFalse(state.apply(self.make_event("ownership", "Obisidus", "Wrong Phase", timestamp=20.0)))
         self.assertFalse(state.apply(self.make_event("ownership", "ObisidusLightning", "Wrong Object", timestamp=21.0)))
-        self.assertEqual(state.aggro_snapshot(now=22.0)["target"], "某玩家")
+        self.assertEqual(state.aggro_snapshot(now=22.0)["target"], "-")
 
     def test_damage_taken_does_not_replace_exact_ownership_target(self):
         state = EclipticaState()

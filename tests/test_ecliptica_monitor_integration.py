@@ -13,6 +13,8 @@ from slashco import (  # noqa: E402
     EclipticaDesktopHud,
     PANEL_MODE_LABELS,
     SlashCoMonitorCN,
+    _hud_text_runs,
+    _load_hud_font,
     _premultiplied_bgra,
     format_ecliptica_clock,
     format_ecliptica_duration,
@@ -322,6 +324,15 @@ class OscPublishingTests(unittest.TestCase):
         self.assertEqual(monitor.ecliptica_osc.clear_calls, 0)
         self.assertEqual(monitor.ecliptica_osc.published[0][0], "ಣಪರೀಕ್ಷೆ")
 
+    def test_unknown_boss_target_is_cleared_instead_of_published(self):
+        monitor = self.make_monitor()
+
+        monitor._publish_ecliptica_osc({"aggro": {"state": "unknown", "target": "-"}})
+
+        self.assertEqual(monitor.ecliptica_osc.clear_calls, 1)
+        self.assertEqual(monitor.ecliptica_osc.published, [])
+        self.assertEqual(monitor.ecliptica_osc_status_var.get(), "等待锁定目标")
+
     def test_button_sends_visible_sample_while_output_is_disabled(self):
         monitor = self.make_monitor()
         monitor.ecliptica_osc_enabled.set(False)
@@ -430,6 +441,9 @@ class HudLayoutTests(unittest.TestCase):
         self.assertTrue(hud.boss_lock_active)
         self.assertFalse(hasattr(hud, "lock_detail_text"))
 
+        hud.update({"aggro": {"state": "unknown", "target": "-"}})
+        self.assertFalse(hud.boss_lock_active)
+
     def test_hud_scale_follows_the_smaller_window_dimension(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
 
@@ -500,6 +514,13 @@ class HudLayoutTests(unittest.TestCase):
         self.assertEqual(len(draw.text_items), 1)
         self.assertEqual(draw.text_items[0][0], ((10, 20), "HUD"))
         self.assertEqual(draw.text_items[0][1]["fill"], "#ffffff")
+
+    def test_hud_font_falls_back_for_kannada_without_losing_chinese(self):
+        runs = _hud_text_runs("Boss 当前锁定：ಣಪರೀಕ್ಷೆ", _load_hud_font(24, bold=True))
+
+        self.assertEqual("".join(text for text, _font in runs), "Boss 当前锁定：ಣಪರೀಕ್ಷೆ")
+        kannada_fonts = [font.getname()[0] for text, font in runs if "ಣ" in text]
+        self.assertEqual(kannada_fonts, ["Nirmala UI"])
 
     def test_layered_window_pixels_use_premultiplied_bgra(self):
         image = Image.new("RGBA", (2, 1))

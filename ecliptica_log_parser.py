@@ -353,9 +353,9 @@ class EclipticaState:
             age = max(0.0, current_time - (self.current_boss_started_at or current_time))
             return {
                 "state": "unknown",
-                "target": "某玩家",
+                "target": "-",
                 "is_local": False,
-                "status": "仇恨中",
+                "status": "等待锁定目标",
                 "stale": age > self.AGGRO_STALE_SECONDS,
                 "locked_secs": int(age),
             }
