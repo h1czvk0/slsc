@@ -113,6 +113,21 @@ class EclipticaStateTests(unittest.TestCase):
         self.assertEqual(expired["recent_5s_dps"], 0.0)
         self.assertEqual(expired["current_phase_damage"], 500)
 
+    def test_recent_dps_tracks_damage_outside_boss_battles(self):
+        state = EclipticaState()
+        state.apply(self.make_event("stage", "Bringer", "1", "Thaumaturge", timestamp=100.0))
+
+        self.assertTrue(state.apply(self.make_event("damage_dealt", "150", "STRIKE", timestamp=101.0)))
+        self.assertTrue(state.apply(self.make_event("damage_dealt", "350", "STRIKE", timestamp=104.0)))
+
+        snapshot = state.snapshot(now=105.0)
+        self.assertEqual(snapshot["current_boss"], "-")
+        self.assertEqual(snapshot["current_phase_damage"], 0)
+        self.assertEqual(snapshot["recent_5s_dps"], 100.0)
+
+        expired = state.snapshot(now=110.0)
+        self.assertEqual(expired["recent_5s_dps"], 0.0)
+
     def test_new_boss_phase_has_independent_live_totals(self):
         state = EclipticaState()
         state.apply(self.make_event("boss", "JimBringer(Clone)", "0.5", timestamp=10.0))

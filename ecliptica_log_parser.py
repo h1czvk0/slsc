@@ -140,7 +140,7 @@ class EclipticaState:
         self._boss_phase_started_at = {}
         self._phase_damage_totals = {}
         self._phase_damage_taken_totals = {}
-        self._phase_damage_events = {}
+        self._recent_damage_events = deque()
         self._aggro_since = None
         self._aggro_updated_at = None
         self._aggro_target_player = ""
@@ -264,7 +264,6 @@ class EclipticaState:
                 self._boss_phase_started_at.setdefault(phase_identity, now)
                 self._phase_damage_totals.setdefault(phase_identity, 0)
                 self._phase_damage_taken_totals.setdefault(phase_identity, 0)
-                self._phase_damage_events.setdefault(phase_identity, deque())
                 self._reset_aggro()
             return True
         if kind == "boss_dead":
@@ -296,12 +295,13 @@ class EclipticaState:
                 self._aggro_state = "other"
             return True
         if kind == "damage_dealt":
-            if not self.current_boss_key:
-                return False
             amount = max(0, int(round(float(event.groups[0]))))
-            phase_identity = (self.current_boss_key, self.current_boss_phase)
-            self._phase_damage_totals[phase_identity] = self._phase_damage_totals.get(phase_identity, 0) + amount
-            self._phase_damage_events.setdefault(phase_identity, deque()).append((now, amount))
+            self._recent_damage_events.append((now, amount))
+            if self.current_boss_key:
+                phase_identity = (self.current_boss_key, self.current_boss_phase)
+                self._phase_damage_totals[phase_identity] = (
+                    self._phase_damage_totals.get(phase_identity, 0) + amount
+                )
             return True
         if kind == "strike_damage":
             self._pending_strike = float(event.groups[0])
@@ -380,14 +380,10 @@ class EclipticaState:
         phase_damage_taken = (
             self._phase_damage_taken_totals.get(phase_identity, 0) if self.current_boss_key else 0
         )
-        recent_events = self._phase_damage_events.get(phase_identity)
-        if recent_events is not None:
-            cutoff = current_time - 5.0
-            while recent_events and recent_events[0][0] < cutoff:
-                recent_events.popleft()
-            recent_dps = sum(amount for _timestamp, amount in recent_events) / 5.0
-        else:
-            recent_dps = 0.0
+        cutoff = current_time - 5.0
+        while self._recent_damage_events and self._recent_damage_events[0][0] < cutoff:
+            self._recent_damage_events.popleft()
+        recent_dps = sum(amount for _timestamp, amount in self._recent_damage_events) / 5.0
         phase_elapsed = (
             max(0.0, current_time - self.current_boss_started_at)
             if self.current_boss_key and self.current_boss_started_at is not None
