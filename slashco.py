@@ -55,8 +55,10 @@ from osc_output import (
     BossLockOscOutput,
     DEFAULT_OSC_HOST,
     DEFAULT_OSC_PORT,
+    DEFAULT_OSC_PREFIX,
     normalize_osc_host,
     normalize_osc_port,
+    normalize_osc_prefix,
 )
 
 try:
@@ -2197,6 +2199,17 @@ class SlashCoMonitorCN:
             foreground="#666666",
             font=("微软雅黑", 8),
         ).pack(side=RIGHT)
+        osc_prefix_row = ttk.Frame(osc_frame)
+        osc_prefix_row.pack(fill=X, pady=(5, 0))
+        ttk.Label(osc_prefix_row, text="输出前缀：").pack(side=LEFT)
+        self.ecliptica_osc_prefix_entry = ttk.Entry(
+            osc_prefix_row,
+            textvariable=self.ecliptica_osc_prefix_var,
+        )
+        self.ecliptica_osc_prefix_entry.pack(side=LEFT, fill=X, expand=True)
+        self.ecliptica_osc_prefix_entry.bind("<FocusOut>", self._on_ecliptica_osc_format_changed)
+        self.ecliptica_osc_prefix_entry.bind("<Return>", self._on_ecliptica_osc_format_changed)
+        self._update_ecliptica_osc_prefix_state()
 
     def _build_ecliptica_right_panel(self):
         frame = ttk.LabelFrame(self.ecliptica_right_frame, text="Ecliptica 伤害数据", padding=7)
@@ -2380,6 +2393,7 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_opacity_text_var = StringVar(value="10%")
         self.ecliptica_osc_enabled = BooleanVar(value=False)
         self.ecliptica_osc_name_only = BooleanVar(value=False)
+        self.ecliptica_osc_prefix_var = StringVar(value=DEFAULT_OSC_PREFIX)
         self.ecliptica_osc_host_var = StringVar(value=DEFAULT_OSC_HOST)
         self.ecliptica_osc_port_var = StringVar(value=str(DEFAULT_OSC_PORT))
         self.ecliptica_osc_status_var = StringVar(value="未启用")
@@ -2404,6 +2418,7 @@ class SlashCoMonitorCN:
                 osc_enabled = bool(config.get("osc_enabled", False))
                 self.ecliptica_osc_enabled.set(osc_enabled)
                 self.ecliptica_osc_name_only.set(bool(config.get("osc_name_only", False)))
+                self.ecliptica_osc_prefix_var.set(normalize_osc_prefix(config.get("osc_prefix")))
                 self.ecliptica_osc_host_var.set(normalize_osc_host(config.get("osc_host")))
                 self.ecliptica_osc_port_var.set(str(normalize_osc_port(config.get("osc_port"))))
                 self.ecliptica_osc_status_var.set("等待锁定目标" if osc_enabled else "未启用")
@@ -2426,6 +2441,7 @@ class SlashCoMonitorCN:
                         "hud_layout": self.ecliptica_hud_layout,
                         "osc_enabled": bool(self.ecliptica_osc_enabled.get()),
                         "osc_name_only": bool(self.ecliptica_osc_name_only.get()),
+                        "osc_prefix": normalize_osc_prefix(self.ecliptica_osc_prefix_var.get()),
                         "osc_host": normalize_osc_host(self.ecliptica_osc_host_var.get()),
                         "osc_port": normalize_osc_port(self.ecliptica_osc_port_var.get()),
                     },
@@ -2469,6 +2485,7 @@ class SlashCoMonitorCN:
                 target,
                 force=force,
                 name_only=bool(self.ecliptica_osc_name_only.get()),
+                prefix=normalize_osc_prefix(self.ecliptica_osc_prefix_var.get()),
             )
             if sent:
                 self.ecliptica_osc_status_var.set(f"已发送：{target}")
@@ -2499,8 +2516,14 @@ class SlashCoMonitorCN:
         if self.ecliptica_osc_enabled.get():
             self._publish_ecliptica_osc(force=True)
 
-    def _on_ecliptica_osc_format_changed(self):
+    def _update_ecliptica_osc_prefix_state(self):
+        entry = getattr(self, "ecliptica_osc_prefix_entry", None)
+        if entry:
+            entry.configure(state="disabled" if self.ecliptica_osc_name_only.get() else "normal")
+
+    def _on_ecliptica_osc_format_changed(self, _event=None):
         self._cancel_ecliptica_osc_test(clear=True)
+        self._update_ecliptica_osc_prefix_state()
         self.ecliptica_osc.reset()
         self._save_ecliptica_config()
         if self.ecliptica_osc_enabled.get():
@@ -2515,6 +2538,7 @@ class SlashCoMonitorCN:
                 "测试玩家",
                 force=True,
                 name_only=bool(self.ecliptica_osc_name_only.get()),
+                prefix=normalize_osc_prefix(self.ecliptica_osc_prefix_var.get()),
             )
             self._ecliptica_osc_test_active = True
             self.ecliptica_osc_status_var.set("测试已发送，3 秒后自动清除")

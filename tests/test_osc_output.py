@@ -11,6 +11,7 @@ from osc_output import (  # noqa: E402
     build_osc_message,
     normalize_osc_host,
     normalize_osc_port,
+    normalize_osc_prefix,
 )
 
 
@@ -57,13 +58,29 @@ class OscOutputTests(unittest.TestCase):
         sent = []
         output = BossLockOscOutput(socket_factory=lambda *_args: FakeSocket(sent))
 
-        output.publish_target("ಣಪರೀಕ್ಷೆ", name_only=True)
+        output.publish_target("ಣಪರೀಕ್ಷೆ", name_only=True, prefix="不会显示：")
 
         packet, _destination = sent[0]
         _address, offset = read_osc_string(packet)
         _tags, offset = read_osc_string(packet, offset)
         message, _offset = read_osc_string(packet, offset)
         self.assertEqual(message, "ಣಪರೀಕ್ಷೆ")
+
+    def test_custom_prefix_preserves_unicode_and_spacing(self):
+        sent = []
+        output = BossLockOscOutput(socket_factory=lambda *_args: FakeSocket(sent))
+
+        output.publish_target("ಣಪರೀಕ್ಷೆ", prefix="目标锁定 -> ")
+
+        packet, _destination = sent[0]
+        _address, offset = read_osc_string(packet)
+        _tags, offset = read_osc_string(packet, offset)
+        message, _offset = read_osc_string(packet, offset)
+        self.assertEqual(message, "目标锁定 -> ಣಪರೀಕ್ಷೆ")
+
+    def test_empty_custom_prefix_is_allowed_and_nulls_are_removed(self):
+        self.assertEqual(normalize_osc_prefix(""), "")
+        self.assertEqual(normalize_osc_prefix("锁定：\x00"), "锁定：")
 
     def test_unchanged_target_is_not_sent_twice(self):
         sent = []

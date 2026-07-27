@@ -303,6 +303,7 @@ class OscPublishingTests(unittest.TestCase):
         monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
         monitor.ecliptica_osc_enabled = FakeVar(True)
         monitor.ecliptica_osc_name_only = FakeVar(False)
+        monitor.ecliptica_osc_prefix_var = FakeVar("自定义锁定：")
         monitor.ecliptica_osc_status_var = FakeVar("")
         monitor.ecliptica_osc = FakeOscOutput()
         return monitor
@@ -323,6 +324,7 @@ class OscPublishingTests(unittest.TestCase):
 
         self.assertEqual(monitor.ecliptica_osc.clear_calls, 0)
         self.assertEqual(monitor.ecliptica_osc.published[0][0], "ಣಪರೀಕ್ಷೆ")
+        self.assertEqual(monitor.ecliptica_osc.published[0][1]["prefix"], "自定义锁定：")
 
     def test_unknown_boss_target_is_cleared_instead_of_published(self):
         monitor = self.make_monitor()
@@ -346,6 +348,7 @@ class OscPublishingTests(unittest.TestCase):
         monitor._test_ecliptica_osc()
 
         self.assertEqual(monitor.ecliptica_osc.published[0][0], "测试玩家")
+        self.assertEqual(monitor.ecliptica_osc.published[0][1]["prefix"], "自定义锁定：")
         self.assertTrue(monitor._ecliptica_osc_test_active)
         self.assertEqual(monitor.ecliptica_osc_status_var.get(), "测试已发送，3 秒后自动清除")
         monitor.root.callback()

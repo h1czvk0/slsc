@@ -5,6 +5,7 @@ import time
 
 DEFAULT_OSC_HOST = "127.0.0.1"
 DEFAULT_OSC_PORT = 9000
+DEFAULT_OSC_PREFIX = "Boss 当前锁定："
 VRCHAT_CHATBOX_ADDRESS = "/chatbox/input"
 OSC_RESEND_INTERVAL_SECONDS = 10.0
 
@@ -23,6 +24,12 @@ def normalize_osc_port(value):
 
 def normalize_osc_text(value):
     return str(value or "").replace("\x00", "").strip()
+
+
+def normalize_osc_prefix(value):
+    if value is None:
+        return DEFAULT_OSC_PREFIX
+    return str(value).replace("\x00", "")
 
 
 def _encode_osc_string(value):
@@ -78,9 +85,9 @@ class BossLockOscOutput:
         self.last_attempt_at = None
         self.display_active = None
 
-    def publish_target(self, target, force=False, now=None, name_only=False):
+    def publish_target(self, target, force=False, now=None, name_only=False, prefix=DEFAULT_OSC_PREFIX):
         player_name = normalize_osc_text(target) or "-"
-        text = player_name if name_only else f"Boss 当前锁定：{player_name}"
+        text = player_name if name_only else f"{normalize_osc_prefix(prefix)}{player_name}"
         current_time = float(time.monotonic() if now is None else now)
         recently_attempted = (
             text == self.last_text
