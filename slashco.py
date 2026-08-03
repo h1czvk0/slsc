@@ -2663,6 +2663,11 @@ class SlashCoMonitorCN:
         }
         self.ecliptica_hud_field_order = list(HUD_DAMAGE_FIELD_KEYS)
         self._ecliptica_hud_field_drag_index = None
+        self._ecliptica_hud_drag_ghost = None
+        self._ecliptica_hud_drag_ghost_y = 0.0
+        self._ecliptica_hud_drag_target_y = 0.0
+        self._ecliptica_hud_drag_settling = False
+        self._ecliptica_hud_drag_animation_id = None
         self.ecliptica_osc_enabled = BooleanVar(value=False)
         self.ecliptica_osc_name_only = BooleanVar(value=False)
         self.ecliptica_osc_prefix_var = StringVar(value=DEFAULT_OSC_PREFIX)
@@ -2932,6 +2937,90 @@ class SlashCoMonitorCN:
         self._refresh_ecliptica_hud_field_list(new_index)
         return True
 
+    def _cleanup_ecliptica_hud_drag_animation(self):
+        field_list = getattr(self, "ecliptica_hud_field_list", None)
+        animation_id = getattr(self, "_ecliptica_hud_drag_animation_id", None)
+        if field_list is not None and animation_id is not None:
+            try:
+                field_list.after_cancel(animation_id)
+            except Exception:
+                pass
+        ghost = getattr(self, "_ecliptica_hud_drag_ghost", None)
+        if ghost is not None:
+            try:
+                ghost.destroy()
+            except Exception:
+                pass
+        self._ecliptica_hud_drag_ghost = None
+        self._ecliptica_hud_drag_animation_id = None
+        self._ecliptica_hud_drag_settling = False
+
+    def _start_ecliptica_hud_drag_animation(self, field_list, index, pointer_y):
+        required = ("get", "bbox", "after", "winfo_width", "cget")
+        if not all(hasattr(field_list, name) for name in required):
+            return
+        self._cleanup_ecliptica_hud_drag_animation()
+        try:
+            row_box = field_list.bbox(index)
+            row_height = row_box[3] if row_box else 24
+            target_y = max(0, min(field_list.winfo_height() - row_height, pointer_y - row_height // 2))
+            ghost = Label(
+                field_list,
+                text=field_list.get(index),
+                anchor=W,
+                padx=8,
+                bg="#6c4cff",
+                fg="#ffffff",
+                font=field_list.cget("font"),
+                relief=RAISED,
+                borderwidth=1,
+            )
+            ghost.place(
+                x=2,
+                y=target_y,
+                width=max(1, field_list.winfo_width() - 4),
+                height=row_height,
+            )
+            ghost.lift()
+            self._ecliptica_hud_drag_ghost = ghost
+            self._ecliptica_hud_drag_ghost_y = float(target_y)
+            self._ecliptica_hud_drag_target_y = float(target_y)
+            self._ecliptica_hud_drag_settling = False
+            self._animate_ecliptica_hud_drag_ghost()
+        except Exception:
+            self._cleanup_ecliptica_hud_drag_animation()
+
+    def _animate_ecliptica_hud_drag_ghost(self):
+        self._ecliptica_hud_drag_animation_id = None
+        ghost = getattr(self, "_ecliptica_hud_drag_ghost", None)
+        field_list = getattr(self, "ecliptica_hud_field_list", None)
+        if ghost is None or field_list is None:
+            return
+        current_y = float(getattr(self, "_ecliptica_hud_drag_ghost_y", 0.0))
+        target_y = float(getattr(self, "_ecliptica_hud_drag_target_y", current_y))
+        distance = target_y - current_y
+        if abs(distance) < 0.75:
+            current_y = target_y
+        else:
+            current_y += distance * 0.42
+        self._ecliptica_hud_drag_ghost_y = current_y
+        try:
+            ghost.place_configure(y=int(round(current_y)))
+            ghost.lift()
+        except Exception:
+            self._cleanup_ecliptica_hud_drag_animation()
+            return
+        if self._ecliptica_hud_drag_settling and current_y == target_y:
+            self._cleanup_ecliptica_hud_drag_animation()
+            return
+        try:
+            self._ecliptica_hud_drag_animation_id = field_list.after(
+                16,
+                self._animate_ecliptica_hud_drag_ghost,
+            )
+        except Exception:
+            self._cleanup_ecliptica_hud_drag_animation()
+
     def _start_ecliptica_hud_field_drag(self, event):
         field_list = getattr(self, "ecliptica_hud_field_list", None)
         if field_list is None:
@@ -2943,6 +3032,7 @@ class SlashCoMonitorCN:
         field_list.selection_clear(0, END)
         field_list.selection_set(index)
         field_list.activate(index)
+        self._start_ecliptica_hud_drag_animation(field_list, index, event.y)
 
     def _drag_ecliptica_hud_field(self, event):
         field_list = getattr(self, "ecliptica_hud_field_list", None)
@@ -2953,15 +3043,42 @@ class SlashCoMonitorCN:
             field_list.yview_scroll(-1, "units")
         elif event.y > field_list.winfo_height() - 12:
             field_list.yview_scroll(1, "units")
+        ghost = getattr(self, "_ecliptica_hud_drag_ghost", None)
+        if ghost is not None:
+            try:
+                ghost_height = ghost.winfo_height()
+                self._ecliptica_hud_drag_target_y = float(
+                    max(0, min(field_list.winfo_height() - ghost_height, event.y - ghost_height // 2))
+                )
+            except Exception:
+                pass
         new_index = field_list.nearest(event.y)
         if self._reorder_ecliptica_hud_field(current_index, new_index):
             self._ecliptica_hud_field_drag_index = new_index
+            if ghost is not None:
+                try:
+                    ghost.lift()
+                except Exception:
+                    pass
         return "break"
 
     def _finish_ecliptica_hud_field_drag(self, _event=None):
         if getattr(self, "_ecliptica_hud_field_drag_index", None) is None:
             return
+        final_index = self._ecliptica_hud_field_drag_index
         self._ecliptica_hud_field_drag_index = None
+        ghost = getattr(self, "_ecliptica_hud_drag_ghost", None)
+        field_list = getattr(self, "ecliptica_hud_field_list", None)
+        if ghost is not None and field_list is not None:
+            try:
+                row_box = field_list.bbox(final_index)
+                if row_box:
+                    self._ecliptica_hud_drag_target_y = float(row_box[1])
+                    self._ecliptica_hud_drag_settling = True
+                else:
+                    self._cleanup_ecliptica_hud_drag_animation()
+            except Exception:
+                self._cleanup_ecliptica_hud_drag_animation()
         self._on_ecliptica_hud_fields_changed(refresh_list=False)
 
     def _is_hud_foreground(self):
