@@ -203,6 +203,7 @@ HUD_DAMAGE_FIELDS = (
     ("total_elapsed", "总耗时"),
 )
 HUD_DAMAGE_FIELD_KEYS = tuple(key for key, _label in HUD_DAMAGE_FIELDS)
+HUD_DAMAGE_FIELD_LABELS = dict(HUD_DAMAGE_FIELDS)
 APP_USER_MODEL_ID = "SlashCoSense.Desktop"
 TK_BASE_SCALING = 96.0 / 72.0
 
@@ -257,8 +258,19 @@ def normalize_hud_damage_fields(value):
         return list(HUD_DAMAGE_FIELD_KEYS)
     if not isinstance(value, (list, tuple, set)):
         return list(HUD_DAMAGE_FIELD_KEYS)
-    selected = set(value)
-    return [key for key in HUD_DAMAGE_FIELD_KEYS if key in selected]
+    if isinstance(value, set):
+        value = [key for key in HUD_DAMAGE_FIELD_KEYS if key in value]
+    normalized = []
+    for key in value:
+        if key in HUD_DAMAGE_FIELD_LABELS and key not in normalized:
+            normalized.append(key)
+    return normalized
+
+
+def normalize_hud_field_order(value):
+    ordered = normalize_hud_damage_fields(value) if value is not None else []
+    ordered.extend(key for key in HUD_DAMAGE_FIELD_KEYS if key not in ordered)
+    return ordered
 
 
 def is_hud_foreground():
@@ -1266,9 +1278,9 @@ class EclipticaDesktopHud:
             "recent_5s_dps": ("近 5 秒 DPS", f"{snapshot.get('recent_5s_dps', 0.0):.1f}"),
             "current_boss_elapsed": (
                 "当前 BOSS 耗时",
-                format_ecliptica_clock(snapshot.get("current_boss_elapsed", 0)),
+                format_ecliptica_clock(snapshot.get("current_phase_elapsed", 0)),
             ),
-            "total_elapsed": ("总耗时", format_ecliptica_clock(snapshot.get("total_elapsed", 0))),
+            "total_elapsed": ("总耗时", format_ecliptica_clock_hms(snapshot.get("total_elapsed", 0))),
         }
         field_keys = normalize_hud_damage_fields(selected_fields)
         self.damage_rows = [rows[key] for key in field_keys]
@@ -1348,6 +1360,13 @@ def format_ecliptica_clock(value):
     total_seconds = max(0, int(float(value or 0)))
     minutes, seconds = divmod(total_seconds, 60)
     return f"{minutes:02d}:{seconds:02d}"
+
+
+def format_ecliptica_clock_hms(value):
+    total_seconds = max(0, int(float(value or 0)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 # =====================
 # 配置
@@ -2288,6 +2307,8 @@ class SlashCoMonitorCN:
 
         hud_fields = ttk.LabelFrame(hud_frame, text="伤害 HUD 显示字段", padding=5)
         hud_fields.pack(fill=X, pady=(7, 0))
+        for column_index in range(3):
+            hud_fields.grid_columnconfigure(column_index, weight=1)
         for index, (key, label) in enumerate(HUD_DAMAGE_FIELDS):
             ttk.Checkbutton(
                 hud_fields,
@@ -2295,6 +2316,41 @@ class SlashCoMonitorCN:
                 variable=self.ecliptica_hud_field_vars[key],
                 command=self._on_ecliptica_hud_fields_changed,
             ).grid(row=index // 3, column=index % 3, sticky=W, padx=(0, 12), pady=1)
+
+        hud_order_row = ttk.Frame(hud_fields)
+        hud_order_row.grid(row=3, column=0, columnspan=3, sticky=EW, pady=(6, 0))
+        ttk.Label(hud_order_row, text="显示顺序：").pack(side=LEFT, anchor=N)
+        hud_order_list = ttk.Frame(hud_order_row)
+        hud_order_list.pack(side=LEFT, fill=X, expand=True)
+        self.ecliptica_hud_field_list = Listbox(
+            hud_order_list,
+            height=5,
+            exportselection=False,
+            activestyle="dotbox",
+        )
+        hud_order_scrollbar = ttk.Scrollbar(
+            hud_order_list,
+            orient=VERTICAL,
+            command=self.ecliptica_hud_field_list.yview,
+        )
+        self.ecliptica_hud_field_list.configure(yscrollcommand=hud_order_scrollbar.set)
+        hud_order_scrollbar.pack(side=RIGHT, fill=Y)
+        self.ecliptica_hud_field_list.pack(side=LEFT, fill=X, expand=True)
+        hud_order_buttons = ttk.Frame(hud_order_row)
+        hud_order_buttons.pack(side=LEFT, padx=(6, 0), anchor=N)
+        ttk.Button(
+            hud_order_buttons,
+            text="上移",
+            width=6,
+            command=lambda: self._move_ecliptica_hud_field(-1),
+        ).pack(fill=X)
+        ttk.Button(
+            hud_order_buttons,
+            text="下移",
+            width=6,
+            command=lambda: self._move_ecliptica_hud_field(1),
+        ).pack(fill=X, pady=(4, 0))
+        self._refresh_ecliptica_hud_field_list()
 
         summary = ttk.LabelFrame(self.ecliptica_left_frame, text="战斗概览", padding=8)
         summary.pack(fill=X, padx=5, pady=2)
@@ -2571,6 +2627,7 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_field_vars = {
             key: BooleanVar(value=True) for key in HUD_DAMAGE_FIELD_KEYS
         }
+        self.ecliptica_hud_field_order = list(HUD_DAMAGE_FIELD_KEYS)
         self.ecliptica_osc_enabled = BooleanVar(value=False)
         self.ecliptica_osc_name_only = BooleanVar(value=False)
         self.ecliptica_osc_prefix_var = StringVar(value=DEFAULT_OSC_PREFIX)
@@ -2596,6 +2653,9 @@ class SlashCoMonitorCN:
                 self.ecliptica_hud_opacity_text_var.set(f"{round(hud_transparency)}%")
                 self.ecliptica_hud_layout = normalize_hud_layout(config.get("hud_layout", {}))
                 selected_fields = normalize_hud_damage_fields(config.get("hud_fields"))
+                self.ecliptica_hud_field_order = normalize_hud_field_order(
+                    config.get("hud_field_order", config.get("hud_fields"))
+                )
                 for key, variable in self.ecliptica_hud_field_vars.items():
                     variable.set(key in selected_fields)
                 osc_enabled = bool(config.get("osc_enabled", False))
@@ -2623,6 +2683,7 @@ class SlashCoMonitorCN:
                         "hud_opacity": self._ecliptica_hud_opacity(),
                         "hud_layout": self.ecliptica_hud_layout,
                         "hud_fields": self._ecliptica_hud_fields(),
+                        "hud_field_order": self.ecliptica_hud_field_order,
                         "osc_enabled": bool(self.ecliptica_osc_enabled.get()),
                         "osc_name_only": bool(self.ecliptica_osc_name_only.get()),
                         "osc_prefix": normalize_osc_prefix(self.ecliptica_osc_prefix_var.get()),
@@ -2780,7 +2841,47 @@ class SlashCoMonitorCN:
 
     def _ecliptica_hud_fields(self):
         variables = getattr(self, "ecliptica_hud_field_vars", {})
-        return [key for key in HUD_DAMAGE_FIELD_KEYS if key in variables and variables[key].get()]
+        order = normalize_hud_field_order(getattr(self, "ecliptica_hud_field_order", None))
+        return [key for key in order if key in variables and variables[key].get()]
+
+    def _refresh_ecliptica_hud_field_list(self, selected_index=None):
+        field_list = getattr(self, "ecliptica_hud_field_list", None)
+        if field_list is None:
+            return
+        if selected_index is None:
+            selection = field_list.curselection()
+            selected_index = selection[0] if selection else None
+        self.ecliptica_hud_field_order = normalize_hud_field_order(
+            getattr(self, "ecliptica_hud_field_order", None)
+        )
+        field_list.delete(0, END)
+        for key in self.ecliptica_hud_field_order:
+            enabled = self.ecliptica_hud_field_vars[key].get()
+            marker = "✓" if enabled else "·"
+            field_list.insert(END, f"{marker} {HUD_DAMAGE_FIELD_LABELS[key]}")
+        if selected_index is not None and self.ecliptica_hud_field_order:
+            selected_index = min(max(0, selected_index), len(self.ecliptica_hud_field_order) - 1)
+            field_list.selection_set(selected_index)
+            field_list.activate(selected_index)
+            field_list.see(selected_index)
+
+    def _move_ecliptica_hud_field(self, direction):
+        field_list = getattr(self, "ecliptica_hud_field_list", None)
+        if field_list is None:
+            return
+        selection = field_list.curselection()
+        if not selection:
+            return
+        current_index = selection[0]
+        new_index = current_index + int(direction)
+        if not 0 <= new_index < len(self.ecliptica_hud_field_order):
+            return
+        self.ecliptica_hud_field_order[current_index], self.ecliptica_hud_field_order[new_index] = (
+            self.ecliptica_hud_field_order[new_index],
+            self.ecliptica_hud_field_order[current_index],
+        )
+        self._refresh_ecliptica_hud_field_list(new_index)
+        self._on_ecliptica_hud_fields_changed(refresh_list=False)
 
     def _is_hud_foreground(self):
         return is_hud_foreground()
@@ -2811,8 +2912,10 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_display_var.set(HUD_DISPLAY_LABELS["both"])
         self.ecliptica_hud_opacity_var.set(10.0)
         self.ecliptica_hud_opacity_text_var.set("10%")
+        self.ecliptica_hud_field_order = list(HUD_DAMAGE_FIELD_KEYS)
         for variable in self.ecliptica_hud_field_vars.values():
             variable.set(True)
+        self._refresh_ecliptica_hud_field_list(0)
         if self.ecliptica_hud:
             self.ecliptica_hud.set_opacity(0.9)
             self.ecliptica_hud_layout = self.ecliptica_hud.reset_layout()
@@ -2827,7 +2930,7 @@ class SlashCoMonitorCN:
         else:
             self.ecliptica_hud_layout = {}
         self._save_ecliptica_config()
-        self.log("HUD 位置、尺寸、背景透明度和显示内容已恢复默认")
+        self.log("HUD 位置、尺寸、背景透明度、显示内容和排序已恢复默认")
 
     def _on_ecliptica_hud_display_changed(self, _event=None):
         self._save_ecliptica_config()
@@ -2838,7 +2941,9 @@ class SlashCoMonitorCN:
                 self._ecliptica_hud_fields(),
             )
 
-    def _on_ecliptica_hud_fields_changed(self):
+    def _on_ecliptica_hud_fields_changed(self, refresh_list=True):
+        if refresh_list:
+            self._refresh_ecliptica_hud_field_list()
         self._save_ecliptica_config()
         if self.ecliptica_hud and (self._should_show_ecliptica_hud() or self.ecliptica_hud_editing):
             self.ecliptica_hud.update(

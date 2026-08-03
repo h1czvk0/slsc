@@ -19,10 +19,12 @@ from slashco import (  # noqa: E402
     _load_hud_font,
     _premultiplied_bgra,
     format_ecliptica_clock,
+    format_ecliptica_clock_hms,
     format_ecliptica_duration,
     main_window_geometry,
     normalize_hud_display_mode,
     normalize_hud_damage_fields,
+    normalize_hud_field_order,
     normalize_hud_layout,
     normalize_hud_opacity,
     normalize_hud_transparency,
@@ -60,6 +62,30 @@ class FakeWidget:
 
     def winfo_manager(self):
         return "pack" if self.packed else ""
+
+
+class FakeListbox:
+    def __init__(self, selected=()):
+        self.items = []
+        self.selected = tuple(selected)
+
+    def curselection(self):
+        return self.selected
+
+    def delete(self, _start, _end):
+        self.items = []
+
+    def insert(self, _index, value):
+        self.items.append(value)
+
+    def selection_set(self, index):
+        self.selected = (index,)
+
+    def activate(self, _index):
+        pass
+
+    def see(self, _index):
+        pass
 
 
 class FakeOscOutput:
@@ -390,6 +416,9 @@ class HudLayoutTests(unittest.TestCase):
         self.assertEqual(format_ecliptica_clock(5.9), "00:05")
         self.assertEqual(format_ecliptica_clock(126), "02:06")
         self.assertEqual(format_ecliptica_clock(3930), "65:30")
+        self.assertEqual(format_ecliptica_clock_hms(None), "00:00:00")
+        self.assertEqual(format_ecliptica_clock_hms(3930), "01:05:30")
+        self.assertEqual(format_ecliptica_clock_hms(90061), "25:01:01")
 
     def test_damage_hud_uses_current_boss_phase_metrics(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
@@ -413,7 +442,8 @@ class HudLayoutTests(unittest.TestCase):
                 "current_phase_damage": 128200,
                 "current_phase_damage_taken": 6900,
                 "recent_5s_dps": 354.25,
-                "current_boss_elapsed": 126,
+                "current_phase_elapsed": 126,
+                "current_boss_elapsed": 999,
                 "total_elapsed": 3930,
                 "aggro": {},
             }
@@ -430,7 +460,7 @@ class HudLayoutTests(unittest.TestCase):
                 ("本局 BOSS 总受伤", "6.9K"),
                 ("近 5 秒 DPS", "354.2"),
                 ("当前 BOSS 耗时", "02:06"),
-                ("总耗时", "65:30"),
+                ("总耗时", "01:05:30"),
             ],
         )
 
@@ -449,17 +479,36 @@ class HudLayoutTests(unittest.TestCase):
 
         hud.update(
             {"class_name": "Thaumaturge", "recent_5s_dps": 12.5, "aggro": {}},
-            selected_fields=["class_name", "recent_5s_dps"],
+            selected_fields=["recent_5s_dps", "class_name"],
         )
 
-        self.assertEqual(hud.damage_rows, [("当前职业", "Thaumaturge"), ("近 5 秒 DPS", "12.5")])
+        self.assertEqual(hud.damage_rows, [("近 5 秒 DPS", "12.5"), ("当前职业", "Thaumaturge")])
 
     def test_hud_field_normalization_keeps_order_and_allows_empty_selection(self):
         self.assertEqual(
             normalize_hud_damage_fields(["total_elapsed", "class_name", "unknown"]),
-            ["class_name", "total_elapsed"],
+            ["total_elapsed", "class_name"],
         )
         self.assertEqual(normalize_hud_damage_fields([]), [])
+        order = normalize_hud_field_order(["total_elapsed", "class_name"])
+        self.assertEqual(order[:2], ["total_elapsed", "class_name"])
+        self.assertEqual(set(order), set(normalize_hud_field_order(None)))
+
+    def test_hud_fields_can_be_reordered_and_disabled_fields_keep_their_place(self):
+        monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
+        monitor.ecliptica_hud_field_order = ["class_name", "stage", "total_elapsed"]
+        monitor.ecliptica_hud_field_vars = {
+            key: FakeVar(key != "stage") for key in normalize_hud_field_order(None)
+        }
+        monitor.ecliptica_hud_field_list = FakeListbox(selected=(1,))
+        monitor.ecliptica_hud = None
+        monitor._save_ecliptica_config = lambda: None
+
+        monitor._move_ecliptica_hud_field(-1)
+
+        self.assertEqual(monitor.ecliptica_hud_field_order[:3], ["stage", "class_name", "total_elapsed"])
+        self.assertEqual(monitor._ecliptica_hud_fields()[:2], ["class_name", "total_elapsed"])
+        self.assertEqual(monitor.ecliptica_hud_field_list.selected, (0,))
 
     def test_boss_lock_hud_is_hidden_outside_boss_battle(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
