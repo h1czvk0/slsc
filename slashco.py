@@ -61,6 +61,7 @@ from osc_output import (
     normalize_osc_port,
     normalize_osc_prefix,
 )
+from auto_jump import AutoJumpService
 
 try:
     import requests
@@ -1673,6 +1674,7 @@ class SlashCoMonitorCN:
         self._round_timer_after_id = None
         self._ecliptica_hud_after_id = None
         self._ecliptica_osc_test_after_id = None
+        self._ecliptica_auto_jump_after_id = None
         self._ecliptica_osc_test_active = False
         self._sponsor_op_lock = threading.Lock()
 
@@ -1747,6 +1749,12 @@ class SlashCoMonitorCN:
             self.ecliptica_osc_host_var.get(),
             self.ecliptica_osc_port_var.get(),
         )
+        self.ecliptica_auto_jump = AutoJumpService(
+            self.ecliptica_osc_host_var.get(),
+            self.ecliptica_osc_port_var.get(),
+        )
+        self.ecliptica_auto_jump.set_enabled(self.ecliptica_auto_jump_enabled.get())
+        self.ecliptica_auto_jump.start()
 
         self.setup_ui()
         self.ecliptica_hud = EclipticaDesktopHud(
@@ -1760,6 +1768,10 @@ class SlashCoMonitorCN:
         self._ecliptica_hud_after_id = self.root.after(
             ECLIPTICA_HUD_REFRESH_MS,
             self._ecliptica_hud_tick,
+        )
+        self._ecliptica_auto_jump_after_id = self.root.after(
+            200,
+            self._ecliptica_auto_jump_status_tick,
         )
 
         # 日志队列 (线程安全) —— 必须在所有线程启动之前初始化!
@@ -2476,6 +2488,34 @@ class SlashCoMonitorCN:
             font=("微软雅黑", 8),
         ).pack(anchor=CENTER)
 
+        auto_jump_frame = ttk.LabelFrame(self.ecliptica_left_frame, text="自动连跳", padding=7)
+        auto_jump_frame.pack(fill=X, padx=5, pady=5)
+        auto_jump_controls = ttk.Frame(auto_jump_frame)
+        auto_jump_controls.pack(fill=X)
+        ttk.Checkbutton(
+            auto_jump_controls,
+            text="启用自动连跳（按住空格）",
+            variable=self.ecliptica_auto_jump_enabled,
+            command=self._on_ecliptica_auto_jump_toggle,
+        ).pack(side=LEFT)
+        ttk.Button(
+            auto_jump_controls,
+            text="测试跳跃",
+            command=self._test_ecliptica_auto_jump,
+        ).pack(side=RIGHT)
+        ttk.Label(
+            auto_jump_frame,
+            textvariable=self.ecliptica_auto_jump_status_var,
+            foreground="#666666",
+            font=("微软雅黑", 8),
+        ).pack(anchor=W, pady=(5, 0))
+        ttk.Label(
+            auto_jump_frame,
+            text="仅在 VRChat 位于前台时生效，使用下方 OSC 主机和端口。",
+            foreground="#777777",
+            font=("微软雅黑", 8),
+        ).pack(anchor=W, pady=(2, 0))
+
         osc_frame = ttk.LabelFrame(self.ecliptica_left_frame, text="OSC 输出", padding=7)
         osc_frame.pack(fill=X, padx=5, pady=5)
         osc_controls = ttk.Frame(osc_frame)
@@ -2716,6 +2756,8 @@ class SlashCoMonitorCN:
         self._ecliptica_hud_drag_settling = False
         self._ecliptica_hud_drag_animation_id = None
         self.ecliptica_osc_enabled = BooleanVar(value=False)
+        self.ecliptica_auto_jump_enabled = BooleanVar(value=False)
+        self.ecliptica_auto_jump_status_var = StringVar(value="未启用")
         self.ecliptica_osc_name_only = BooleanVar(value=False)
         self.ecliptica_osc_prefix_var = StringVar(value=DEFAULT_OSC_PREFIX)
         self.ecliptica_osc_host_var = StringVar(value=DEFAULT_OSC_HOST)
@@ -2753,6 +2795,11 @@ class SlashCoMonitorCN:
                     variable.set(key in selected_fields)
                 osc_enabled = bool(config.get("osc_enabled", False))
                 self.ecliptica_osc_enabled.set(osc_enabled)
+                auto_jump_enabled = bool(config.get("auto_jump_enabled", False))
+                self.ecliptica_auto_jump_enabled.set(auto_jump_enabled)
+                self.ecliptica_auto_jump_status_var.set(
+                    "等待 VRChat 前台" if auto_jump_enabled else "未启用"
+                )
                 self.ecliptica_osc_name_only.set(bool(config.get("osc_name_only", False)))
                 self.ecliptica_osc_prefix_var.set(normalize_osc_prefix(config.get("osc_prefix")))
                 self.ecliptica_osc_host_var.set(normalize_osc_host(config.get("osc_host")))
@@ -2796,6 +2843,7 @@ class SlashCoMonitorCN:
                         "hud_field_order": self.ecliptica_hud_field_order,
                         "hud_default_preset_version": self.ecliptica_hud_default_preset_version,
                         "osc_enabled": bool(self.ecliptica_osc_enabled.get()),
+                        "auto_jump_enabled": bool(self.ecliptica_auto_jump_enabled.get()),
                         "osc_name_only": bool(self.ecliptica_osc_name_only.get()),
                         "osc_prefix": normalize_osc_prefix(self.ecliptica_osc_prefix_var.get()),
                         "osc_host": normalize_osc_host(self.ecliptica_osc_host_var.get()),
@@ -2815,7 +2863,72 @@ class SlashCoMonitorCN:
         self.ecliptica_osc_host_var.set(host)
         self.ecliptica_osc_port_var.set(str(port))
         self.ecliptica_osc.configure(host, port)
+        if getattr(self, "ecliptica_auto_jump", None):
+            self.ecliptica_auto_jump.configure(host, port)
         return host, port
+
+    def _on_ecliptica_auto_jump_toggle(self):
+        enabled = bool(self.ecliptica_auto_jump_enabled.get())
+        self._configure_ecliptica_osc()
+        self.ecliptica_auto_jump.set_enabled(enabled)
+        self.ecliptica_auto_jump_status_var.set(
+            "等待 VRChat 前台" if enabled else "未启用"
+        )
+        self._save_ecliptica_config()
+        self.log(f"自动连跳已{'启用' if enabled else '关闭'}")
+
+    def _test_ecliptica_auto_jump(self):
+        host, port = self._configure_ecliptica_osc()
+        self._save_ecliptica_config()
+        self.ecliptica_auto_jump_status_var.set("正在发送测试跳跃...")
+
+        def worker():
+            succeeded = self.ecliptica_auto_jump.test_jump()
+            try:
+                self.root.after(0, lambda: self._finish_ecliptica_auto_jump_test(succeeded))
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, name="osc-auto-jump-test", daemon=True).start()
+        self.log(f"自动连跳测试已发送到 {host}:{port}")
+
+    def _finish_ecliptica_auto_jump_test(self, succeeded):
+        snapshot = self.ecliptica_auto_jump.snapshot()
+        if succeeded:
+            self.ecliptica_auto_jump_status_var.set("测试跳跃已发送")
+        else:
+            self.ecliptica_auto_jump_status_var.set(
+                f"测试失败：{snapshot.get('error') or '未知错误'}"
+            )
+
+    def _ecliptica_auto_jump_status_tick(self):
+        self._ecliptica_auto_jump_after_id = None
+        if self._is_shutting_down:
+            return
+        try:
+            status = self.ecliptica_auto_jump.snapshot()
+            if status.get("error"):
+                text = f"发送失败：{status['error']}"
+            elif not status.get("enabled"):
+                text = "未启用"
+            elif status.get("testing"):
+                text = "正在发送测试跳跃..."
+            elif not status.get("vrchat_foreground"):
+                text = "等待 VRChat 前台"
+            elif status.get("jumping"):
+                text = "连跳中"
+            else:
+                text = "按住空格开始连跳"
+            self.ecliptica_auto_jump_status_var.set(text)
+        except Exception:
+            pass
+        try:
+            self._ecliptica_auto_jump_after_id = self.root.after(
+                200,
+                self._ecliptica_auto_jump_status_tick,
+            )
+        except Exception:
+            self._ecliptica_auto_jump_after_id = None
 
     def _publish_ecliptica_osc(self, snapshot=None, force=False):
         if not self.ecliptica_osc_enabled.get():
@@ -4940,6 +5053,12 @@ class SlashCoMonitorCN:
         # 停止监控循环
         self.is_monitoring = False
 
+        try:
+            if getattr(self, "ecliptica_auto_jump", None):
+                self.ecliptica_auto_jump.stop()
+        except Exception:
+            pass
+
         if HAS_SPONSOR_PROXY:
             try:
                 self._stop_sponsor_server_with_timeout(timeout_seconds=1.8)
@@ -4959,6 +5078,7 @@ class SlashCoMonitorCN:
             "_round_timer_after_id",
             "_ecliptica_hud_after_id",
             "_ecliptica_osc_test_after_id",
+            "_ecliptica_auto_jump_after_id",
         ):
             after_id = getattr(self, attr, None)
             if after_id:
@@ -4982,7 +5102,6 @@ class SlashCoMonitorCN:
                 self.ecliptica_hud.destroy()
         except Exception:
             pass
-
         # 正常退出 Tk 循环
         try:
             self.root.quit()
