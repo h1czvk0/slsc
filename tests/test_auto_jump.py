@@ -11,6 +11,9 @@ from auto_jump import (  # noqa: E402
     AutoJumpOscOutput,
     AutoJumpPulseController,
     AutoJumpService,
+    SpaceKeyHook,
+    WM_KEYDOWN,
+    WM_KEYUP,
 )
 
 
@@ -35,6 +38,28 @@ class FakeSocket:
 
 
 class AutoJumpTests(unittest.TestCase):
+    def test_space_hook_swallows_space_only_while_capture_is_enabled(self):
+        hook = SpaceKeyHook(physical_state_provider=lambda: False)
+
+        self.assertFalse(hook.handle_space_event(WM_KEYDOWN))
+        hook.set_capture(True)
+        self.assertTrue(hook.handle_space_event(WM_KEYDOWN))
+        self.assertTrue(hook.is_down())
+        self.assertTrue(hook.handle_space_event(WM_KEYUP))
+        self.assertFalse(hook.is_down())
+        hook.set_capture(False)
+        self.assertFalse(hook.handle_space_event(WM_KEYDOWN))
+
+    def test_space_hook_waits_for_release_when_enabled_mid_press(self):
+        hook = SpaceKeyHook(physical_state_provider=lambda: True)
+        hook.set_capture(True)
+
+        self.assertTrue(hook.awaiting_release)
+        self.assertFalse(hook.handle_space_event(WM_KEYDOWN))
+        self.assertFalse(hook.handle_space_event(WM_KEYUP))
+        self.assertFalse(hook.awaiting_release)
+        self.assertTrue(hook.handle_space_event(WM_KEYDOWN))
+
     def test_jump_output_uses_vrchat_input_address_and_integer_value(self):
         sent = []
         output = AutoJumpOscOutput(socket_factory=lambda *_args: FakeSocket(sent))
@@ -61,13 +86,13 @@ class AutoJumpTests(unittest.TestCase):
         self.assertEqual(len(sent), 3)
 
     def test_pulse_controller_alternates_press_and_release(self):
-        pulse = AutoJumpPulseController(press_seconds=0.02, release_seconds=0.03)
+        pulse = AutoJumpPulseController(press_seconds=0.05, release_seconds=0.05)
 
         self.assertEqual(pulse.update(True, 0.0), [True])
-        self.assertEqual(pulse.update(True, 0.019), [])
-        self.assertEqual(pulse.update(True, 0.02), [False])
         self.assertEqual(pulse.update(True, 0.049), [])
-        self.assertEqual(pulse.update(True, 0.05), [True])
+        self.assertEqual(pulse.update(True, 0.05), [False])
+        self.assertEqual(pulse.update(True, 0.099), [])
+        self.assertEqual(pulse.update(True, 0.1), [True])
 
     def test_pulse_controller_releases_immediately_when_condition_stops(self):
         pulse = AutoJumpPulseController()
@@ -84,6 +109,7 @@ class AutoJumpTests(unittest.TestCase):
             output=output,
             foreground_provider=lambda: state["foreground"],
             space_down_provider=lambda: state["space"],
+            key_hook=False,
         )
 
         service.tick(now=0.0)
@@ -106,6 +132,7 @@ class AutoJumpTests(unittest.TestCase):
             output=output,
             foreground_provider=lambda: True,
             space_down_provider=lambda: True,
+            key_hook=False,
         )
         service.set_enabled(True)
         service.tick(now=0.0)
@@ -134,6 +161,7 @@ class AutoJumpTests(unittest.TestCase):
             output=output,
             foreground_provider=lambda: True,
             space_down_provider=lambda: True,
+            key_hook=False,
         )
         service.set_enabled(True)
         service.tick(now=0.0)

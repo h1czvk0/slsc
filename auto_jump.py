@@ -16,8 +16,14 @@ from osc_output import (
 
 VRCHAT_JUMP_ADDRESS = "/input/Jump"
 VK_SPACE = 0x20
-AUTO_JUMP_PRESS_SECONDS = 0.02
-AUTO_JUMP_RELEASE_SECONDS = 0.03
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+WM_SYSKEYDOWN = 0x0104
+WM_SYSKEYUP = 0x0105
+WM_QUIT = 0x0012
+WH_KEYBOARD_LL = 13
+AUTO_JUMP_PRESS_SECONDS = 0.05
+AUTO_JUMP_RELEASE_SECONDS = 0.05
 AUTO_JUMP_POLL_SECONDS = 0.005
 FOREGROUND_REFRESH_SECONDS = 0.1
 
@@ -84,6 +90,173 @@ def foreground_process_name():
 
 def is_vrchat_foreground():
     return foreground_process_name().casefold() == "vrchat.exe"
+
+
+class KbdLlHookStruct(ctypes.Structure):
+    _fields_ = (
+        ("vkCode", wintypes.DWORD),
+        ("scanCode", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_size_t),
+    )
+
+
+class SpaceKeyHook:
+    def __init__(self, physical_state_provider=is_space_down):
+        self.physical_state_provider = physical_state_provider
+        self._capture_enabled = False
+        self._awaiting_release = False
+        self._space_down = False
+        self._thread = None
+        self._thread_id = 0
+        self._hook_handle = None
+        self._callback = None
+        self._ready_event = threading.Event()
+        self._lock = threading.RLock()
+        self.last_error = ""
+
+    @property
+    def running(self):
+        thread = self._thread
+        return bool(thread and thread.is_alive() and self._hook_handle)
+
+    @property
+    def awaiting_release(self):
+        with self._lock:
+            return self._awaiting_release
+
+    def set_capture(self, enabled):
+        capture = bool(enabled)
+        with self._lock:
+            if capture and not self._capture_enabled:
+                self._awaiting_release = bool(self.physical_state_provider())
+            elif not capture:
+                self._awaiting_release = False
+            self._capture_enabled = capture
+
+    def is_down(self):
+        with self._lock:
+            return self._space_down and not self._awaiting_release
+
+    def handle_space_event(self, message):
+        is_down = message in (WM_KEYDOWN, WM_SYSKEYDOWN)
+        is_up = message in (WM_KEYUP, WM_SYSKEYUP)
+        if not is_down and not is_up:
+            return False
+        with self._lock:
+            self._space_down = is_down
+            if not self._capture_enabled:
+                return False
+            if self._awaiting_release:
+                if is_up:
+                    self._awaiting_release = False
+                return False
+            return True
+
+    def start(self, timeout=1.0):
+        if os.name != "nt":
+            self.last_error = "keyboard hook requires Windows"
+            return False
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return self.running
+            self.last_error = ""
+            self._ready_event.clear()
+            self._thread = threading.Thread(
+                target=self._run,
+                name="osc-auto-jump-hook",
+                daemon=True,
+            )
+            self._thread.start()
+        self._ready_event.wait(max(0.0, float(timeout)))
+        return self.running
+
+    def stop(self, timeout=1.0):
+        self.set_capture(False)
+        thread_id = self._thread_id
+        if os.name == "nt" and thread_id:
+            try:
+                ctypes.windll.user32.PostThreadMessageW(thread_id, WM_QUIT, 0, 0)
+            except Exception:
+                pass
+        thread = self._thread
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(max(0.0, float(timeout)))
+        with self._lock:
+            self._thread = None
+            self._thread_id = 0
+            self._hook_handle = None
+            self._callback = None
+            self._space_down = False
+            self._awaiting_release = False
+
+    def _run(self):
+        hook_handle = None
+        try:
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            hook_proc_type = ctypes.WINFUNCTYPE(
+                ctypes.c_ssize_t,
+                ctypes.c_int,
+                wintypes.WPARAM,
+                wintypes.LPARAM,
+            )
+            user32.SetWindowsHookExW.argtypes = (
+                ctypes.c_int,
+                hook_proc_type,
+                wintypes.HINSTANCE,
+                wintypes.DWORD,
+            )
+            user32.SetWindowsHookExW.restype = wintypes.HANDLE
+            user32.CallNextHookEx.argtypes = (
+                wintypes.HANDLE,
+                ctypes.c_int,
+                wintypes.WPARAM,
+                wintypes.LPARAM,
+            )
+            user32.CallNextHookEx.restype = ctypes.c_ssize_t
+            user32.UnhookWindowsHookEx.argtypes = (wintypes.HANDLE,)
+            user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+            kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+            kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
+            kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+
+            def callback(code, wparam, lparam):
+                if code >= 0:
+                    event = ctypes.cast(lparam, ctypes.POINTER(KbdLlHookStruct)).contents
+                    if event.vkCode == VK_SPACE and self.handle_space_event(int(wparam)):
+                        return 1
+                return user32.CallNextHookEx(hook_handle, code, wparam, lparam)
+
+            self._callback = hook_proc_type(callback)
+            self._thread_id = kernel32.GetCurrentThreadId()
+            hook_handle = user32.SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                self._callback,
+                kernel32.GetModuleHandleW(None),
+                0,
+            )
+            if not hook_handle:
+                raise ctypes.WinError()
+            self._hook_handle = hook_handle
+            self._ready_event.set()
+
+            message = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(message))
+                user32.DispatchMessageW(ctypes.byref(message))
+        except Exception as exc:
+            self.last_error = str(exc)
+            self._ready_event.set()
+        finally:
+            if hook_handle:
+                try:
+                    ctypes.windll.user32.UnhookWindowsHookEx(hook_handle)
+                except Exception:
+                    pass
+            self._hook_handle = None
+            self._ready_event.set()
 
 
 class AutoJumpPulseController:
@@ -157,12 +330,14 @@ class AutoJumpService:
         space_down_provider=is_space_down,
         clock=time.monotonic,
         sleep=time.sleep,
+        key_hook=None,
     ):
         self.output = output or AutoJumpOscOutput(host, port)
         self.foreground_provider = foreground_provider
         self.space_down_provider = space_down_provider
         self.clock = clock
         self.sleep = sleep
+        self.key_hook = key_hook if key_hook is not None else SpaceKeyHook()
         self.pulse = AutoJumpPulseController()
         self._enabled = False
         self._testing = False
@@ -192,6 +367,8 @@ class AutoJumpService:
             if self._thread and self._thread.is_alive():
                 return False
             self._stop_event.clear()
+            if self.key_hook and not self.key_hook.start():
+                self._last_error = self.key_hook.last_error or "keyboard hook failed to start"
             self._thread = threading.Thread(
                 target=self._run,
                 name="osc-auto-jump",
@@ -210,9 +387,15 @@ class AutoJumpService:
                 self._last_foreground_check = current_time
             elif not enabled:
                 self._vrchat_foreground = False
-            self._space_down = bool(
-                enabled and self._vrchat_foreground and self.space_down_provider()
-            )
+            capture_space = enabled and not testing and self._vrchat_foreground
+            if self.key_hook and self.key_hook.running:
+                self.key_hook.set_capture(capture_space)
+                self._space_down = bool(capture_space and self.key_hook.is_down())
+            elif self.key_hook and enabled:
+                self._space_down = False
+                self._last_error = self.key_hook.last_error or "keyboard hook is not running"
+            else:
+                self._space_down = bool(capture_space and self.space_down_provider())
             active = enabled and not testing and self._vrchat_foreground and self._space_down
             actions = self.pulse.update(active, current_time)
             if not active and self.output.last_value == 1 and False not in actions:
@@ -222,7 +405,8 @@ class AutoJumpService:
             for pressed in actions:
                 self.output.send(pressed)
             with self._lock:
-                self._last_error = ""
+                if not self.key_hook or self.key_hook.running or not enabled:
+                    self._last_error = ""
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)
@@ -261,6 +445,9 @@ class AutoJumpService:
                 "vrchat_foreground": self._vrchat_foreground,
                 "space_down": self._space_down,
                 "jumping": self.pulse.jump_pressed,
+                "awaiting_release": bool(
+                    self.key_hook and self.key_hook.awaiting_release
+                ),
                 "error": self._last_error,
             }
 
@@ -274,6 +461,8 @@ class AutoJumpService:
             self.output.release(force=True)
         except Exception:
             pass
+        if self.key_hook:
+            self.key_hook.stop(timeout=timeout)
         with self._lock:
             self._thread = None
             self.pulse.reset(self.clock())
@@ -285,6 +474,8 @@ class AutoJumpService:
                 self._wake_event.wait(AUTO_JUMP_POLL_SECONDS)
                 self._wake_event.clear()
         finally:
+            if self.key_hook:
+                self.key_hook.set_capture(False)
             try:
                 self.output.release(force=True)
             except Exception:

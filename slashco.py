@@ -2915,6 +2915,8 @@ class SlashCoMonitorCN:
                 text = "正在发送测试跳跃..."
             elif not status.get("vrchat_foreground"):
                 text = "等待 VRChat 前台"
+            elif status.get("awaiting_release"):
+                text = "请松开空格后重新按住"
             elif status.get("jumping"):
                 text = "连跳中"
             else:
