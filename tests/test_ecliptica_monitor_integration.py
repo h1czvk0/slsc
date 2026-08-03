@@ -11,6 +11,9 @@ sys.path.insert(0, str(ROOT))
 from ecliptica_log_parser import EclipticaState, parse_ecliptica_line  # noqa: E402
 from slashco import (  # noqa: E402
     EclipticaDesktopHud,
+    HUD_DEFAULT_PRESET_FIELDS,
+    HUD_DEFAULT_PRESET_ORDER,
+    HUD_DEFAULT_PRESET_VERSION,
     PANEL_MODE_LABELS,
     SlashCoMonitorCN,
     _hud_text_runs,
@@ -21,6 +24,7 @@ from slashco import (  # noqa: E402
     format_ecliptica_clock,
     format_ecliptica_clock_hms,
     format_ecliptica_duration,
+    hud_default_preset_layout,
     main_window_geometry,
     normalize_hud_display_mode,
     normalize_hud_damage_fields,
@@ -28,6 +32,7 @@ from slashco import (  # noqa: E402
     normalize_hud_layout,
     normalize_hud_opacity,
     normalize_hud_transparency,
+    pending_hud_default_preset,
 )
 
 
@@ -642,11 +647,32 @@ class HudLayoutTests(unittest.TestCase):
 
         layout = hud.reset_layout()
 
-        self.assertEqual(layout["damage"], {"x": 24, "y": 435, "width": 300, "height": 210})
-        self.assertEqual(layout["boss_lock"], {"x": 800, "y": 24, "width": 320, "height": 90})
+        self.assertEqual(layout["damage"], {"x": -1, "y": 468, "width": 353, "height": 245})
+        self.assertEqual(layout["boss_lock"], {"x": 788, "y": 913, "width": 357, "height": 106})
         self.assertEqual(hud.damage_window.geometry(), hud.damage_background_window.geometry())
         self.assertEqual(hud.lock_window.geometry(), hud.lock_background_window.geometry())
         self.assertIsNone(hud._pointer_operation)
+
+    def test_update_default_preset_matches_current_user_configuration(self):
+        preset = pending_hud_default_preset({}, 2560, 1440)
+
+        self.assertEqual(preset["version"], HUD_DEFAULT_PRESET_VERSION)
+        self.assertEqual(
+            preset["layout"],
+            {
+                "damage": {"x": -1, "y": 624, "width": 471, "height": 327},
+                "boss_lock": {"x": 1050, "y": 1217, "width": 476, "height": 141},
+            },
+        )
+        self.assertEqual(preset["fields"], list(HUD_DEFAULT_PRESET_FIELDS))
+        self.assertEqual(preset["order"], list(HUD_DEFAULT_PRESET_ORDER))
+
+    def test_update_default_preset_is_only_applied_once(self):
+        config = {"hud_default_preset_version": HUD_DEFAULT_PRESET_VERSION}
+
+        self.assertIsNone(pending_hud_default_preset(config, 2560, 1440))
+        scaled = hud_default_preset_layout(1920, 1080)
+        self.assertEqual(scaled["damage"], {"x": -1, "y": 468, "width": 353, "height": 245})
 
     def test_hud_text_color_is_pure_white(self):
         self.assertEqual(EclipticaDesktopHud.FG, "#ffffff")

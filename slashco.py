@@ -204,6 +204,32 @@ HUD_DAMAGE_FIELDS = (
 )
 HUD_DAMAGE_FIELD_KEYS = tuple(key for key, _label in HUD_DAMAGE_FIELDS)
 HUD_DAMAGE_FIELD_LABELS = dict(HUD_DAMAGE_FIELDS)
+HUD_DEFAULT_PRESET_VERSION = 1
+HUD_DEFAULT_PRESET_FIELDS = (
+    "total_elapsed",
+    "current_boss",
+    "current_boss_phase",
+    "current_phase_damage",
+    "current_phase_damage_taken",
+    "recent_5s_dps",
+    "current_boss_elapsed",
+)
+HUD_DEFAULT_PRESET_ORDER = (
+    "total_elapsed",
+    "stage",
+    "current_boss",
+    "current_boss_phase",
+    "class_name",
+    "current_phase_damage",
+    "current_phase_damage_taken",
+    "recent_5s_dps",
+    "current_boss_elapsed",
+)
+HUD_DEFAULT_REFERENCE_SIZE = (2560, 1440)
+HUD_DEFAULT_REFERENCE_LAYOUT = {
+    "damage": {"x": -1, "y": 624, "width": 471, "height": 327},
+    "boss_lock": {"x": 1050, "y": 1217, "width": 476, "height": 141},
+}
 APP_USER_MODEL_ID = "SlashCoSense.Desktop"
 TK_BASE_SCALING = 96.0 / 72.0
 
@@ -271,6 +297,36 @@ def normalize_hud_field_order(value):
     ordered = normalize_hud_damage_fields(value) if value is not None else []
     ordered.extend(key for key in HUD_DAMAGE_FIELD_KEYS if key not in ordered)
     return ordered
+
+
+def hud_default_preset_layout(screen_width, screen_height):
+    reference_width, reference_height = HUD_DEFAULT_REFERENCE_SIZE
+    width_scale = max(1, int(screen_width)) / reference_width
+    height_scale = max(1, int(screen_height)) / reference_height
+    scaled = {}
+    for key, geometry in HUD_DEFAULT_REFERENCE_LAYOUT.items():
+        scaled[key] = {
+            "x": round(geometry["x"] * width_scale),
+            "y": round(geometry["y"] * height_scale),
+            "width": round(geometry["width"] * width_scale),
+            "height": round(geometry["height"] * height_scale),
+        }
+    return normalize_hud_layout(scaled)
+
+
+def pending_hud_default_preset(config, screen_width, screen_height):
+    try:
+        preset_version = int(config.get("hud_default_preset_version", 0))
+    except (AttributeError, TypeError, ValueError):
+        preset_version = 0
+    if preset_version >= HUD_DEFAULT_PRESET_VERSION:
+        return None
+    return {
+        "version": HUD_DEFAULT_PRESET_VERSION,
+        "layout": hud_default_preset_layout(screen_width, screen_height),
+        "fields": list(HUD_DEFAULT_PRESET_FIELDS),
+        "order": list(HUD_DEFAULT_PRESET_ORDER),
+    }
 
 
 def is_hud_foreground():
@@ -1114,22 +1170,7 @@ class EclipticaDesktopHud:
         self.lock_window.update_idletasks()
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        damage_w, damage_h = HUD_MIN_SIZES["damage"]
-        lock_w, lock_h = HUD_MIN_SIZES["boss_lock"]
-        return {
-            "damage": {
-                "x": 24,
-                "y": max(24, (screen_h - damage_h) // 2),
-                "width": damage_w,
-                "height": damage_h,
-            },
-            "boss_lock": {
-                "x": max(24, (screen_w - lock_w) // 2),
-                "y": 24,
-                "width": lock_w,
-                "height": lock_h,
-            },
-        }
+        return hud_default_preset_layout(screen_w, screen_h)
 
     def _capture_window_layout(self, key, window):
         background = self._background_window(key)
@@ -1713,6 +1754,9 @@ class SlashCoMonitorCN:
             self.ecliptica_hud_layout,
             self._ecliptica_hud_opacity(),
         )
+        if self._ecliptica_hud_preset_save_pending:
+            self._save_ecliptica_config()
+            self._ecliptica_hud_preset_save_pending = False
         self._ecliptica_hud_after_id = self.root.after(
             ECLIPTICA_HUD_REFRESH_MS,
             self._ecliptica_hud_tick,
@@ -2678,6 +2722,9 @@ class SlashCoMonitorCN:
         self.ecliptica_osc_port_var = StringVar(value=str(DEFAULT_OSC_PORT))
         self.ecliptica_osc_status_var = StringVar(value="未启用")
         self.ecliptica_hud_layout = {}
+        self.ecliptica_hud_default_preset_version = 0
+        self._ecliptica_hud_preset_save_pending = False
+        config = {}
         try:
             if os.path.exists(ECLIPTICA_CONFIG_FILENAME):
                 with open(ECLIPTICA_CONFIG_FILENAME, "r", encoding="utf-8") as config_file:
@@ -2712,7 +2759,23 @@ class SlashCoMonitorCN:
                 self.ecliptica_osc_port_var.set(str(normalize_osc_port(config.get("osc_port"))))
                 self.ecliptica_osc_status_var.set("等待锁定目标" if osc_enabled else "未启用")
         except Exception:
-            pass
+            config = {}
+
+        preset = pending_hud_default_preset(
+            config,
+            self.root.winfo_screenwidth(),
+            self.root.winfo_screenheight(),
+        )
+        if preset is not None:
+            self.ecliptica_hud_layout = preset["layout"]
+            self.ecliptica_hud_field_order = preset["order"]
+            selected_fields = set(preset["fields"])
+            for key, variable in self.ecliptica_hud_field_vars.items():
+                variable.set(key in selected_fields)
+            self.ecliptica_hud_default_preset_version = preset["version"]
+            self._ecliptica_hud_preset_save_pending = True
+        else:
+            self.ecliptica_hud_default_preset_version = HUD_DEFAULT_PRESET_VERSION
 
     def _save_ecliptica_config(self):
         try:
@@ -2731,6 +2794,7 @@ class SlashCoMonitorCN:
                         "hud_layout": self.ecliptica_hud_layout,
                         "hud_fields": self._ecliptica_hud_fields(),
                         "hud_field_order": self.ecliptica_hud_field_order,
+                        "hud_default_preset_version": self.ecliptica_hud_default_preset_version,
                         "osc_enabled": bool(self.ecliptica_osc_enabled.get()),
                         "osc_name_only": bool(self.ecliptica_osc_name_only.get()),
                         "osc_prefix": normalize_osc_prefix(self.ecliptica_osc_prefix_var.get()),
@@ -3117,9 +3181,11 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_foreground_only.set(True)
         self.ecliptica_hud_opacity_var.set(10.0)
         self.ecliptica_hud_opacity_text_var.set("10%")
-        self.ecliptica_hud_field_order = list(HUD_DAMAGE_FIELD_KEYS)
+        self.ecliptica_hud_field_order = list(HUD_DEFAULT_PRESET_ORDER)
         for variable in self.ecliptica_hud_field_vars.values():
-            variable.set(True)
+            variable.set(False)
+        for key in HUD_DEFAULT_PRESET_FIELDS:
+            self.ecliptica_hud_field_vars[key].set(True)
         self._refresh_ecliptica_hud_field_list(0)
         if self.ecliptica_hud:
             self.ecliptica_hud.set_opacity(0.9)
