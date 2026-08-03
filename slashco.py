@@ -2444,34 +2444,6 @@ class SlashCoMonitorCN:
         )
         self._refresh_ecliptica_hud_field_list()
 
-        summary = ttk.LabelFrame(self.ecliptica_left_frame, text="战斗概览", padding=8)
-        summary.pack(fill=X, padx=5, pady=2)
-        rows = (
-            ("会话 ID", "session"),
-            ("当前职业", "class"),
-            ("当前阶段", "stage"),
-            ("当前 BOSS", "boss"),
-            ("BOSS 阶段", "phase"),
-            ("当前 BOSS 累计伤害", "boss_damage"),
-            ("本局总伤害", "total_damage"),
-            ("最近结算 DPS", "dps"),
-            ("本局受到伤害", "damage_taken"),
-            ("已击败 BOSS", "defeated"),
-        )
-        for row_index, (label, key) in enumerate(rows):
-            ttk.Label(summary, text=label, width=18, foreground="#666666").grid(
-                row=row_index,
-                column=0,
-                sticky=W,
-                pady=2,
-            )
-            ttk.Label(
-                summary,
-                textvariable=self.ecliptica_vars[key],
-                font=("微软雅黑", 10, "bold"),
-            ).grid(row=row_index, column=1, sticky=E, pady=2)
-        summary.grid_columnconfigure(1, weight=1)
-
         lock_frame = ttk.LabelFrame(self.ecliptica_left_frame, text="Boss 当前锁定", padding=8)
         lock_frame.pack(fill=X, padx=5, pady=5)
         self.lbl_ecliptica_aggro = ttk.Label(
@@ -2561,6 +2533,34 @@ class SlashCoMonitorCN:
         self.ecliptica_osc_prefix_entry.bind("<FocusOut>", self._on_ecliptica_osc_format_changed)
         self.ecliptica_osc_prefix_entry.bind("<Return>", self._on_ecliptica_osc_format_changed)
         self._update_ecliptica_osc_prefix_state()
+
+        summary = ttk.LabelFrame(self.ecliptica_left_frame, text="战斗概览", padding=8)
+        summary.pack(fill=X, padx=5, pady=2)
+        rows = (
+            ("会话 ID", "session"),
+            ("当前职业", "class"),
+            ("当前阶段", "stage"),
+            ("当前 BOSS", "boss"),
+            ("BOSS 阶段", "phase"),
+            ("当前 BOSS 累计伤害", "boss_damage"),
+            ("本局总伤害", "total_damage"),
+            ("最近结算 DPS", "dps"),
+            ("本局受到伤害", "damage_taken"),
+            ("已击败 BOSS", "defeated"),
+        )
+        for row_index, (label, key) in enumerate(rows):
+            ttk.Label(summary, text=label, width=18, foreground="#666666").grid(
+                row=row_index,
+                column=0,
+                sticky=W,
+                pady=2,
+            )
+            ttk.Label(
+                summary,
+                textvariable=self.ecliptica_vars[key],
+                font=("微软雅黑", 10, "bold"),
+            ).grid(row=row_index, column=1, sticky=E, pady=2)
+        summary.grid_columnconfigure(1, weight=1)
 
     def _build_ecliptica_right_panel(self):
         frame = ttk.LabelFrame(self.ecliptica_right_frame, text="Ecliptica 伤害数据", padding=7)
