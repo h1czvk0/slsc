@@ -2253,6 +2253,12 @@ class SlashCoMonitorCN:
             textvariable=self.ecliptica_hud_layout_button_var,
             command=self._on_ecliptica_hud_layout_action,
         ).pack(side=LEFT, padx=(10, 0))
+        ttk.Checkbutton(
+            hud_frame,
+            text="仅在 VRChat/本程序位于前台时显示",
+            variable=self.ecliptica_hud_foreground_only,
+            command=self._on_ecliptica_hud_toggle,
+        ).pack(anchor=W, pady=(6, 0))
         hud_display_row = ttk.Frame(hud_frame)
         hud_display_row.pack(fill=X, pady=(7, 0))
         ttk.Label(hud_display_row, text="显示内容：").pack(side=LEFT)
@@ -2619,6 +2625,7 @@ class SlashCoMonitorCN:
 
     def _load_ecliptica_config(self):
         self.ecliptica_hud_enabled = BooleanVar(value=False)
+        self.ecliptica_hud_foreground_only = BooleanVar(value=True)
         self.panel_mode_var = StringVar(value=PANEL_MODE_LABELS["auto"])
         self.ecliptica_hud_layout_button_var = StringVar(value="配置 HUD 布局")
         self.ecliptica_hud_display_var = StringVar(value=HUD_DISPLAY_LABELS["both"])
@@ -2640,6 +2647,9 @@ class SlashCoMonitorCN:
                 with open(ECLIPTICA_CONFIG_FILENAME, "r", encoding="utf-8") as config_file:
                     config = json.load(config_file)
                 self.ecliptica_hud_enabled.set(bool(config.get("hud_enabled", False)))
+                self.ecliptica_hud_foreground_only.set(
+                    bool(config.get("hud_foreground_only", True))
+                )
                 panel_mode = str(config.get("panel_mode", "auto")).lower()
                 self.panel_mode_var.set(PANEL_MODE_LABELS.get(panel_mode, PANEL_MODE_LABELS["auto"]))
                 hud_display_mode = normalize_hud_display_mode(config.get("hud_display_mode", "both"))
@@ -2677,6 +2687,7 @@ class SlashCoMonitorCN:
                 json.dump(
                     {
                         "hud_enabled": bool(self.ecliptica_hud_enabled.get()),
+                        "hud_foreground_only": bool(self.ecliptica_hud_foreground_only.get()),
                         "panel_mode": self._panel_mode_preference(),
                         "hud_display_mode": self._ecliptica_hud_display_mode(),
                         "hud_transparency": self._ecliptica_hud_transparency(),
@@ -2890,7 +2901,10 @@ class SlashCoMonitorCN:
         return (
             bool(self.ecliptica_hud_enabled.get())
             and getattr(self, "current_game_mode", "slashco") == "ecliptica"
-            and self._is_hud_foreground()
+            and (
+                not bool(self.ecliptica_hud_foreground_only.get())
+                or self._is_hud_foreground()
+            )
         )
 
     def _ecliptica_hud_opacity(self):
@@ -2910,6 +2924,7 @@ class SlashCoMonitorCN:
 
     def _restore_default_ecliptica_hud(self):
         self.ecliptica_hud_display_var.set(HUD_DISPLAY_LABELS["both"])
+        self.ecliptica_hud_foreground_only.set(True)
         self.ecliptica_hud_opacity_var.set(10.0)
         self.ecliptica_hud_opacity_text_var.set("10%")
         self.ecliptica_hud_field_order = list(HUD_DAMAGE_FIELD_KEYS)

@@ -329,10 +329,11 @@ class PanelModeSelectionTests(unittest.TestCase):
 
 
 class HudVisibilityTests(unittest.TestCase):
-    def make_monitor(self, panel="ecliptica", foreground=True, enabled=True):
+    def make_monitor(self, panel="ecliptica", foreground=True, enabled=True, foreground_only=True):
         monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
         monitor.current_game_mode = panel
         monitor.ecliptica_hud_enabled = FakeVar(enabled)
+        monitor.ecliptica_hud_foreground_only = FakeVar(foreground_only)
         monitor._is_hud_foreground = lambda: foreground
         return monitor
 
@@ -340,6 +341,9 @@ class HudVisibilityTests(unittest.TestCase):
         self.assertTrue(self.make_monitor()._should_show_ecliptica_hud())
         self.assertFalse(self.make_monitor(panel="slashco")._should_show_ecliptica_hud())
         self.assertFalse(self.make_monitor(foreground=False)._should_show_ecliptica_hud())
+        self.assertTrue(
+            self.make_monitor(foreground=False, foreground_only=False)._should_show_ecliptica_hud()
+        )
         self.assertFalse(self.make_monitor(enabled=False)._should_show_ecliptica_hud())
 
     def test_main_window_geometry_fits_scaled_desktop(self):
