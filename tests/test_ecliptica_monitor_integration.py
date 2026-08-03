@@ -2,7 +2,7 @@ import pathlib
 import sys
 import unittest
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -14,6 +14,8 @@ from slashco import (  # noqa: E402
     PANEL_MODE_LABELS,
     SlashCoMonitorCN,
     _hud_text_runs,
+    _hud_text_width,
+    _fit_hud_font_to_width,
     _load_hud_font,
     _premultiplied_bgra,
     format_ecliptica_clock,
@@ -574,6 +576,24 @@ class HudLayoutTests(unittest.TestCase):
         self.assertEqual("".join(text for text, _font in runs), "Boss 当前锁定：ಣಪರೀಕ್ಷೆ")
         kannada_fonts = [font.getname()[0] for text, font in runs if "ಣ" in text]
         self.assertEqual(kannada_fonts, ["Nirmala UI"])
+
+    def test_hud_font_falls_back_for_thai_and_mathematical_art_text(self):
+        text = "ฅ小荷包蛋ฅ 𝓐𝕬𝔄"
+        runs = _hud_text_runs(text, _load_hud_font(24, bold=True))
+
+        self.assertEqual("".join(run for run, _font in runs), text)
+        thai_fonts = [font.getname()[0] for run, font in runs if "ฅ" in run]
+        art_fonts = [font.getname()[0] for run, font in runs if "𝓐" in run]
+        self.assertEqual(thai_fonts, ["Leelawadee UI", "Leelawadee UI"])
+        self.assertIn(art_fonts[0], ("Segoe UI Symbol", "Cambria Math"))
+
+    def test_boss_lock_font_shrinks_to_fit_available_width(self):
+        draw = ImageDraw.Draw(Image.new("RGBA", (600, 100)))
+        text = "Boss 当前锁定：没有坏心思的AliceAliceAlice"
+        font = _fit_hud_font_to_width(draw, text, 360, 28, 8)
+
+        self.assertLess(font.size, 28)
+        self.assertLessEqual(_hud_text_width(draw, text, font), 360)
 
     def test_layered_window_pixels_use_premultiplied_bgra(self):
         image = Image.new("RGBA", (2, 1))

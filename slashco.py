@@ -411,8 +411,10 @@ def _load_hud_fallback_fonts(size, bold=False):
         return cached
     font_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
     candidates = (
+        ("LeelaUIb.ttf" if bold else "LeelawUI.ttf", 0),
         ("Nirmala.ttc", 1 if bold else 0),
         ("seguisym.ttf", 0),
+        ("cambria.ttc", 1),
         ("seguiemj.ttf", 0),
     )
     fonts = []
@@ -463,6 +465,23 @@ def _hud_text_runs(text, base_font):
         else:
             runs.append((character, selected))
     return runs
+
+
+def _hud_text_width(draw, text, font):
+    return sum(
+        float(draw.textlength(run, font=run_font))
+        for run, run_font in _hud_text_runs(text, font)
+    )
+
+
+def _fit_hud_font_to_width(draw, text, maximum_width, preferred_size, minimum_size, bold=True):
+    preferred = max(1, int(preferred_size))
+    minimum = max(1, min(preferred, int(minimum_size)))
+    for size in range(preferred, minimum - 1, -1):
+        font = _load_hud_font(size, bold=bold)
+        if _hud_text_width(draw, text, font) <= maximum_width:
+            return font
+    return _load_hud_font(minimum, bold=bold)
 
 
 def _premultiplied_bgra(image):
@@ -647,6 +666,7 @@ class EclipticaDesktopHud:
         self.damage_title_text = "ECLIPTICA"
         self.damage_rows = []
         self.lock_text = "Boss 当前锁定：-"
+        self.lock_target = "-"
         self.boss_lock_active = False
         self.resize_grips = {}
         self._pointer_operation = None
@@ -802,7 +822,8 @@ class EclipticaDesktopHud:
         else:
             canvas.create_text(
                 width // 2, height // 2, text=self.lock_text, fill=self.FG,
-                font=("Microsoft YaHei UI", self._scaled(15, scale), "bold"), anchor=CENTER,
+                font=("Segoe UI", self._scaled(15, scale), "bold"), anchor=CENTER,
+                width=max(1, width - self._scaled(20, scale)), justify=CENTER,
             )
         for inset in (7, 12, 17):
             canvas.create_line(
@@ -875,15 +896,40 @@ class EclipticaDesktopHud:
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         center_x = width // 2
-        self._draw_text(
+        maximum_width = max(1, width - self._scaled(24, scale))
+        preferred_size = self._scaled(21, scale)
+        single_line_minimum = self._scaled(11, scale)
+        lock_font = _fit_hud_font_to_width(
             draw,
-            center_x,
-            height // 2,
             self.lock_text,
-            self.FG,
-            _load_hud_font(self._scaled(21, scale), bold=True),
-            "mm",
+            maximum_width,
+            preferred_size,
+            single_line_minimum,
         )
+        if _hud_text_width(draw, self.lock_text, lock_font) <= maximum_width:
+            self._draw_text(
+                draw, center_x, height // 2, self.lock_text,
+                self.FG, lock_font, "mm",
+            )
+        else:
+            prefix = "Boss 当前锁定："
+            target = getattr(self, "lock_target", "-")
+            prefix_font = _fit_hud_font_to_width(
+                draw, prefix, maximum_width,
+                self._scaled(15, scale), self._scaled(9, scale),
+            )
+            target_font = _fit_hud_font_to_width(
+                draw, target, maximum_width,
+                preferred_size, self._scaled(6, scale),
+            )
+            line_gap = self._scaled(6, scale)
+            prefix_height = prefix_font.getbbox(prefix)[3] - prefix_font.getbbox(prefix)[1]
+            target_height = target_font.getbbox(target)[3] - target_font.getbbox(target)[1]
+            total_height = prefix_height + line_gap + target_height
+            first_y = (height - total_height) // 2 + prefix_height // 2
+            second_y = first_y + prefix_height // 2 + line_gap + target_height // 2
+            self._draw_text(draw, center_x, first_y, prefix, self.FG, prefix_font, "mm")
+            self._draw_text(draw, center_x, second_y, target, self.FG, target_font, "mm")
         self._draw_edit_grip(draw, width, height)
         self._render_layered_image(self.lock_window, image)
 
@@ -1229,6 +1275,7 @@ class EclipticaDesktopHud:
 
         aggro = snapshot.get("aggro", {})
         target = aggro.get("target", "-")
+        self.lock_target = str(target)
         self.lock_text = f"Boss 当前锁定：{target}"
         self.boss_lock_active = (
             aggro.get("state") not in ("inactive", None)
