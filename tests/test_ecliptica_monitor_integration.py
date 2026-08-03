@@ -18,6 +18,7 @@ from slashco import (  # noqa: E402
     _premultiplied_bgra,
     format_ecliptica_clock,
     format_ecliptica_duration,
+    main_window_geometry,
     normalize_hud_display_mode,
     normalize_hud_damage_fields,
     normalize_hud_layout,
@@ -304,14 +305,18 @@ class HudVisibilityTests(unittest.TestCase):
         monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
         monitor.current_game_mode = panel
         monitor.ecliptica_hud_enabled = FakeVar(enabled)
-        monitor._is_vrchat_foreground = lambda: foreground
+        monitor._is_hud_foreground = lambda: foreground
         return monitor
 
-    def test_hud_requires_ecliptica_panel_and_vrchat_foreground(self):
+    def test_hud_requires_ecliptica_panel_and_allowed_foreground_app(self):
         self.assertTrue(self.make_monitor()._should_show_ecliptica_hud())
         self.assertFalse(self.make_monitor(panel="slashco")._should_show_ecliptica_hud())
         self.assertFalse(self.make_monitor(foreground=False)._should_show_ecliptica_hud())
         self.assertFalse(self.make_monitor(enabled=False)._should_show_ecliptica_hud())
+
+    def test_main_window_geometry_fits_scaled_desktop(self):
+        self.assertEqual(main_window_geometry(1920, 1080), (1300, 900))
+        self.assertEqual(main_window_geometry(1280, 720), (1248, 648))
 
 
 class OscPublishingTests(unittest.TestCase):

@@ -22,6 +22,7 @@ import socket
 from datetime import datetime
 from tkinter import *
 from tkinter import ttk, scrolledtext, Menu, messagebox
+from tkinter import font as tkfont
 
 
 
@@ -202,6 +203,48 @@ HUD_DAMAGE_FIELDS = (
     ("total_elapsed", "总耗时"),
 )
 HUD_DAMAGE_FIELD_KEYS = tuple(key for key, _label in HUD_DAMAGE_FIELDS)
+APP_USER_MODEL_ID = "SlashCoSense.Desktop"
+TK_BASE_SCALING = 96.0 / 72.0
+
+
+def configure_windows_process():
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except Exception:
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
+
+def configure_tk_display(root):
+    try:
+        root.tk.call("tk", "scaling", TK_BASE_SCALING)
+    except Exception:
+        pass
+    for font_name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
+        try:
+            tkfont.nametofont(font_name, root=root).configure(
+                family="Microsoft YaHei UI",
+                size=9,
+            )
+        except Exception:
+            pass
+
+
+def main_window_geometry(screen_width, screen_height):
+    available_width = max(640, int(screen_width) - 32)
+    available_height = max(560, int(screen_height) - 72)
+    return min(1300, available_width), min(900, available_height)
 
 
 def normalize_hud_display_mode(value):
@@ -218,7 +261,7 @@ def normalize_hud_damage_fields(value):
     return [key for key in HUD_DAMAGE_FIELD_KEYS if key in selected]
 
 
-def is_vrchat_foreground():
+def is_hud_foreground():
     if os.name != "nt":
         return False
     process_handle = None
@@ -242,6 +285,8 @@ def is_vrchat_foreground():
             return False
         process_id = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        if process_id.value == os.getpid():
+            return True
         process_handle = kernel32.OpenProcess(0x1000, False, process_id.value)
         if not process_handle:
             return False
@@ -1371,14 +1416,6 @@ def _build_sponsor_proxy_port_candidates():
         ordered.append(port)
     return ordered
 
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except Exception:
-    try:
-        ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
-
 ITEM_TRANSLATION = {
     "Proxy-Locator": "便携式探测设备",
     "Master Lock 607": "607型主锁",
@@ -1512,7 +1549,12 @@ class SlashCoMonitorCN:
 
         self.root = root
         self.root.title("SlashCoSense")
-        self.root.geometry("1300x900")
+        window_width, window_height = main_window_geometry(
+            self.root.winfo_screenwidth(),
+            self.root.winfo_screenheight(),
+        )
+        self.root.geometry(f"{window_width}x{window_height}")
+        self.root.minsize(min(960, window_width), min(600, window_height))
 
         # 关闭流程状态
         self._is_shutting_down = False
@@ -1529,7 +1571,10 @@ class SlashCoMonitorCN:
         try:
             icon_path = resource_path('icon.ico')
             if os.path.exists(icon_path):
-                self.root.iconbitmap(icon_path)
+                self.root.iconbitmap(default=icon_path)
+                icon_image = Image.open(icon_path).convert("RGBA")
+                self._window_icon = ImageTk.PhotoImage(icon_image, master=self.root)
+                self.root.iconphoto(True, self._window_icon)
         except Exception:
             pass
 
@@ -1554,14 +1599,6 @@ class SlashCoMonitorCN:
         self.ecliptica_hud = None
         self.ecliptica_hud_editing = False
 
-        # 设置 AppUserModelID 以修复任务栏图标
-        try:
-            from ctypes import windll
-            myappid = 'slashco.monitor.cn.v1'
-            windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-        except:
-            pass
-
         self.last_reset_time = 0.0
         self.last_battery_event = {"SC_generator1": 0.0, "SC_generator2": 0.0}
         self.last_pending_gid = None
@@ -1584,7 +1621,11 @@ class SlashCoMonitorCN:
         self.untranslated_locations = set()
 
         # UI 拖动变量
-        self.current_row_height = 24
+        try:
+            table_font = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=9)
+            self.current_row_height = max(24, table_font.metrics("linespace") + 6)
+        except Exception:
+            self.current_row_height = 24
         self.drag_start_y = 0
         self.start_row_height_on_drag = 24
 
@@ -2694,14 +2735,14 @@ class SlashCoMonitorCN:
         variables = getattr(self, "ecliptica_hud_field_vars", {})
         return [key for key in HUD_DAMAGE_FIELD_KEYS if key in variables and variables[key].get()]
 
-    def _is_vrchat_foreground(self):
-        return is_vrchat_foreground()
+    def _is_hud_foreground(self):
+        return is_hud_foreground()
 
     def _should_show_ecliptica_hud(self):
         return (
             bool(self.ecliptica_hud_enabled.get())
             and getattr(self, "current_game_mode", "slashco") == "ecliptica"
-            and self._is_vrchat_foreground()
+            and self._is_hud_foreground()
         )
 
     def _ecliptica_hud_opacity(self):
@@ -4545,18 +4586,12 @@ if __name__ == "__main__":
             print(f"Error running script {script_path}: {e}")
         sys.exit(0)
 
-    try:
-        # 设置高DPI感知
-        if os.name == 'nt':
-            try:
-                ctypes.windll.shcore.SetProcessDpiAwareness(1)
-            except:
-                ctypes.windll.user32.SetProcessDPIAware()
-    except:
-        pass
-
+    configure_windows_process()
     root = Tk()
+    root.withdraw()
+    configure_tk_display(root)
     app = SlashCoMonitorCN(root)
+    root.deiconify()
     # 接管窗口关闭事件
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
