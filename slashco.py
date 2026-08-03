@@ -2248,17 +2248,29 @@ class SlashCoMonitorCN:
             variable=self.ecliptica_hud_enabled,
             command=self._on_ecliptica_hud_toggle,
         ).pack(side=LEFT)
-        ttk.Button(
-            hud_controls,
-            textvariable=self.ecliptica_hud_layout_button_var,
-            command=self._on_ecliptica_hud_layout_action,
-        ).pack(side=LEFT, padx=(10, 0))
         ttk.Checkbutton(
             hud_frame,
             text="仅在 VRChat/本程序位于前台时显示",
             variable=self.ecliptica_hud_foreground_only,
             command=self._on_ecliptica_hud_toggle,
         ).pack(anchor=W, pady=(6, 0))
+        hud_action_row = ttk.Frame(hud_frame)
+        hud_action_row.pack(fill=X, pady=(7, 0))
+        ttk.Button(
+            hud_action_row,
+            textvariable=self.ecliptica_hud_layout_button_var,
+            command=self._on_ecliptica_hud_layout_action,
+        ).pack(side=LEFT, fill=X, expand=True)
+        ttk.Button(
+            hud_action_row,
+            text="显示字段",
+            command=lambda: self._toggle_ecliptica_hud_panel("fields"),
+        ).pack(side=LEFT, fill=X, expand=True, padx=5)
+        ttk.Button(
+            hud_action_row,
+            text="显示顺序",
+            command=lambda: self._toggle_ecliptica_hud_panel("order"),
+        ).pack(side=LEFT, fill=X, expand=True)
         hud_display_row = ttk.Frame(hud_frame)
         hud_display_row.pack(fill=X, pady=(7, 0))
         ttk.Label(hud_display_row, text="显示内容：").pack(side=LEFT)
@@ -2311,8 +2323,12 @@ class SlashCoMonitorCN:
             command=self._restore_default_ecliptica_hud,
         ).pack(side=RIGHT)
 
-        hud_fields = ttk.LabelFrame(hud_frame, text="伤害 HUD 显示字段", padding=5)
-        hud_fields.pack(fill=X, pady=(7, 0))
+        self.ecliptica_hud_fields_panel = ttk.LabelFrame(
+            hud_frame,
+            text="伤害 HUD 显示字段",
+            padding=5,
+        )
+        hud_fields = self.ecliptica_hud_fields_panel
         for column_index in range(3):
             hud_fields.grid_columnconfigure(column_index, weight=1)
         for index, (key, label) in enumerate(HUD_DAMAGE_FIELDS):
@@ -2323,16 +2339,24 @@ class SlashCoMonitorCN:
                 command=self._on_ecliptica_hud_fields_changed,
             ).grid(row=index // 3, column=index % 3, sticky=W, padx=(0, 12), pady=1)
 
-        hud_order_row = ttk.Frame(hud_fields)
-        hud_order_row.grid(row=3, column=0, columnspan=3, sticky=EW, pady=(6, 0))
-        ttk.Label(hud_order_row, text="显示顺序：").pack(side=LEFT, anchor=N)
-        hud_order_list = ttk.Frame(hud_order_row)
-        hud_order_list.pack(side=LEFT, fill=X, expand=True)
+        self.ecliptica_hud_order_panel = ttk.LabelFrame(
+            hud_frame,
+            text="伤害 HUD 显示顺序",
+            padding=5,
+        )
+        ttk.Label(
+            self.ecliptica_hud_order_panel,
+            text="按住条目并上下拖动调整顺序",
+            foreground="#666666",
+        ).pack(anchor=W, pady=(0, 4))
+        hud_order_list = ttk.Frame(self.ecliptica_hud_order_panel)
+        hud_order_list.pack(fill=X, expand=True)
         self.ecliptica_hud_field_list = Listbox(
             hud_order_list,
-            height=5,
+            height=7,
             exportselection=False,
-            activestyle="dotbox",
+            activestyle="none",
+            cursor="hand2",
         )
         hud_order_scrollbar = ttk.Scrollbar(
             hud_order_list,
@@ -2342,20 +2366,18 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_field_list.configure(yscrollcommand=hud_order_scrollbar.set)
         hud_order_scrollbar.pack(side=RIGHT, fill=Y)
         self.ecliptica_hud_field_list.pack(side=LEFT, fill=X, expand=True)
-        hud_order_buttons = ttk.Frame(hud_order_row)
-        hud_order_buttons.pack(side=LEFT, padx=(6, 0), anchor=N)
-        ttk.Button(
-            hud_order_buttons,
-            text="上移",
-            width=6,
-            command=lambda: self._move_ecliptica_hud_field(-1),
-        ).pack(fill=X)
-        ttk.Button(
-            hud_order_buttons,
-            text="下移",
-            width=6,
-            command=lambda: self._move_ecliptica_hud_field(1),
-        ).pack(fill=X, pady=(4, 0))
+        self.ecliptica_hud_field_list.bind(
+            "<ButtonPress-1>",
+            self._start_ecliptica_hud_field_drag,
+        )
+        self.ecliptica_hud_field_list.bind(
+            "<B1-Motion>",
+            self._drag_ecliptica_hud_field,
+        )
+        self.ecliptica_hud_field_list.bind(
+            "<ButtonRelease-1>",
+            self._finish_ecliptica_hud_field_drag,
+        )
         self._refresh_ecliptica_hud_field_list()
 
         summary = ttk.LabelFrame(self.ecliptica_left_frame, text="战斗概览", padding=8)
@@ -2627,7 +2649,7 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_enabled = BooleanVar(value=False)
         self.ecliptica_hud_foreground_only = BooleanVar(value=True)
         self.panel_mode_var = StringVar(value=PANEL_MODE_LABELS["auto"])
-        self.ecliptica_hud_layout_button_var = StringVar(value="配置 HUD 布局")
+        self.ecliptica_hud_layout_button_var = StringVar(value="HUD 布局")
         self.ecliptica_hud_display_var = StringVar(value=HUD_DISPLAY_LABELS["both"])
         self.ecliptica_hud_opacity_var = DoubleVar(value=10.0)
         self.ecliptica_hud_opacity_text_var = StringVar(value="10%")
@@ -2635,6 +2657,7 @@ class SlashCoMonitorCN:
             key: BooleanVar(value=True) for key in HUD_DAMAGE_FIELD_KEYS
         }
         self.ecliptica_hud_field_order = list(HUD_DAMAGE_FIELD_KEYS)
+        self._ecliptica_hud_field_drag_index = None
         self.ecliptica_osc_enabled = BooleanVar(value=False)
         self.ecliptica_osc_name_only = BooleanVar(value=False)
         self.ecliptica_osc_prefix_var = StringVar(value=DEFAULT_OSC_PREFIX)
@@ -2855,6 +2878,23 @@ class SlashCoMonitorCN:
         order = normalize_hud_field_order(getattr(self, "ecliptica_hud_field_order", None))
         return [key for key in order if key in variables and variables[key].get()]
 
+    def _toggle_ecliptica_hud_panel(self, panel_name):
+        panels = {
+            "fields": getattr(self, "ecliptica_hud_fields_panel", None),
+            "order": getattr(self, "ecliptica_hud_order_panel", None),
+        }
+        target = panels.get(panel_name)
+        if target is None:
+            return
+        was_open = bool(target.winfo_manager())
+        for panel in panels.values():
+            if panel is not None:
+                panel.pack_forget()
+        if not was_open:
+            target.pack(fill=X, pady=(7, 0))
+        if hasattr(self, "left_canvas"):
+            self._refresh_left_scrollregion()
+
     def _refresh_ecliptica_hud_field_list(self, selected_index=None):
         field_list = getattr(self, "ecliptica_hud_field_list", None)
         if field_list is None:
@@ -2876,22 +2916,47 @@ class SlashCoMonitorCN:
             field_list.activate(selected_index)
             field_list.see(selected_index)
 
-    def _move_ecliptica_hud_field(self, direction):
+    def _reorder_ecliptica_hud_field(self, current_index, new_index):
+        order = self.ecliptica_hud_field_order
+        if not (0 <= current_index < len(order) and 0 <= new_index < len(order)):
+            return False
+        if current_index == new_index:
+            return False
+        key = order.pop(current_index)
+        order.insert(new_index, key)
+        self._refresh_ecliptica_hud_field_list(new_index)
+        return True
+
+    def _start_ecliptica_hud_field_drag(self, event):
         field_list = getattr(self, "ecliptica_hud_field_list", None)
         if field_list is None:
             return
-        selection = field_list.curselection()
-        if not selection:
+        index = field_list.nearest(event.y)
+        if not 0 <= index < len(self.ecliptica_hud_field_order):
             return
-        current_index = selection[0]
-        new_index = current_index + int(direction)
-        if not 0 <= new_index < len(self.ecliptica_hud_field_order):
+        self._ecliptica_hud_field_drag_index = index
+        field_list.selection_clear(0, END)
+        field_list.selection_set(index)
+        field_list.activate(index)
+
+    def _drag_ecliptica_hud_field(self, event):
+        field_list = getattr(self, "ecliptica_hud_field_list", None)
+        current_index = getattr(self, "_ecliptica_hud_field_drag_index", None)
+        if field_list is None or current_index is None:
             return
-        self.ecliptica_hud_field_order[current_index], self.ecliptica_hud_field_order[new_index] = (
-            self.ecliptica_hud_field_order[new_index],
-            self.ecliptica_hud_field_order[current_index],
-        )
-        self._refresh_ecliptica_hud_field_list(new_index)
+        if event.y < 12:
+            field_list.yview_scroll(-1, "units")
+        elif event.y > field_list.winfo_height() - 12:
+            field_list.yview_scroll(1, "units")
+        new_index = field_list.nearest(event.y)
+        if self._reorder_ecliptica_hud_field(current_index, new_index):
+            self._ecliptica_hud_field_drag_index = new_index
+        return "break"
+
+    def _finish_ecliptica_hud_field_drag(self, _event=None):
+        if getattr(self, "_ecliptica_hud_field_drag_index", None) is None:
+            return
+        self._ecliptica_hud_field_drag_index = None
         self._on_ecliptica_hud_fields_changed(refresh_list=False)
 
     def _is_hud_foreground(self):
@@ -2983,7 +3048,7 @@ class SlashCoMonitorCN:
 
         self.ecliptica_hud_layout = self.ecliptica_hud.end_edit()
         self.ecliptica_hud_editing = False
-        self.ecliptica_hud_layout_button_var.set("配置 HUD 布局")
+        self.ecliptica_hud_layout_button_var.set("HUD 布局")
         self._save_ecliptica_config()
         if self._should_show_ecliptica_hud():
             self.ecliptica_hud.update(

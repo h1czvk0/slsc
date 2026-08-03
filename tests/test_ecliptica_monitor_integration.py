@@ -81,11 +81,28 @@ class FakeListbox:
     def selection_set(self, index):
         self.selected = (index,)
 
+    def selection_clear(self, _start, _end):
+        self.selected = ()
+
     def activate(self, _index):
         pass
 
     def see(self, _index):
         pass
+
+    def nearest(self, y):
+        return int(y)
+
+    def yview_scroll(self, _amount, _units):
+        pass
+
+    def winfo_height(self):
+        return 100
+
+
+class FakeEvent:
+    def __init__(self, y):
+        self.y = y
 
 
 class FakeOscOutput:
@@ -505,14 +522,35 @@ class HudLayoutTests(unittest.TestCase):
             key: FakeVar(key != "stage") for key in normalize_hud_field_order(None)
         }
         monitor.ecliptica_hud_field_list = FakeListbox(selected=(1,))
+        monitor._ecliptica_hud_field_drag_index = None
         monitor.ecliptica_hud = None
-        monitor._save_ecliptica_config = lambda: None
+        save_calls = []
+        monitor._save_ecliptica_config = lambda: save_calls.append(True)
 
-        monitor._move_ecliptica_hud_field(-1)
+        monitor._start_ecliptica_hud_field_drag(FakeEvent(1))
+        monitor._drag_ecliptica_hud_field(FakeEvent(0))
+        monitor._finish_ecliptica_hud_field_drag()
 
         self.assertEqual(monitor.ecliptica_hud_field_order[:3], ["stage", "class_name", "total_elapsed"])
         self.assertEqual(monitor._ecliptica_hud_fields()[:2], ["class_name", "total_elapsed"])
         self.assertEqual(monitor.ecliptica_hud_field_list.selected, (0,))
+        self.assertEqual(len(save_calls), 1)
+
+    def test_hud_field_and_order_panels_are_independently_collapsible(self):
+        monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
+        monitor.ecliptica_hud_fields_panel = FakeWidget()
+        monitor.ecliptica_hud_order_panel = FakeWidget()
+
+        monitor._toggle_ecliptica_hud_panel("fields")
+        self.assertTrue(monitor.ecliptica_hud_fields_panel.packed)
+        self.assertFalse(monitor.ecliptica_hud_order_panel.packed)
+
+        monitor._toggle_ecliptica_hud_panel("order")
+        self.assertFalse(monitor.ecliptica_hud_fields_panel.packed)
+        self.assertTrue(monitor.ecliptica_hud_order_panel.packed)
+
+        monitor._toggle_ecliptica_hud_panel("order")
+        self.assertFalse(monitor.ecliptica_hud_order_panel.packed)
 
     def test_boss_lock_hud_is_hidden_outside_boss_battle(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
