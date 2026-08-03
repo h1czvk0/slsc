@@ -2342,7 +2342,7 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_order_panel = ttk.LabelFrame(
             hud_frame,
             text="伤害 HUD 显示顺序",
-            padding=5,
+            padding=8,
         )
         ttk.Label(
             self.ecliptica_hud_order_panel,
@@ -2350,13 +2350,18 @@ class SlashCoMonitorCN:
             foreground="#666666",
         ).pack(anchor=W, pady=(0, 4))
         hud_order_list = ttk.Frame(self.ecliptica_hud_order_panel)
-        hud_order_list.pack(fill=X, expand=True)
+        hud_order_list.pack(fill=X, expand=True, padx=3, pady=(2, 3))
         self.ecliptica_hud_field_list = Listbox(
             hud_order_list,
-            height=7,
+            height=len(HUD_DAMAGE_FIELD_KEYS),
+            width=42,
             exportselection=False,
             activestyle="none",
             cursor="hand2",
+            font=("Microsoft YaHei UI", 11),
+            selectborderwidth=1,
+            borderwidth=2,
+            relief=GROOVE,
         )
         hud_order_scrollbar = ttk.Scrollbar(
             hud_order_list,
