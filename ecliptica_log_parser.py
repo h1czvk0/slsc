@@ -424,10 +424,10 @@ class EclipticaState:
             if self.current_boss_encounter_id is not None
             else 0
         )
-        cutoff = current_time - 5.0
+        cutoff = current_time - 3.0
         while self._recent_damage_events and self._recent_damage_events[0][0] < cutoff:
             self._recent_damage_events.popleft()
-        recent_dps = sum(amount for _timestamp, amount in self._recent_damage_events) / 5.0
+        recent_dps = sum(amount for _timestamp, amount in self._recent_damage_events) / 3.0
         boss_elapsed = (
             max(0.0, current_time - self.current_boss_started_at)
             if self.current_boss_encounter_id is not None and self.current_boss_started_at is not None
@@ -456,6 +456,7 @@ class EclipticaState:
             "current_boss_damage": self.current_boss_damage,
             "current_phase_damage": phase_damage,
             "current_phase_damage_taken": phase_damage_taken,
+            "recent_3s_dps": recent_dps,
             "recent_5s_dps": recent_dps,
             "current_phase_elapsed": phase_elapsed,
             "current_boss_elapsed": boss_elapsed,

@@ -462,7 +462,7 @@ class HudLayoutTests(unittest.TestCase):
                 "current_boss_phase": 2,
                 "current_phase_damage": 128200,
                 "current_phase_damage_taken": 6900,
-                "recent_5s_dps": 354.25,
+                "recent_3s_dps": 354.25,
                 "current_phase_elapsed": 126,
                 "current_boss_elapsed": 999,
                 "total_elapsed": 3930,
@@ -479,7 +479,7 @@ class HudLayoutTests(unittest.TestCase):
                 ("BOSS 阶段", "2"),
                 ("本局 BOSS 总伤害", "128.2K"),
                 ("本局 BOSS 总受伤", "6.9K"),
-                ("近 5 秒 DPS", "354.2"),
+                ("近 3 秒 DPS", "354.2"),
                 ("当前 BOSS 耗时", "02:06"),
                 ("总耗时", "01:05:30"),
             ],
@@ -499,11 +499,11 @@ class HudLayoutTests(unittest.TestCase):
         hud.lock_window = FakeHudWindow()
 
         hud.update(
-            {"class_name": "Thaumaturge", "recent_5s_dps": 12.5, "aggro": {}},
+            {"class_name": "Thaumaturge", "recent_3s_dps": 12.5, "aggro": {}},
             selected_fields=["recent_5s_dps", "class_name"],
         )
 
-        self.assertEqual(hud.damage_rows, [("近 5 秒 DPS", "12.5"), ("当前职业", "Thaumaturge")])
+        self.assertEqual(hud.damage_rows, [("近 3 秒 DPS", "12.5"), ("当前职业", "Thaumaturge")])
 
     def test_hud_field_normalization_keeps_order_and_allows_empty_selection(self):
         self.assertEqual(

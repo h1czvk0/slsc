@@ -198,7 +198,7 @@ HUD_DAMAGE_FIELDS = (
     ("current_boss_phase", "BOSS 阶段"),
     ("current_phase_damage", "本局 BOSS 总伤害"),
     ("current_phase_damage_taken", "本局 BOSS 总受伤"),
-    ("recent_5s_dps", "近 5 秒 DPS"),
+    ("recent_5s_dps", "近 3 秒 DPS"),
     ("current_boss_elapsed", "当前 BOSS 耗时"),
     ("total_elapsed", "总耗时"),
 )
@@ -1275,7 +1275,10 @@ class EclipticaDesktopHud:
                 "本局 BOSS 总受伤",
                 format_ecliptica_number(snapshot.get("current_phase_damage_taken", 0)),
             ),
-            "recent_5s_dps": ("近 5 秒 DPS", f"{snapshot.get('recent_5s_dps', 0.0):.1f}"),
+            "recent_5s_dps": (
+                "近 3 秒 DPS",
+                f"{snapshot.get('recent_3s_dps', snapshot.get('recent_5s_dps', 0.0)):.1f}",
+            ),
             "current_boss_elapsed": (
                 "当前 BOSS 耗时",
                 format_ecliptica_clock(snapshot.get("current_phase_elapsed", 0)),

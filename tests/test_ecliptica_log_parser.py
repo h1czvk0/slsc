@@ -107,6 +107,7 @@ class EclipticaStateTests(unittest.TestCase):
         self.assertEqual(snapshot["current_phase_damage"], 500)
         self.assertEqual(snapshot["current_phase_damage_taken"], 75)
         self.assertEqual(snapshot["recent_5s_dps"], 100.0)
+        self.assertEqual(snapshot["recent_3s_dps"], 100.0)
         self.assertEqual(snapshot["current_phase_elapsed"], 5.0)
 
         expired = state.snapshot(now=110.0)
@@ -123,7 +124,8 @@ class EclipticaStateTests(unittest.TestCase):
         snapshot = state.snapshot(now=105.0)
         self.assertEqual(snapshot["current_boss"], "-")
         self.assertEqual(snapshot["current_phase_damage"], 0)
-        self.assertEqual(snapshot["recent_5s_dps"], 100.0)
+        self.assertAlmostEqual(snapshot["recent_5s_dps"], 350 / 3)
+        self.assertAlmostEqual(snapshot["recent_3s_dps"], 350 / 3)
 
         expired = state.snapshot(now=110.0)
         self.assertEqual(expired["recent_5s_dps"], 0.0)
