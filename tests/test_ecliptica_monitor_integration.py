@@ -19,6 +19,7 @@ from slashco import (  # noqa: E402
     format_ecliptica_clock,
     format_ecliptica_duration,
     normalize_hud_display_mode,
+    normalize_hud_damage_fields,
     normalize_hud_layout,
     normalize_hud_opacity,
     normalize_hud_transparency,
@@ -298,6 +299,21 @@ class PanelModeSelectionTests(unittest.TestCase):
         self.assertEqual(monitor.btn_toggle_img.config["text"], "隐藏 Slasher 信息 ▲")
 
 
+class HudVisibilityTests(unittest.TestCase):
+    def make_monitor(self, panel="ecliptica", foreground=True, enabled=True):
+        monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
+        monitor.current_game_mode = panel
+        monitor.ecliptica_hud_enabled = FakeVar(enabled)
+        monitor._is_vrchat_foreground = lambda: foreground
+        return monitor
+
+    def test_hud_requires_ecliptica_panel_and_vrchat_foreground(self):
+        self.assertTrue(self.make_monitor()._should_show_ecliptica_hud())
+        self.assertFalse(self.make_monitor(panel="slashco")._should_show_ecliptica_hud())
+        self.assertFalse(self.make_monitor(foreground=False)._should_show_ecliptica_hud())
+        self.assertFalse(self.make_monitor(enabled=False)._should_show_ecliptica_hud())
+
+
 class OscPublishingTests(unittest.TestCase):
     def make_monitor(self):
         monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
@@ -390,7 +406,8 @@ class HudLayoutTests(unittest.TestCase):
                 "current_phase_damage": 128200,
                 "current_phase_damage_taken": 6900,
                 "recent_5s_dps": 354.25,
-                "current_phase_elapsed": 126,
+                "current_boss_elapsed": 126,
+                "total_elapsed": 3930,
                 "aggro": {},
             }
         )
@@ -405,9 +422,37 @@ class HudLayoutTests(unittest.TestCase):
                 ("本局 BOSS 总伤害", "128.2K"),
                 ("本局 BOSS 总受伤", "6.9K"),
                 ("近 5 秒 DPS", "354.2"),
-                ("当前耗时", "02:06"),
+                ("当前 BOSS 耗时", "02:06"),
+                ("总耗时", "65:30"),
             ],
         )
+
+    def test_damage_hud_only_renders_selected_fields(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud._ensure_windows = lambda: None
+        hud._render_damage_text = lambda: None
+        hud._render_lock_text = lambda: None
+        hud._place_windows = lambda: None
+        hud._apply_display_visibility = lambda: None
+        hud.editing = False
+        hud.damage_background_window = FakeHudWindow()
+        hud.damage_window = FakeHudWindow()
+        hud.lock_background_window = FakeHudWindow()
+        hud.lock_window = FakeHudWindow()
+
+        hud.update(
+            {"class_name": "Thaumaturge", "recent_5s_dps": 12.5, "aggro": {}},
+            selected_fields=["class_name", "recent_5s_dps"],
+        )
+
+        self.assertEqual(hud.damage_rows, [("当前职业", "Thaumaturge"), ("近 5 秒 DPS", "12.5")])
+
+    def test_hud_field_normalization_keeps_order_and_allows_empty_selection(self):
+        self.assertEqual(
+            normalize_hud_damage_fields(["total_elapsed", "class_name", "unknown"]),
+            ["class_name", "total_elapsed"],
+        )
+        self.assertEqual(normalize_hud_damage_fields([]), [])
 
     def test_boss_lock_hud_is_hidden_outside_boss_battle(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)

@@ -117,14 +117,18 @@ class EclipticaState:
         self.current_boss = "-"
         self.current_boss_key = ""
         self.current_boss_phase = None
+        self.current_boss_encounter_id = None
         self.current_boss_started_at = None
+        self.current_phase_started_at = None
         self.current_boss_damage = 0
+        self.run_started_at = None
+        self.run_ended_at = None
         self.session_total_damage = 0
         self.session_damage_taken = 0
         self.hit_count = 0
         self.max_hit_taken = 0
         self.defeated_bosses = []
-        self._defeated_boss_keys = set()
+        self._defeated_boss_encounters = set()
         self.last_settlement_dps = 0.0
         self.last_settlement_damage = 0
         self.damage_sources = {}
@@ -133,10 +137,13 @@ class EclipticaState:
         self._pending_boss_raw = ""
         self._pending_boss_key = ""
         self._pending_boss_name = ""
+        self._pending_encounter_id = None
         self._pending_strike = None
         self._pending_non_strike = None
         self._recent_settlements = {}
         self._settled_phases = set()
+        self._next_boss_encounter_id = 1
+        self._latest_encounter_by_boss_key = {}
         self._boss_phase_started_at = {}
         self._phase_damage_totals = {}
         self._phase_damage_taken_totals = {}
@@ -169,12 +176,17 @@ class EclipticaState:
         now = self._event_time(event)
         boss_raw = self._pending_boss_raw or self.current_boss
         boss_name, boss_key, boss_phase = split_boss_name(boss_raw)
+        encounter_id = self._pending_encounter_id
+        if encounter_id is None:
+            encounter_id = self._latest_encounter_by_boss_key.get(boss_key)
+        if encounter_id is None:
+            encounter_id = self.current_boss_encounter_id
         strike = int(round(self._pending_strike))
         non_strike = int(round(self._pending_non_strike))
-        signature = (boss_raw.lower(), strike, non_strike)
+        signature = (encounter_id, boss_raw.lower(), strike, non_strike)
         previous = self._recent_settlements.get(signature)
         duplicate = previous is not None and now - previous <= self.SETTLEMENT_DEDUP_SECONDS
-        phase_identity = (boss_key, boss_phase)
+        phase_identity = (encounter_id, boss_phase)
         if strike + non_strike == 0 and phase_identity in self._settled_phases:
             duplicate = True
         self._recent_settlements[signature] = now
@@ -184,6 +196,7 @@ class EclipticaState:
         self._pending_boss_raw = ""
         self._pending_boss_key = ""
         self._pending_boss_name = ""
+        self._pending_encounter_id = None
         if duplicate:
             return False
 
@@ -191,12 +204,15 @@ class EclipticaState:
         self._settled_phases.add(phase_identity)
         self._phase_damage_totals[phase_identity] = total
         started_at = self._boss_phase_started_at.get(phase_identity)
-        if started_at is None and phase_identity == (self.current_boss_key, self.current_boss_phase):
-            started_at = self.current_boss_started_at
+        if started_at is None and phase_identity == (
+            self.current_boss_encounter_id,
+            self.current_boss_phase,
+        ):
+            started_at = self.current_phase_started_at
         duration = max(0.0, now - started_at) if started_at is not None else 0.0
         dps = total / duration if duration > 0 else 0.0
         self.session_total_damage += total
-        if boss_key and boss_key == self.current_boss_key:
+        if encounter_id is not None and encounter_id == self.current_boss_encounter_id:
             self.current_boss_damage += total
         self.last_settlement_damage = total
         self.last_settlement_dps = dps
@@ -237,6 +253,9 @@ class EclipticaState:
         if kind == "session_blank":
             return True
         if kind == "stage":
+            if self.run_started_at is None or self.run_ended_at is not None:
+                self.run_started_at = now
+                self.run_ended_at = None
             self.stage = clean_stage_name(event.groups[0])
             self.run_phase = float(event.groups[1])
             self.class_name = event.groups[2].strip() or "-"
@@ -244,23 +263,33 @@ class EclipticaState:
             self.current_boss = "-"
             self.current_boss_key = ""
             self.current_boss_phase = None
+            self.current_boss_encounter_id = None
             self.current_boss_started_at = None
+            self.current_phase_started_at = None
             self.current_boss_damage = 0
             self._reset_aggro()
             return True
         if kind == "boss":
             boss_name, boss_key, boss_phase = split_boss_name(event.groups[0])
-            changed = boss_key != self.current_boss_key or boss_phase != self.current_boss_phase
-            if boss_key != self.current_boss_key:
+            if self.run_started_at is None or self.run_ended_at is not None:
+                self.run_started_at = now
+                self.run_ended_at = None
+            new_encounter = self.current_boss_encounter_id is None or boss_key != self.current_boss_key
+            phase_changed = new_encounter or boss_phase != self.current_boss_phase
+            if new_encounter:
+                self.current_boss_encounter_id = self._next_boss_encounter_id
+                self._next_boss_encounter_id += 1
+                self._latest_encounter_by_boss_key[boss_key] = self.current_boss_encounter_id
+                self.current_boss_started_at = now
                 self.current_boss_damage = 0
             self.current_boss = boss_name
             self.current_boss_key = boss_key
             self.current_boss_phase = boss_phase
             self.run_phase = float(event.groups[1])
             self.intermission = False
-            if changed:
-                self.current_boss_started_at = now
-                phase_identity = (boss_key, boss_phase)
+            if phase_changed:
+                self.current_phase_started_at = now
+                phase_identity = (self.current_boss_encounter_id, boss_phase)
                 self._boss_phase_started_at.setdefault(phase_identity, now)
                 self._phase_damage_totals.setdefault(phase_identity, 0)
                 self._phase_damage_taken_totals.setdefault(phase_identity, 0)
@@ -271,6 +300,10 @@ class EclipticaState:
             self._pending_boss_raw = event.groups[0].strip()
             self._pending_boss_key = boss_key
             self._pending_boss_name = boss_name
+            self._pending_encounter_id = self._latest_encounter_by_boss_key.get(
+                boss_key,
+                self.current_boss_encounter_id,
+            )
             self._pending_strike = None
             self._pending_non_strike = None
             return True
@@ -297,8 +330,8 @@ class EclipticaState:
         if kind == "damage_dealt":
             amount = max(0, int(round(float(event.groups[0]))))
             self._recent_damage_events.append((now, amount))
-            if self.current_boss_key:
-                phase_identity = (self.current_boss_key, self.current_boss_phase)
+            if self.current_boss_encounter_id is not None:
+                phase_identity = (self.current_boss_encounter_id, self.current_boss_phase)
                 self._phase_damage_totals[phase_identity] = (
                     self._phase_damage_totals.get(phase_identity, 0) + amount
                 )
@@ -316,8 +349,8 @@ class EclipticaState:
             self.hit_count += 1
             self.max_hit_taken = max(self.max_hit_taken, amount)
             self.damage_sources[source] = self.damage_sources.get(source, 0) + amount
-            if self.current_boss_key:
-                phase_identity = (self.current_boss_key, self.current_boss_phase)
+            if self.current_boss_encounter_id is not None:
+                phase_identity = (self.current_boss_encounter_id, self.current_boss_phase)
                 self._phase_damage_taken_totals[phase_identity] = (
                     self._phase_damage_taken_totals.get(phase_identity, 0) + amount
                 )
@@ -326,14 +359,19 @@ class EclipticaState:
             self.stage_progress = int(event.groups[0])
             return True
         if kind in ("intermission", "lobby"):
-            if self.current_boss_key and self.current_boss_key not in self._defeated_boss_keys:
-                self._defeated_boss_keys.add(self.current_boss_key)
+            encounter_id = self.current_boss_encounter_id
+            if encounter_id is not None and encounter_id not in self._defeated_boss_encounters:
+                self._defeated_boss_encounters.add(encounter_id)
                 self.defeated_bosses.append(self.current_boss)
+            if kind == "lobby" and self.run_started_at is not None:
+                self.run_ended_at = now
             self.intermission = True
             self.current_boss = "-"
             self.current_boss_key = ""
             self.current_boss_phase = None
+            self.current_boss_encounter_id = None
             self.current_boss_started_at = None
+            self.current_phase_started_at = None
             self._reset_aggro()
             return True
         return False
@@ -375,18 +413,35 @@ class EclipticaState:
     def snapshot(self, now=None):
         current_time = float(time.time() if now is None else now)
         aggro = self.aggro_snapshot(current_time)
-        phase_identity = (self.current_boss_key, self.current_boss_phase)
-        phase_damage = self._phase_damage_totals.get(phase_identity, 0) if self.current_boss_key else 0
+        phase_identity = (self.current_boss_encounter_id, self.current_boss_phase)
+        phase_damage = (
+            self._phase_damage_totals.get(phase_identity, 0)
+            if self.current_boss_encounter_id is not None
+            else 0
+        )
         phase_damage_taken = (
-            self._phase_damage_taken_totals.get(phase_identity, 0) if self.current_boss_key else 0
+            self._phase_damage_taken_totals.get(phase_identity, 0)
+            if self.current_boss_encounter_id is not None
+            else 0
         )
         cutoff = current_time - 5.0
         while self._recent_damage_events and self._recent_damage_events[0][0] < cutoff:
             self._recent_damage_events.popleft()
         recent_dps = sum(amount for _timestamp, amount in self._recent_damage_events) / 5.0
-        phase_elapsed = (
+        boss_elapsed = (
             max(0.0, current_time - self.current_boss_started_at)
-            if self.current_boss_key and self.current_boss_started_at is not None
+            if self.current_boss_encounter_id is not None and self.current_boss_started_at is not None
+            else 0.0
+        )
+        phase_elapsed = (
+            max(0.0, current_time - self.current_phase_started_at)
+            if self.current_boss_encounter_id is not None and self.current_phase_started_at is not None
+            else 0.0
+        )
+        run_end = self.run_ended_at if self.run_ended_at is not None else current_time
+        total_elapsed = (
+            max(0.0, run_end - self.run_started_at)
+            if self.run_started_at is not None
             else 0.0
         )
         return {
@@ -403,6 +458,8 @@ class EclipticaState:
             "current_phase_damage_taken": phase_damage_taken,
             "recent_5s_dps": recent_dps,
             "current_phase_elapsed": phase_elapsed,
+            "current_boss_elapsed": boss_elapsed,
+            "total_elapsed": total_elapsed,
             "session_total_damage": self.session_total_damage,
             "last_settlement_damage": self.last_settlement_damage,
             "last_settlement_dps": self.last_settlement_dps,

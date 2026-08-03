@@ -141,6 +141,49 @@ class EclipticaStateTests(unittest.TestCase):
         self.assertEqual(snapshot["recent_5s_dps"], 0.0)
         self.assertEqual(snapshot["current_phase_elapsed"], 1.0)
 
+    def test_repeated_identical_bosses_use_independent_damage_and_timing(self):
+        state = EclipticaState()
+        state.apply(self.make_event("stage", "Bringer", "0.1", "Thaumaturge", timestamp=1.0))
+        state.apply(self.make_event("boss", "Despair(Clone)", "0.5", timestamp=10.0))
+        state.apply(self.make_event("boss_dead", "Despair", timestamp=20.0))
+        state.apply(self.make_event("strike_damage", "1000", timestamp=20.0))
+        state.apply(self.make_event("non_strike_damage", "0", timestamp=20.0))
+        state.apply(self.make_event("intermission", timestamp=21.0))
+        state.apply(self.make_event("stage", "Bringer", "0.6", "Thaumaturge", timestamp=22.0))
+        state.apply(self.make_event("boss", "Despair(Clone)", "0.7", timestamp=30.0))
+        state.apply(self.make_event("damage_dealt", "250", "STRIKE", timestamp=34.0))
+
+        live = state.snapshot(now=35.0)
+        self.assertEqual(live["current_phase_damage"], 250)
+        self.assertEqual(live["current_boss_damage"], 0)
+        self.assertEqual(live["current_boss_elapsed"], 5.0)
+
+        state.apply(self.make_event("boss_dead", "Despair", timestamp=40.0))
+        state.apply(self.make_event("strike_damage", "2000", timestamp=40.0))
+        state.apply(self.make_event("non_strike_damage", "0", timestamp=40.0))
+        state.apply(self.make_event("intermission", timestamp=41.0))
+
+        self.assertEqual([row["total"] for row in state.settlements], [2000, 1000])
+        self.assertEqual([row["duration"] for row in state.settlements], [10.0, 10.0])
+        self.assertEqual(state.session_total_damage, 3000)
+        self.assertEqual(state.snapshot(now=41.0)["defeated_count"], 2)
+
+    def test_boss_elapsed_crosses_phases_and_total_elapsed_stops_in_lobby(self):
+        state = EclipticaState()
+        state.apply(self.make_event("stage", "Bringer", "0.1", "Thaumaturge", timestamp=100.0))
+        state.apply(self.make_event("boss", "Despair(Clone)", "0.5", timestamp=110.0))
+        state.apply(self.make_event("boss", "DespairPhase2(Clone)", "0.8", timestamp=120.0))
+
+        active = state.snapshot(now=125.0)
+        self.assertEqual(active["current_phase_elapsed"], 5.0)
+        self.assertEqual(active["current_boss_elapsed"], 15.0)
+        self.assertEqual(active["total_elapsed"], 25.0)
+
+        state.apply(self.make_event("lobby", timestamp=150.0))
+        finished = state.snapshot(now=200.0)
+        self.assertEqual(finished["current_boss_elapsed"], 0.0)
+        self.assertEqual(finished["total_elapsed"], 50.0)
+
     def test_phase_two_keeps_current_boss_total_and_intermission_counts_once(self):
         state = EclipticaState()
         state.apply(self.make_event("boss", "Despair(Clone)", "0.5", timestamp=10.0))

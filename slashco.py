@@ -190,11 +190,76 @@ HUD_DISPLAY_LABELS = {
     "boss_lock": "只显示 Boss 锁定",
 }
 HUD_DISPLAY_KEYS = {label: key for key, label in HUD_DISPLAY_LABELS.items()}
+HUD_DAMAGE_FIELDS = (
+    ("class_name", "当前职业"),
+    ("stage", "当前阶段"),
+    ("current_boss", "当前 BOSS"),
+    ("current_boss_phase", "BOSS 阶段"),
+    ("current_phase_damage", "本局 BOSS 总伤害"),
+    ("current_phase_damage_taken", "本局 BOSS 总受伤"),
+    ("recent_5s_dps", "近 5 秒 DPS"),
+    ("current_boss_elapsed", "当前 BOSS 耗时"),
+    ("total_elapsed", "总耗时"),
+)
+HUD_DAMAGE_FIELD_KEYS = tuple(key for key, _label in HUD_DAMAGE_FIELDS)
 
 
 def normalize_hud_display_mode(value):
     mode = str(value or "both").lower()
     return mode if mode in HUD_DISPLAY_LABELS else "both"
+
+
+def normalize_hud_damage_fields(value):
+    if value is None:
+        return list(HUD_DAMAGE_FIELD_KEYS)
+    if not isinstance(value, (list, tuple, set)):
+        return list(HUD_DAMAGE_FIELD_KEYS)
+    selected = set(value)
+    return [key for key in HUD_DAMAGE_FIELD_KEYS if key in selected]
+
+
+def is_vrchat_foreground():
+    if os.name != "nt":
+        return False
+    process_handle = None
+    try:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.QueryFullProcessImageNameW.argtypes = (
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        process_id = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        process_handle = kernel32.OpenProcess(0x1000, False, process_id.value)
+        if not process_handle:
+            return False
+        path_buffer = ctypes.create_unicode_buffer(32768)
+        path_length = wintypes.DWORD(len(path_buffer))
+        if not kernel32.QueryFullProcessImageNameW(
+            process_handle,
+            0,
+            path_buffer,
+            ctypes.byref(path_length),
+        ):
+            return False
+        return os.path.basename(path_buffer.value).casefold() == "vrchat.exe"
+    except Exception:
+        return False
+    finally:
+        if process_handle:
+            ctypes.windll.kernel32.CloseHandle(process_handle)
 
 
 def normalize_hud_opacity(value):
@@ -1055,9 +1120,9 @@ class EclipticaDesktopHud:
             self.lock_background_window.withdraw()
             self.lock_window.withdraw()
 
-    def begin_edit(self, snapshot, display_mode="both"):
+    def begin_edit(self, snapshot, display_mode="both", selected_fields=None):
         self.editing = True
-        self.update(snapshot, display_mode)
+        self.update(snapshot, display_mode, selected_fields)
         self._apply_edit_visuals()
 
     def end_edit(self):
@@ -1088,22 +1153,34 @@ class EclipticaDesktopHud:
                 self._capture_window_layout(key, window)
         return {key: dict(value) for key, value in self.layout.items()}
 
-    def update(self, snapshot, display_mode=None):
+    def update(self, snapshot, display_mode=None, selected_fields=None):
         self._ensure_windows()
         if display_mode is not None:
             self.display_mode = normalize_hud_display_mode(display_mode)
         boss_phase = snapshot.get("current_boss_phase")
         phase_text = str(boss_phase) if boss_phase is not None else "-"
-        self.damage_rows = [
-            ("当前职业", str(snapshot.get("class_name", "-"))),
-            ("当前阶段", str(snapshot.get("stage", "-"))),
-            ("当前 BOSS", str(snapshot.get("current_boss", "-"))),
-            ("BOSS 阶段", phase_text),
-            ("本局 BOSS 总伤害", format_ecliptica_number(snapshot.get("current_phase_damage", 0))),
-            ("本局 BOSS 总受伤", format_ecliptica_number(snapshot.get("current_phase_damage_taken", 0))),
-            ("近 5 秒 DPS", f"{snapshot.get('recent_5s_dps', 0.0):.1f}"),
-            ("当前耗时", format_ecliptica_clock(snapshot.get("current_phase_elapsed", 0))),
-        ]
+        rows = {
+            "class_name": ("当前职业", str(snapshot.get("class_name", "-"))),
+            "stage": ("当前阶段", str(snapshot.get("stage", "-"))),
+            "current_boss": ("当前 BOSS", str(snapshot.get("current_boss", "-"))),
+            "current_boss_phase": ("BOSS 阶段", phase_text),
+            "current_phase_damage": (
+                "本局 BOSS 总伤害",
+                format_ecliptica_number(snapshot.get("current_phase_damage", 0)),
+            ),
+            "current_phase_damage_taken": (
+                "本局 BOSS 总受伤",
+                format_ecliptica_number(snapshot.get("current_phase_damage_taken", 0)),
+            ),
+            "recent_5s_dps": ("近 5 秒 DPS", f"{snapshot.get('recent_5s_dps', 0.0):.1f}"),
+            "current_boss_elapsed": (
+                "当前 BOSS 耗时",
+                format_ecliptica_clock(snapshot.get("current_boss_elapsed", 0)),
+            ),
+            "total_elapsed": ("总耗时", format_ecliptica_clock(snapshot.get("total_elapsed", 0))),
+        }
+        field_keys = normalize_hud_damage_fields(selected_fields)
+        self.damage_rows = [rows[key] for key in field_keys]
 
         aggro = snapshot.get("aggro", {})
         target = aggro.get("target", "-")
@@ -1887,7 +1964,7 @@ class SlashCoMonitorCN:
         # 赞助者名单覆盖设置
         if HAS_SPONSOR_PROXY:
             sponsor_frame = ttk.LabelFrame(self.left_content, text="赞助者名单覆盖", padding=5)
-            sponsor_frame.pack(fill=X, padx=5, pady=2)
+            sponsor_frame.pack(fill=X, padx=5, pady=2, before=self.mode_left_container)
             
             row1 = ttk.Frame(sponsor_frame)
             row1.pack(fill=X, pady=2)
@@ -2121,6 +2198,16 @@ class SlashCoMonitorCN:
             command=self._restore_default_ecliptica_hud,
         ).pack(side=RIGHT)
 
+        hud_fields = ttk.LabelFrame(hud_frame, text="伤害 HUD 显示字段", padding=5)
+        hud_fields.pack(fill=X, pady=(7, 0))
+        for index, (key, label) in enumerate(HUD_DAMAGE_FIELDS):
+            ttk.Checkbutton(
+                hud_fields,
+                text=label,
+                variable=self.ecliptica_hud_field_vars[key],
+                command=self._on_ecliptica_hud_fields_changed,
+            ).grid(row=index // 3, column=index % 3, sticky=W, padx=(0, 12), pady=1)
+
         summary = ttk.LabelFrame(self.ecliptica_left_frame, text="战斗概览", padding=8)
         summary.pack(fill=X, padx=5, pady=2)
         rows = (
@@ -2304,6 +2391,8 @@ class SlashCoMonitorCN:
 
         self._update_slasher_info_visibility()
         self._refresh_left_scrollregion()
+        if selected != "ecliptica" and self.ecliptica_hud:
+            self.ecliptica_hud.hide(force=True)
 
         if changed and log_change and hasattr(self, "txt_log"):
             suffix = f" ({reason})" if reason else ""
@@ -2391,6 +2480,9 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_display_var = StringVar(value=HUD_DISPLAY_LABELS["both"])
         self.ecliptica_hud_opacity_var = DoubleVar(value=10.0)
         self.ecliptica_hud_opacity_text_var = StringVar(value="10%")
+        self.ecliptica_hud_field_vars = {
+            key: BooleanVar(value=True) for key in HUD_DAMAGE_FIELD_KEYS
+        }
         self.ecliptica_osc_enabled = BooleanVar(value=False)
         self.ecliptica_osc_name_only = BooleanVar(value=False)
         self.ecliptica_osc_prefix_var = StringVar(value=DEFAULT_OSC_PREFIX)
@@ -2415,6 +2507,9 @@ class SlashCoMonitorCN:
                 self.ecliptica_hud_opacity_var.set(hud_transparency)
                 self.ecliptica_hud_opacity_text_var.set(f"{round(hud_transparency)}%")
                 self.ecliptica_hud_layout = normalize_hud_layout(config.get("hud_layout", {}))
+                selected_fields = normalize_hud_damage_fields(config.get("hud_fields"))
+                for key, variable in self.ecliptica_hud_field_vars.items():
+                    variable.set(key in selected_fields)
                 osc_enabled = bool(config.get("osc_enabled", False))
                 self.ecliptica_osc_enabled.set(osc_enabled)
                 self.ecliptica_osc_name_only.set(bool(config.get("osc_name_only", False)))
@@ -2439,6 +2534,7 @@ class SlashCoMonitorCN:
                         "hud_transparency": self._ecliptica_hud_transparency(),
                         "hud_opacity": self._ecliptica_hud_opacity(),
                         "hud_layout": self.ecliptica_hud_layout,
+                        "hud_fields": self._ecliptica_hud_fields(),
                         "osc_enabled": bool(self.ecliptica_osc_enabled.get()),
                         "osc_name_only": bool(self.ecliptica_osc_name_only.get()),
                         "osc_prefix": normalize_osc_prefix(self.ecliptica_osc_prefix_var.get()),
@@ -2581,10 +2677,11 @@ class SlashCoMonitorCN:
         self._save_ecliptica_config()
         if not self.ecliptica_hud:
             return
-        if self.ecliptica_hud_enabled.get():
+        if self._should_show_ecliptica_hud():
             self.ecliptica_hud.update(
                 self.ecliptica_state.snapshot(),
                 self._ecliptica_hud_display_mode(),
+                self._ecliptica_hud_fields(),
             )
         else:
             self.ecliptica_hud.hide(force=True)
@@ -2592,6 +2689,20 @@ class SlashCoMonitorCN:
     def _ecliptica_hud_display_mode(self):
         label = self.ecliptica_hud_display_var.get()
         return HUD_DISPLAY_KEYS.get(label, "both")
+
+    def _ecliptica_hud_fields(self):
+        variables = getattr(self, "ecliptica_hud_field_vars", {})
+        return [key for key in HUD_DAMAGE_FIELD_KEYS if key in variables and variables[key].get()]
+
+    def _is_vrchat_foreground(self):
+        return is_vrchat_foreground()
+
+    def _should_show_ecliptica_hud(self):
+        return (
+            bool(self.ecliptica_hud_enabled.get())
+            and getattr(self, "current_game_mode", "slashco") == "ecliptica"
+            and self._is_vrchat_foreground()
+        )
 
     def _ecliptica_hud_opacity(self):
         return normalize_hud_opacity(1.0 - self._ecliptica_hud_transparency() / 100.0)
@@ -2612,11 +2723,17 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_display_var.set(HUD_DISPLAY_LABELS["both"])
         self.ecliptica_hud_opacity_var.set(10.0)
         self.ecliptica_hud_opacity_text_var.set("10%")
+        for variable in self.ecliptica_hud_field_vars.values():
+            variable.set(True)
         if self.ecliptica_hud:
             self.ecliptica_hud.set_opacity(0.9)
             self.ecliptica_hud_layout = self.ecliptica_hud.reset_layout()
-            if self.ecliptica_hud_enabled.get() or self.ecliptica_hud_editing:
-                self.ecliptica_hud.update(self.ecliptica_state.snapshot(), "both")
+            if self._should_show_ecliptica_hud() or self.ecliptica_hud_editing:
+                self.ecliptica_hud.update(
+                    self.ecliptica_state.snapshot(),
+                    "both",
+                    self._ecliptica_hud_fields(),
+                )
             else:
                 self.ecliptica_hud.hide(force=True)
         else:
@@ -2626,10 +2743,20 @@ class SlashCoMonitorCN:
 
     def _on_ecliptica_hud_display_changed(self, _event=None):
         self._save_ecliptica_config()
-        if self.ecliptica_hud and (self.ecliptica_hud_enabled.get() or self.ecliptica_hud_editing):
+        if self.ecliptica_hud and (self._should_show_ecliptica_hud() or self.ecliptica_hud_editing):
             self.ecliptica_hud.update(
                 self.ecliptica_state.snapshot(),
                 self._ecliptica_hud_display_mode(),
+                self._ecliptica_hud_fields(),
+            )
+
+    def _on_ecliptica_hud_fields_changed(self):
+        self._save_ecliptica_config()
+        if self.ecliptica_hud and (self._should_show_ecliptica_hud() or self.ecliptica_hud_editing):
+            self.ecliptica_hud.update(
+                self.ecliptica_state.snapshot(),
+                self._ecliptica_hud_display_mode(),
+                self._ecliptica_hud_fields(),
             )
 
     def _on_ecliptica_hud_layout_action(self):
@@ -2641,6 +2768,7 @@ class SlashCoMonitorCN:
             self.ecliptica_hud.begin_edit(
                 self.ecliptica_state.snapshot(),
                 self._ecliptica_hud_display_mode(),
+                self._ecliptica_hud_fields(),
             )
             self.log("HUD 布局预览已显示：拖动框体调整位置，拖动右下角调整大小")
             return
@@ -2649,10 +2777,11 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_editing = False
         self.ecliptica_hud_layout_button_var.set("配置 HUD 布局")
         self._save_ecliptica_config()
-        if self.ecliptica_hud_enabled.get():
+        if self._should_show_ecliptica_hud():
             self.ecliptica_hud.update(
                 self.ecliptica_state.snapshot(),
                 self._ecliptica_hud_display_mode(),
+                self._ecliptica_hud_fields(),
             )
         else:
             self.ecliptica_hud.hide(force=True)
@@ -2664,12 +2793,13 @@ class SlashCoMonitorCN:
             return
         try:
             snapshot = None
-            if (
-                self.ecliptica_hud
-                and self.ecliptica_hud_enabled.get()
-            ):
+            if self.ecliptica_hud and self._should_show_ecliptica_hud():
                 snapshot = self.ecliptica_state.snapshot()
-                self.ecliptica_hud.update(snapshot, self._ecliptica_hud_display_mode())
+                self.ecliptica_hud.update(
+                    snapshot,
+                    self._ecliptica_hud_display_mode(),
+                    self._ecliptica_hud_fields(),
+                )
                 self._update_ecliptica_ui()
             elif self.ecliptica_hud:
                 self.ecliptica_hud.hide()
