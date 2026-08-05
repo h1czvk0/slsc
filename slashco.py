@@ -2040,11 +2040,6 @@ class SlashCoMonitorCN:
             command=self.force_reset,
         )
         self.force_reset_button.pack(side=RIGHT)
-        self.ecliptica_history_button = ttk.Button(
-            top_bar,
-            text="查看历史对局",
-            command=self._show_ecliptica_history,
-        )
 
         self.left_scroll_host = Frame(self.left_p)
         self.left_scroll_host.pack(fill=BOTH, expand=True)
@@ -2619,12 +2614,20 @@ class SlashCoMonitorCN:
         frame = ttk.LabelFrame(self.ecliptica_right_frame, text="Ecliptica 伤害数据", padding=7)
         frame.pack(fill=BOTH, expand=True, padx=5, pady=5)
 
+        settlement_header = ttk.Frame(frame)
+        settlement_header.pack(fill=X, pady=(0, 4))
         ttk.Label(
-            frame,
+            settlement_header,
             text="BOSS 伤害结算",
             foreground="#6c4cff",
             font=("微软雅黑", 11, "bold"),
-        ).pack(anchor=W, pady=(0, 4))
+        ).pack(side=LEFT)
+        self.ecliptica_history_button = ttk.Button(
+            settlement_header,
+            text="查看历史对局",
+            command=self._show_ecliptica_history,
+        )
+        self.ecliptica_history_button.pack(side=RIGHT)
         settlement_columns = ("Boss", "Phase", "Strike", "NonStrike", "Total", "Duration", "DPS")
         self.ecliptica_settlement_tree = ttk.Treeview(
             frame,
@@ -2731,17 +2734,11 @@ class SlashCoMonitorCN:
         if selected == "ecliptica":
             self.ecliptica_left_frame.pack(fill=X)
             self.ecliptica_right_frame.pack(fill=BOTH, expand=True)
-            history_button = getattr(self, "ecliptica_history_button", None)
-            if history_button is not None:
-                history_button.pack(side=RIGHT, padx=(0, 8))
             self.mode_status_var.set("当前：Ecliptica")
             self.lbl_mode_status.configure(foreground="#6c4cff")
         else:
             self.slashco_left_frame.pack(fill=X)
             self.slashco_right_frame.pack(fill=BOTH, expand=True)
-            history_button = getattr(self, "ecliptica_history_button", None)
-            if history_button is not None:
-                history_button.pack_forget()
             self.mode_status_var.set("当前：SlashCo")
             self.lbl_mode_status.configure(foreground="#1f6f3a")
 
