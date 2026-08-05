@@ -28,6 +28,7 @@ from slashco import (  # noqa: E402
     hud_default_preset_layout,
     main_window_geometry,
     normalize_hud_display_mode,
+    normalize_hud_display_panels,
     normalize_hud_damage_fields,
     normalize_hud_field_order,
     normalize_hud_layout,
@@ -608,7 +609,7 @@ class HudLayoutTests(unittest.TestCase):
 
     def test_boss_lock_hud_is_hidden_outside_boss_battle(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
-        hud.display_mode = "both"
+        hud.display_panels = ("damage", "boss_lock", "party_damage")
         hud.editing = False
         hud.boss_lock_active = False
         hud.damage_background_window = FakeHudWindow()
@@ -617,6 +618,7 @@ class HudLayoutTests(unittest.TestCase):
         hud.lock_window = FakeHudWindow()
         hud.party_background_window = FakeHudWindow()
         hud.party_window = FakeHudWindow()
+        hud.party_rows = [("Alice", "0"), ("Bob", "0")]
 
         hud._apply_display_visibility()
 
@@ -628,7 +630,7 @@ class HudLayoutTests(unittest.TestCase):
 
     def test_party_damage_hud_is_visible_during_boss_battle(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
-        hud.display_mode = "both"
+        hud.display_panels = ("damage", "boss_lock", "party_damage")
         hud.editing = False
         hud.boss_lock_active = True
         hud.damage_background_window = FakeHudWindow()
@@ -637,15 +639,16 @@ class HudLayoutTests(unittest.TestCase):
         hud.lock_window = FakeHudWindow()
         hud.party_background_window = FakeHudWindow()
         hud.party_window = FakeHudWindow()
+        hud.party_rows = [("Alice", "1.0K"), ("Bob", "2.0K")]
 
         hud._apply_display_visibility()
 
         self.assertEqual(hud.party_background_window.state(), "normal")
         self.assertEqual(hud.party_window.state(), "normal")
 
-    def test_party_damage_display_mode_hides_the_other_two_huds(self):
+    def test_party_damage_panel_selection_hides_the_other_two_huds(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
-        hud.display_mode = "party_damage"
+        hud.display_panels = ("party_damage",)
         hud.editing = False
         hud.boss_lock_active = True
         hud.damage_background_window = FakeHudWindow()
@@ -654,12 +657,31 @@ class HudLayoutTests(unittest.TestCase):
         hud.lock_window = FakeHudWindow()
         hud.party_background_window = FakeHudWindow()
         hud.party_window = FakeHudWindow()
+        hud.party_rows = [("Alice", "1.0K"), ("Bob", "2.0K")]
 
         hud._apply_display_visibility()
 
         self.assertEqual(hud.damage_window.state(), "withdrawn")
         self.assertEqual(hud.lock_window.state(), "withdrawn")
         self.assertEqual(hud.party_window.state(), "normal")
+
+    def test_party_damage_hud_requires_more_than_one_room_player(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud.display_panels = ("party_damage",)
+        hud.editing = False
+        hud.boss_lock_active = True
+        hud.damage_background_window = FakeHudWindow()
+        hud.damage_window = FakeHudWindow()
+        hud.lock_background_window = FakeHudWindow()
+        hud.lock_window = FakeHudWindow()
+        hud.party_background_window = FakeHudWindow()
+        hud.party_window = FakeHudWindow()
+        hud.party_rows = [("Alice", "1.0K")]
+
+        hud._apply_display_visibility()
+
+        self.assertEqual(hud.party_background_window.state(), "withdrawn")
+        self.assertEqual(hud.party_window.state(), "withdrawn")
 
     def test_hud_background_height_follows_rendered_text(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
@@ -920,13 +942,34 @@ class HudLayoutTests(unittest.TestCase):
         self.assertEqual(normalize_hud_display_mode("both"), "both")
         self.assertEqual(normalize_hud_display_mode("invalid"), "both")
         self.assertEqual(
+            normalize_hud_display_panels(["party_damage", "damage"]),
+            ("damage", "party_damage"),
+        )
+        self.assertEqual(normalize_hud_display_panels([]), ())
+        self.assertEqual(
+            normalize_hud_display_panels("both"),
+            ("damage", "boss_lock", "party_damage"),
+        )
+        self.assertEqual(
             tuple(HUD_DISPLAY_LABELS.values()),
             (
-                "三者共同显示",
-                "只显示伤害数据",
-                "只显示 Boss 锁定",
-                "只显示伤害统计",
+                "伤害数据",
+                "Boss 锁定",
+                "伤害统计",
             ),
+        )
+
+    def test_hud_display_panels_can_be_selected_independently(self):
+        monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
+        monitor.ecliptica_hud_display_vars = {
+            "damage": FakeVar(True),
+            "boss_lock": FakeVar(False),
+            "party_damage": FakeVar(True),
+        }
+
+        self.assertEqual(
+            monitor._ecliptica_hud_display_panels(),
+            ("damage", "party_damage"),
         )
 
     def test_layout_values_are_normalized_and_minimum_size_is_enforced(self):
