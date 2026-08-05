@@ -182,6 +182,12 @@ class EclipticaHistoryDialog:
             pass
 
     def _build_ui(self):
+        self.history_tree_style = ttk.Style(self.window)
+        self.history_tree_style.map(
+            "History.Treeview",
+            background=[("selected", "#3478c6")],
+            foreground=[("selected", "#ffffff")],
+        )
         session_frame = ttk.LabelFrame(self.window, text="历史对局", padding=6)
         session_frame.pack(fill=BOTH, expand=True, padx=10, pady=(10, 5))
         session_columns = ("Time", "Session", "Players", "Status")
@@ -190,6 +196,7 @@ class EclipticaHistoryDialog:
             columns=session_columns,
             show="headings",
             height=10,
+            style="History.Treeview",
         )
         labels = {
             "Time": "时间",
@@ -213,6 +220,7 @@ class EclipticaHistoryDialog:
         )
         session_scroll.pack(side=RIGHT, fill=Y)
         self.session_tree.configure(yscrollcommand=session_scroll.set)
+        self.session_tree.bind("<<TreeviewSelect>>", self._on_session_selected)
         self.session_tree.bind("<Double-1>", lambda _event: self._load_selected_session())
 
         self.detail_frame = ttk.LabelFrame(
@@ -236,6 +244,7 @@ class EclipticaHistoryDialog:
             columns=detail_columns,
             show="headings",
             height=12,
+            style="History.Treeview",
         )
         detail_labels = {
             "Username": "玩家名称",
@@ -369,6 +378,17 @@ class EclipticaHistoryDialog:
             "details",
             lambda: self.api_client.session_details(session["id"]),
             lambda details: self._show_session_details(session["session"], details),
+        )
+
+    def _on_session_selected(self, _event=None):
+        selection = self.session_tree.selection()
+        if not selection:
+            return
+        session = self._session_rows.get(selection[0])
+        if not session:
+            return
+        self.status_var.set(
+            f"已选中对局 {session['session']}；双击或点击“查看选中对局”查看结算"
         )
 
     def _show_session_details(self, session_name, details):
