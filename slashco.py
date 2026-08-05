@@ -1452,7 +1452,6 @@ ROUND_TIMEOUT_SECONDS = 25 * 60
 ECLIPTICA_CONFIG_FILENAME = os.path.join(DATA_DIR, "ecliptica_config.json")
 ECLIPTICA_HUD_REFRESH_MS = 500
 ECLIPTICA_SYNC_INTERVAL_MS = 100
-ECLIPTICA_SYNC_DEFAULT_CONFIG_VERSION = 1
 PANEL_MODE_LABELS = {
     "auto": "自动",
     "slashco": "SlashCo",
@@ -1765,7 +1764,7 @@ class SlashCoMonitorCN:
             interval_seconds=ECLIPTICA_SYNC_INTERVAL_MS / 1000.0,
         )
         self.ecliptica_sync.configure(
-            self.ecliptica_sync_enabled.get(),
+            True,
             DEFAULT_SYNC_URL,
         )
         self.ecliptica_sync.start()
@@ -2035,7 +2034,17 @@ class SlashCoMonitorCN:
         )
         self.lbl_mode_status.pack(side=LEFT, padx=(0, 12))
         ttk.Button(top_bar, text="导出未翻译位置", command=self.export_untranslated).pack(side=LEFT)
-        ttk.Button(top_bar, text="强制重置数据", command=self.force_reset).pack(side=RIGHT)
+        self.force_reset_button = ttk.Button(
+            top_bar,
+            text="强制重置数据",
+            command=self.force_reset,
+        )
+        self.force_reset_button.pack(side=RIGHT)
+        self.ecliptica_history_button = ttk.Button(
+            top_bar,
+            text="查看历史对局",
+            command=self._show_ecliptica_history,
+        )
 
         self.left_scroll_host = Frame(self.left_p)
         self.left_scroll_host.pack(fill=BOTH, expand=True)
@@ -2554,25 +2563,15 @@ class SlashCoMonitorCN:
 
         sync_frame = ttk.LabelFrame(self.ecliptica_left_frame, text="同局伤害同步", padding=7)
         sync_frame.pack(fill=X, padx=5, pady=5)
-        sync_enable_row = ttk.Frame(sync_frame)
-        sync_enable_row.pack(fill=X)
-        ttk.Checkbutton(
-            sync_enable_row,
-            text="启用 100ms 实时同步",
-            variable=self.ecliptica_sync_enabled,
-            command=self._on_ecliptica_sync_settings_changed,
-        ).pack(side=LEFT)
-        ttk.Button(
-            sync_enable_row,
-            text="查看历史对局",
-            command=self._show_ecliptica_history,
-        ).pack(side=LEFT, padx=(8, 0))
+        sync_status_row = ttk.Frame(sync_frame)
+        sync_status_row.pack(fill=X)
+        ttk.Label(sync_status_row, text="100ms 实时同步：").pack(side=LEFT)
         ttk.Label(
-            sync_enable_row,
+            sync_status_row,
             textvariable=self.ecliptica_sync_status_var,
             foreground="#666666",
             font=("微软雅黑", 8),
-        ).pack(side=RIGHT)
+        ).pack(side=LEFT)
         sync_url_row = ttk.Frame(sync_frame)
         sync_url_row.pack(fill=X, pady=(5, 0))
         ttk.Label(sync_url_row, text="服务器：").pack(side=LEFT)
@@ -2622,10 +2621,50 @@ class SlashCoMonitorCN:
 
         ttk.Label(
             frame,
+            text="BOSS 伤害结算",
+            foreground="#6c4cff",
+            font=("微软雅黑", 11, "bold"),
+        ).pack(anchor=W, pady=(0, 4))
+        settlement_columns = ("Boss", "Phase", "Strike", "NonStrike", "Total", "Duration", "DPS")
+        self.ecliptica_settlement_tree = ttk.Treeview(
+            frame,
+            columns=settlement_columns,
+            show="headings",
+            height=10,
+        )
+        settlement_widths = {
+            "Boss": 145,
+            "Phase": 50,
+            "Strike": 75,
+            "NonStrike": 75,
+            "Total": 75,
+            "Duration": 80,
+            "DPS": 60,
+        }
+        settlement_labels = {
+            "Boss": "BOSS",
+            "Phase": "阶段",
+            "Strike": "直击",
+            "NonStrike": "非直击",
+            "Total": "总伤害",
+            "Duration": "耗时",
+            "DPS": "DPS",
+        }
+        for column in settlement_columns:
+            self.ecliptica_settlement_tree.heading(column, text=settlement_labels[column])
+            self.ecliptica_settlement_tree.column(
+                column,
+                width=settlement_widths[column],
+                anchor=CENTER,
+            )
+        self.ecliptica_settlement_tree.pack(fill=BOTH, expand=True)
+
+        ttk.Label(
+            frame,
             text="同局玩家实时伤害",
             foreground="#1f6f3a",
             font=("微软雅黑", 11, "bold"),
-        ).pack(anchor=W, pady=(0, 4))
+        ).pack(anchor=W, pady=(12, 4))
         sync_columns = ("Player", "Boss", "Phase", "BossDamage", "TotalDamage", "Status")
         sync_tree_container = ttk.Frame(frame)
         sync_tree_container.pack(fill=BOTH, expand=True)
@@ -2667,42 +2706,6 @@ class SlashCoMonitorCN:
         sync_scrollbar.pack(side=RIGHT, fill=Y)
         self.ecliptica_sync_tree.configure(yscrollcommand=sync_scrollbar.set)
 
-        ttk.Label(
-            frame,
-            text="BOSS 伤害结算",
-            foreground="#6c4cff",
-            font=("微软雅黑", 11, "bold"),
-        ).pack(anchor=W, pady=(12, 4))
-        settlement_columns = ("Boss", "Phase", "Strike", "NonStrike", "Total", "Duration", "DPS")
-        self.ecliptica_settlement_tree = ttk.Treeview(
-            frame,
-            columns=settlement_columns,
-            show="headings",
-            height=10,
-        )
-        widths = {
-            "Boss": 145,
-            "Phase": 50,
-            "Strike": 75,
-            "NonStrike": 75,
-            "Total": 75,
-            "Duration": 80,
-            "DPS": 60,
-        }
-        labels = {
-            "Boss": "BOSS",
-            "Phase": "阶段",
-            "Strike": "直击",
-            "NonStrike": "非直击",
-            "Total": "总伤害",
-            "Duration": "耗时",
-            "DPS": "DPS",
-        }
-        for column in settlement_columns:
-            self.ecliptica_settlement_tree.heading(column, text=labels[column])
-            self.ecliptica_settlement_tree.column(column, width=widths[column], anchor=CENTER)
-        self.ecliptica_settlement_tree.pack(fill=BOTH, expand=True)
-
 
     def _panel_mode_preference(self):
         label = self.panel_mode_var.get() if hasattr(self, "panel_mode_var") else PANEL_MODE_LABELS["auto"]
@@ -2728,11 +2731,17 @@ class SlashCoMonitorCN:
         if selected == "ecliptica":
             self.ecliptica_left_frame.pack(fill=X)
             self.ecliptica_right_frame.pack(fill=BOTH, expand=True)
+            history_button = getattr(self, "ecliptica_history_button", None)
+            if history_button is not None:
+                history_button.pack(side=RIGHT, padx=(0, 8))
             self.mode_status_var.set("当前：Ecliptica")
             self.lbl_mode_status.configure(foreground="#6c4cff")
         else:
             self.slashco_left_frame.pack(fill=X)
             self.slashco_right_frame.pack(fill=BOTH, expand=True)
+            history_button = getattr(self, "ecliptica_history_button", None)
+            if history_button is not None:
+                history_button.pack_forget()
             self.mode_status_var.set("当前：SlashCo")
             self.lbl_mode_status.configure(foreground="#1f6f3a")
 
@@ -2844,7 +2853,6 @@ class SlashCoMonitorCN:
         self.ecliptica_osc_host_var = StringVar(value=DEFAULT_OSC_HOST)
         self.ecliptica_osc_port_var = StringVar(value=str(DEFAULT_OSC_PORT))
         self.ecliptica_osc_status_var = StringVar(value="未启用")
-        self.ecliptica_sync_enabled = BooleanVar(value=True)
         self.ecliptica_sync_status_var = StringVar(value="等待日志中的会话与 VRC 身份")
         self._ecliptica_sync_player_rows = ()
         self.ecliptica_hud_layout = {}
@@ -2889,14 +2897,7 @@ class SlashCoMonitorCN:
                 self.ecliptica_osc_host_var.set(normalize_osc_host(config.get("osc_host")))
                 self.ecliptica_osc_port_var.set(str(normalize_osc_port(config.get("osc_port"))))
                 self.ecliptica_osc_status_var.set("等待锁定目标" if osc_enabled else "未启用")
-                sync_config_version = int(config.get("sync_default_config_version", 0))
-                sync_enabled = bool(config.get("sync_enabled", True))
-                if sync_config_version < ECLIPTICA_SYNC_DEFAULT_CONFIG_VERSION:
-                    sync_enabled = True
-                self.ecliptica_sync_enabled.set(sync_enabled)
-                self.ecliptica_sync_status_var.set(
-                    "等待日志中的会话与 VRC 身份" if sync_enabled else "未启用"
-                )
+                self.ecliptica_sync_status_var.set("等待日志中的会话与 VRC 身份")
         except Exception:
             config = {}
 
@@ -2940,8 +2941,6 @@ class SlashCoMonitorCN:
                         "osc_prefix": normalize_osc_prefix(self.ecliptica_osc_prefix_var.get()),
                         "osc_host": normalize_osc_host(self.ecliptica_osc_host_var.get()),
                         "osc_port": normalize_osc_port(self.ecliptica_osc_port_var.get()),
-                        "sync_enabled": bool(self.ecliptica_sync_enabled.get()),
-                        "sync_default_config_version": ECLIPTICA_SYNC_DEFAULT_CONFIG_VERSION,
                     },
                     config_file,
                     ensure_ascii=False,
@@ -2950,14 +2949,6 @@ class SlashCoMonitorCN:
         except Exception as exc:
             if hasattr(self, "txt_log"):
                 self.log(f"保存 Ecliptica HUD 设置失败: {exc}")
-
-    def _on_ecliptica_sync_settings_changed(self, _event=None):
-        self.ecliptica_sync.configure(
-            bool(self.ecliptica_sync_enabled.get()),
-            DEFAULT_SYNC_URL,
-        )
-        self._save_ecliptica_config()
-        self.ecliptica_sync_status_var.set(self.ecliptica_sync.snapshot()["status"])
 
     def _show_ecliptica_history(self):
         dialog = getattr(self, "ecliptica_history_dialog", None)
