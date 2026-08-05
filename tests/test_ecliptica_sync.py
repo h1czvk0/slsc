@@ -34,6 +34,18 @@ def local_snapshot(**overrides):
         "session_damage_taken": 6900,
         "defeated_count": 3,
         "intermission": False,
+        "settlements": [
+            {
+                "boss": "JimBringer",
+                "phase": 2,
+                "strike": 82000,
+                "non_strike": 6100,
+                "total": 88100,
+                "duration": 898,
+                "dps": 98.1,
+                "timestamp": 1_700_000_000.25,
+            }
+        ],
     }
     snapshot.update(overrides)
     return snapshot
@@ -75,6 +87,10 @@ class SyncProtocolTests(unittest.TestCase):
         self.assertEqual(update["sequence"], 7)
         self.assertEqual(update["game"]["boss_damage"], 128200)
         self.assertEqual(update["game"]["session_total_damage"], 302500)
+        self.assertEqual(update["game"]["settlements"][0]["boss"], "JimBringer")
+        self.assertEqual(update["game"]["settlements"][0]["total"], 88100)
+        self.assertEqual(update["game"]["settlements"][0]["settled_at_ms"], 1_700_000_000_250)
+        self.assertEqual(len(update["game"]["settlements"][0]["settlement_id"]), 64)
         self.assertNotIn("delta_damage", update["game"])
 
     def test_room_state_keeps_all_unique_players_and_sorts_them(self):

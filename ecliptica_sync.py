@@ -1,4 +1,6 @@
+import hashlib
 import json
+import math
 import socket
 import threading
 import time
@@ -39,6 +41,62 @@ def _as_non_negative_int(value) -> int:
         return 0
 
 
+def _as_non_negative_float(value) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return number if math.isfinite(number) and number >= 0 else 0.0
+
+
+def _build_settlements(snapshot: dict) -> list[dict]:
+    rows = snapshot.get("settlements")
+    if not isinstance(rows, list):
+        return []
+    result = []
+    for row in rows[:20]:
+        if not isinstance(row, dict):
+            continue
+        boss = str(row.get("boss") or "-").strip()[:128] or "-"
+        phase = row.get("phase")
+        try:
+            phase = float(phase) if phase is not None else None
+        except (TypeError, ValueError, OverflowError):
+            phase = None
+        if phase is not None and (not math.isfinite(phase) or phase < 0 or phase > 1000):
+            phase = None
+        strike = _as_non_negative_int(row.get("strike"))
+        non_strike = _as_non_negative_int(row.get("non_strike"))
+        total = _as_non_negative_int(row.get("total"))
+        duration = min(86_400.0, _as_non_negative_float(row.get("duration")))
+        dps = _as_non_negative_float(row.get("dps"))
+        settled_at_ms = _as_non_negative_int(_as_non_negative_float(row.get("timestamp")) * 1000)
+        identity = "\x1f".join(
+            (
+                boss,
+                "" if phase is None else repr(phase),
+                str(strike),
+                str(non_strike),
+                str(total),
+                str(settled_at_ms),
+            )
+        )
+        result.append(
+            {
+                "settlement_id": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+                "boss": boss,
+                "phase": phase,
+                "strike": strike,
+                "non_strike": non_strike,
+                "total": total,
+                "duration": duration,
+                "dps": dps,
+                "settled_at_ms": settled_at_ms,
+            }
+        )
+    return result
+
+
 def sync_identity(snapshot: dict | None):
     state = snapshot if isinstance(snapshot, dict) else {}
     session_id = str(state.get("session_id") or "").strip()
@@ -77,6 +135,7 @@ def build_damage_update(snapshot: dict, sequence: int) -> dict:
             "damage_taken": _as_non_negative_int(snapshot.get("session_damage_taken")),
             "defeated_count": _as_non_negative_int(snapshot.get("defeated_count")),
             "intermission": bool(snapshot.get("intermission", False)),
+            "settlements": _build_settlements(snapshot),
         },
     }
 

@@ -479,4 +479,5 @@ class EclipticaState:
             "defeated_count": len(self.defeated_bosses),
             "intermission": self.intermission,
             "aggro": aggro,
+            "settlements": [dict(settlement) for settlement in self.settlements],
         }

@@ -2968,8 +2968,6 @@ class SlashCoMonitorCN:
             self.ecliptica_history_dialog = EclipticaHistoryDialog(
                 self.root,
                 EclipticaHistoryClient(DEFAULT_SYNC_URL),
-                initial_username=self.ecliptica_state.local_player_name,
-                initial_user_id=self.ecliptica_state.local_player_id,
             )
         except Exception as exc:
             self.log(f"打开历史对局失败: {exc}")

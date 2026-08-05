@@ -95,6 +95,7 @@ class EclipticaStateTests(unittest.TestCase):
         self.assertEqual(snapshot["last_settlement_dps"], 550.0)
         self.assertEqual(state.settlements[0]["phase"], 1)
         self.assertEqual(state.settlements[0]["duration"], 10.0)
+        self.assertEqual(snapshot["settlements"][0]["total"], 5500)
 
     def test_current_phase_tracks_live_damage_taken_dps_and_elapsed_time(self):
         state = EclipticaState()

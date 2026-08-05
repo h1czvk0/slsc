@@ -9,8 +9,10 @@ sys.path.insert(0, str(ROOT))
 from ecliptica_history import (  # noqa: E402
     EclipticaHistoryClient,
     HistoryApiError,
+    format_history_duration,
     format_history_number,
     history_api_base,
+    order_history_settlements,
 )
 
 
@@ -33,25 +35,14 @@ class FakeSession:
 
     def get(self, url, params=None, timeout=None):
         self.calls.append((url, params, timeout))
-        if url.endswith("/api/players/search"):
-            return FakeResponse(
-                {
-                    "players": [
-                        {
-                            "vrc_user_id": "usr_alice",
-                            "current_vrc_username": "Alice",
-                            "session_count": 2,
-                        }
-                    ]
-                }
-            )
-        if url.endswith("/api/players/usr_alice/sessions"):
+        if url.endswith("/api/sessions"):
             return FakeResponse(
                 {
                     "sessions": [
                         {
                             "game_session_id": "game-1",
-                            "session_total_damage": 5200,
+                            "external_session_id": "284719",
+                            "player_names": ["Alice", "Bob"],
                         }
                     ]
                 }
@@ -60,14 +51,18 @@ class FakeSession:
             return FakeResponse(
                 {
                     "id": "game-1",
-                    "players": [
+                    "settlements": [
                         {
-                            "vrc_user_id": "usr_alice",
-                            "session_total_damage": 5200,
+                            "vrc_username": "Alice",
+                            "boss": "JimBringer",
+                            "phase": 2,
+                            "total": 5200,
                         },
                         {
-                            "vrc_user_id": "usr_bob",
-                            "session_total_damage": 4300,
+                            "vrc_username": "Bob",
+                            "boss": "JimBringer",
+                            "phase": 2,
+                            "total": 4300,
                         },
                     ],
                 }
@@ -86,43 +81,54 @@ class HistoryClientTests(unittest.TestCase):
             "https://sync.example.com",
         )
 
-    def test_search_history_and_session_details_use_expected_endpoints(self):
+    def test_session_list_and_details_use_expected_endpoints(self):
         session = FakeSession()
         client = EclipticaHistoryClient(
             "ws://zzu2.wch1.top:44976/ws",
             request_session=session,
         )
 
-        players = client.search_players("Alice")
-        sessions = client.player_sessions("usr_alice")
+        sessions = client.sessions()
         details = client.session_details("game-1")
 
-        self.assertEqual(players[0]["vrc_user_id"], "usr_alice")
-        self.assertEqual(sessions[0]["session_total_damage"], 5200)
-        self.assertEqual(len(details["players"]), 2)
+        self.assertEqual(sessions[0]["player_names"], ["Alice", "Bob"])
+        self.assertEqual(len(details["settlements"]), 2)
         self.assertEqual(
             [call[0] for call in session.calls],
             [
-                "http://zzu2.wch1.top:44976/api/players/search",
-                "http://zzu2.wch1.top:44976/api/players/usr_alice/sessions",
+                "http://zzu2.wch1.top:44976/api/sessions",
                 "http://zzu2.wch1.top:44976/api/sessions/game-1",
             ],
         )
 
-    def test_invalid_player_and_empty_search_are_rejected_locally(self):
+    def test_empty_session_id_is_rejected_locally(self):
         client = EclipticaHistoryClient(
             "ws://zzu2.wch1.top:44976/ws",
             request_session=FakeSession(),
         )
 
         with self.assertRaises(HistoryApiError):
-            client.search_players(" ")
-        with self.assertRaises(HistoryApiError):
-            client.player_sessions("Alice")
+            client.session_details(" ")
 
-    def test_history_damage_format_uses_settlement_total(self):
-        self.assertEqual(format_history_number(1234567), "1,234,567")
-        self.assertEqual(format_history_number(None), "0")
+    def test_history_format_matches_live_boss_settlement_table(self):
+        self.assertEqual(format_history_number(82_900), "82.9K")
+        self.assertEqual(format_history_number(1_234_567), "1.23M")
+        self.assertEqual(format_history_duration(898), "14分58秒")
+
+    def test_rows_are_grouped_by_boss_phase_then_player(self):
+        rows = [
+            {"vrc_username": "Bob", "boss": "Jim", "phase": 1, "settled_at_ms": 100},
+            {"vrc_username": "Alice", "boss": "Jim", "phase": 2, "settled_at_ms": 200},
+            {"vrc_username": "Alice", "boss": "Jim", "phase": 1, "settled_at_ms": 100},
+            {"vrc_username": "Bob", "boss": "Jim", "phase": 2, "settled_at_ms": 200},
+        ]
+
+        ordered = order_history_settlements(rows)
+
+        self.assertEqual(
+            [(row["vrc_username"], row["phase"]) for row in ordered],
+            [("Alice", 2), ("Bob", 2), ("Alice", 1), ("Bob", 1)],
+        )
 
 
 if __name__ == "__main__":
