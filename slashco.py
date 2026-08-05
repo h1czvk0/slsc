@@ -43,7 +43,7 @@ from ecliptica_log_parser import (
     line_might_affect_ecliptica_state,
     parse_ecliptica_line,
 )
-from ecliptica_sync import DEFAULT_SYNC_URL, EclipticaSyncClient, normalize_sync_url
+from ecliptica_sync import DEFAULT_SYNC_URL, EclipticaSyncClient
 from slashco_updater import (
     APP_VERSION,
     download_update,
@@ -1451,6 +1451,7 @@ ROUND_TIMEOUT_SECONDS = 25 * 60
 ECLIPTICA_CONFIG_FILENAME = os.path.join(DATA_DIR, "ecliptica_config.json")
 ECLIPTICA_HUD_REFRESH_MS = 500
 ECLIPTICA_SYNC_INTERVAL_MS = 100
+ECLIPTICA_SYNC_DEFAULT_CONFIG_VERSION = 1
 PANEL_MODE_LABELS = {
     "auto": "自动",
     "slashco": "SlashCo",
@@ -1763,7 +1764,7 @@ class SlashCoMonitorCN:
         )
         self.ecliptica_sync.configure(
             self.ecliptica_sync_enabled.get(),
-            self.ecliptica_sync_url_var.get(),
+            DEFAULT_SYNC_URL,
         )
         self.ecliptica_sync.start()
 
@@ -2568,17 +2569,11 @@ class SlashCoMonitorCN:
         sync_url_row = ttk.Frame(sync_frame)
         sync_url_row.pack(fill=X, pady=(5, 0))
         ttk.Label(sync_url_row, text="服务器：").pack(side=LEFT)
-        self.ecliptica_sync_url_entry = ttk.Entry(
+        ttk.Label(
             sync_url_row,
-            textvariable=self.ecliptica_sync_url_var,
-        )
-        self.ecliptica_sync_url_entry.pack(side=LEFT, fill=X, expand=True)
-        self.ecliptica_sync_url_entry.bind(
-            "<FocusOut>", self._on_ecliptica_sync_settings_changed
-        )
-        self.ecliptica_sync_url_entry.bind(
-            "<Return>", self._on_ecliptica_sync_settings_changed
-        )
+            text=DEFAULT_SYNC_URL,
+            foreground="#444444",
+        ).pack(side=LEFT, fill=X, expand=True)
         ttk.Label(
             sync_frame,
             text="会话 ID 与 VRC 身份将自动从日志获取；仅同步同一会话。",
@@ -2857,9 +2852,8 @@ class SlashCoMonitorCN:
         self.ecliptica_osc_host_var = StringVar(value=DEFAULT_OSC_HOST)
         self.ecliptica_osc_port_var = StringVar(value=str(DEFAULT_OSC_PORT))
         self.ecliptica_osc_status_var = StringVar(value="未启用")
-        self.ecliptica_sync_enabled = BooleanVar(value=False)
-        self.ecliptica_sync_url_var = StringVar(value=DEFAULT_SYNC_URL)
-        self.ecliptica_sync_status_var = StringVar(value="未启用")
+        self.ecliptica_sync_enabled = BooleanVar(value=True)
+        self.ecliptica_sync_status_var = StringVar(value="等待日志中的会话与 VRC 身份")
         self._ecliptica_sync_player_rows = ()
         self.ecliptica_hud_layout = {}
         self.ecliptica_hud_default_preset_version = 0
@@ -2903,10 +2897,11 @@ class SlashCoMonitorCN:
                 self.ecliptica_osc_host_var.set(normalize_osc_host(config.get("osc_host")))
                 self.ecliptica_osc_port_var.set(str(normalize_osc_port(config.get("osc_port"))))
                 self.ecliptica_osc_status_var.set("等待锁定目标" if osc_enabled else "未启用")
-                sync_enabled = bool(config.get("sync_enabled", False))
+                sync_config_version = int(config.get("sync_default_config_version", 0))
+                sync_enabled = bool(config.get("sync_enabled", True))
+                if sync_config_version < ECLIPTICA_SYNC_DEFAULT_CONFIG_VERSION:
+                    sync_enabled = True
                 self.ecliptica_sync_enabled.set(sync_enabled)
-                saved_sync_url = normalize_sync_url(config.get("sync_url"))
-                self.ecliptica_sync_url_var.set(saved_sync_url or DEFAULT_SYNC_URL)
                 self.ecliptica_sync_status_var.set(
                     "等待日志中的会话与 VRC 身份" if sync_enabled else "未启用"
                 )
@@ -2954,7 +2949,7 @@ class SlashCoMonitorCN:
                         "osc_host": normalize_osc_host(self.ecliptica_osc_host_var.get()),
                         "osc_port": normalize_osc_port(self.ecliptica_osc_port_var.get()),
                         "sync_enabled": bool(self.ecliptica_sync_enabled.get()),
-                        "sync_url": normalize_sync_url(self.ecliptica_sync_url_var.get()),
+                        "sync_default_config_version": ECLIPTICA_SYNC_DEFAULT_CONFIG_VERSION,
                     },
                     config_file,
                     ensure_ascii=False,
@@ -2965,13 +2960,9 @@ class SlashCoMonitorCN:
                 self.log(f"保存 Ecliptica HUD 设置失败: {exc}")
 
     def _on_ecliptica_sync_settings_changed(self, _event=None):
-        raw_url = self.ecliptica_sync_url_var.get()
-        normalized_url = normalize_sync_url(raw_url)
-        if normalized_url:
-            self.ecliptica_sync_url_var.set(normalized_url)
         self.ecliptica_sync.configure(
             bool(self.ecliptica_sync_enabled.get()),
-            normalized_url or raw_url,
+            DEFAULT_SYNC_URL,
         )
         self._save_ecliptica_config()
         self.ecliptica_sync_status_var.set(self.ecliptica_sync.snapshot()["status"])
