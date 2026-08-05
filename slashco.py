@@ -187,6 +187,7 @@ class GalleryWindow:
 HUD_MIN_SIZES = {
     "damage": (300, 210),
     "boss_lock": (320, 90),
+    "party_damage": (320, 180),
 }
 HUD_DISPLAY_LABELS = {
     "both": "两者共同显示",
@@ -232,6 +233,7 @@ HUD_DEFAULT_REFERENCE_SIZE = (2560, 1440)
 HUD_DEFAULT_REFERENCE_LAYOUT = {
     "damage": {"x": -1, "y": 624, "width": 471, "height": 327},
     "boss_lock": {"x": 1050, "y": 1217, "width": 476, "height": 141},
+    "party_damage": {"x": 2100, "y": 624, "width": 360, "height": 260},
 }
 APP_USER_MODEL_ID = "SlashCoSense.Desktop"
 TK_BASE_SCALING = 96.0 / 72.0
@@ -728,14 +730,20 @@ class EclipticaDesktopHud:
         self.display_mode = "both"
         self.damage_background_window = None
         self.lock_background_window = None
+        self.party_background_window = None
         self.damage_window = None
         self.lock_window = None
+        self.party_window = None
         self.damage_canvas = None
         self.lock_canvas = None
+        self.party_canvas = None
         self.damage_preview_canvas = None
         self.lock_preview_canvas = None
-        self.damage_title_text = "ECLIPTICA"
+        self.party_preview_canvas = None
+        self.damage_title_text = ""
         self.damage_rows = []
+        self.party_rows = []
+        self.party_total_damage = 0
         self.lock_text = "Boss 当前锁定：-"
         self.lock_target = "-"
         self.boss_lock_active = False
@@ -782,7 +790,9 @@ class EclipticaDesktopHud:
     def _background_window(self, key):
         if key == "damage":
             return self.damage_background_window
-        return self.lock_background_window
+        if key == "boss_lock":
+            return self.lock_background_window
+        return self.party_background_window
 
     def _set_window_pair_geometry(self, key, content_window, x, y, width, height):
         background = self._background_window(key)
@@ -849,7 +859,11 @@ class EclipticaDesktopHud:
             cursor_x += width
 
     def _preview_canvas(self, key):
-        return self.damage_preview_canvas if key == "damage" else self.lock_preview_canvas
+        if key == "damage":
+            return self.damage_preview_canvas
+        if key == "boss_lock":
+            return self.lock_preview_canvas
+        return self.party_preview_canvas
 
     def _hud_scale(self, key, width, height):
         base_width, base_height = HUD_MIN_SIZES[key]
@@ -874,13 +888,8 @@ class EclipticaDesktopHud:
             layout.get("height", height),
         )
         if key == "damage":
-            canvas.create_text(
-                self._scaled(14, scale), self._scaled(12, scale),
-                text="ECLIPTICA  |  拖动调整位置", fill=self.FG,
-                font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NW,
-            )
             for index, (label, value) in enumerate(self.damage_rows):
-                y = self._scaled(39 + index * 19, scale)
+                y = self._scaled(12 + index * 19, scale)
                 canvas.create_text(
                     self._scaled(14, scale), y, text=label, fill=self.FG,
                     font=("Microsoft YaHei UI", self._scaled(9, scale)), anchor=NW,
@@ -890,11 +899,51 @@ class EclipticaDesktopHud:
                     text=value, fill=self.FG,
                     font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NW,
                 )
-        else:
+        elif key == "boss_lock":
             canvas.create_text(
                 width // 2, height // 2, text=self.lock_text, fill=self.FG,
                 font=("Segoe UI", self._scaled(15, scale), "bold"), anchor=CENTER,
                 width=max(1, width - self._scaled(20, scale)), justify=CENTER,
+            )
+        else:
+            canvas.create_text(
+                self._scaled(14, scale), self._scaled(12, scale),
+                text="伤害统计", fill=self.ACCENT,
+                font=("Microsoft YaHei UI", self._scaled(12, scale), "bold"), anchor=NW,
+            )
+            canvas.create_text(
+                self._scaled(14, scale), self._scaled(38, scale),
+                text="用户名", fill=self.FG,
+                font=("Microsoft YaHei UI", self._scaled(9, scale), "bold"), anchor=NW,
+            )
+            canvas.create_text(
+                width - self._scaled(14, scale), self._scaled(38, scale),
+                text="本局 BOSS 伤害", fill=self.FG,
+                font=("Microsoft YaHei UI", self._scaled(9, scale), "bold"), anchor=NE,
+            )
+            preview_rows = self.party_rows or [("玩家1", "12.3K"), ("玩家2", "9.8K")]
+            for index, (username, damage) in enumerate(preview_rows):
+                y = self._scaled(62 + index * 20, scale)
+                canvas.create_text(
+                    self._scaled(14, scale), y, text=username, fill=self.FG,
+                    font=("Microsoft YaHei UI", self._scaled(9, scale)), anchor=NW,
+                )
+                canvas.create_text(
+                    width - self._scaled(14, scale), y, text=damage, fill=self.FG,
+                    font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NE,
+                )
+            total_y = self._scaled(70 + len(preview_rows) * 20, scale)
+            canvas.create_text(
+                self._scaled(14, scale), total_y, text="总伤害", fill=self.ACCENT,
+                font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NW,
+            )
+            canvas.create_text(
+                width - self._scaled(14, scale), total_y,
+                text=format_ecliptica_number(
+                    self.party_total_damage if self.party_rows else 22100
+                ),
+                fill=self.ACCENT,
+                font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NE,
             )
         for inset in (7, 12, 17):
             canvas.create_line(
@@ -928,16 +977,17 @@ class EclipticaDesktopHud:
         scale = self._hud_scale("damage", width, height)
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
-        self._draw_text(
-            draw,
-            self._scaled(14, scale),
-            self._scaled(12, scale),
-            self.damage_title_text,
-            self.FG,
-            _load_hud_font(self._scaled(14, scale), bold=True),
-        )
+        if self.damage_title_text:
+            self._draw_text(
+                draw,
+                self._scaled(14, scale),
+                self._scaled(12, scale),
+                self.damage_title_text,
+                self.FG,
+                _load_hud_font(self._scaled(14, scale), bold=True),
+            )
         for index, (label, value) in enumerate(self.damage_rows):
-            y = self._scaled(39 + index * 19, scale)
+            y = self._scaled(12 + index * 19, scale)
             self._draw_text(
                 draw,
                 self._scaled(14, scale),
@@ -1003,6 +1053,68 @@ class EclipticaDesktopHud:
             self._draw_text(draw, center_x, second_y, target, self.FG, target_font, "mm")
         self._draw_edit_grip(draw, width, height)
         self._render_layered_image(self.lock_window, image)
+
+    def _render_party_text(self, _event=None):
+        canvas = getattr(self, "party_canvas", None)
+        window = getattr(self, "party_window", None)
+        if not canvas or not canvas.winfo_exists() or not window:
+            return
+        geometry = self.layout.get("party_damage", {})
+        width = max(1, int(geometry.get("width", window.winfo_width())))
+        height = max(1, int(geometry.get("height", window.winfo_height())))
+        scale = self._hud_scale("party_damage", width, height)
+        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        left = self._scaled(14, scale)
+        right = width - self._scaled(14, scale)
+        self._draw_text(
+            draw,
+            left,
+            self._scaled(12, scale),
+            "伤害统计",
+            self.ACCENT,
+            _load_hud_font(self._scaled(15, scale), bold=True),
+        )
+        header_font = _load_hud_font(self._scaled(10, scale), bold=True)
+        self._draw_text(draw, left, self._scaled(40, scale), "用户名", self.FG, header_font)
+        self._draw_text(
+            draw,
+            right,
+            self._scaled(40, scale),
+            "本局 BOSS 伤害",
+            self.FG,
+            header_font,
+            "ra",
+        )
+        damage_font = _load_hud_font(self._scaled(12, scale), bold=True)
+        rows = self.party_rows
+        for index, (username, damage) in enumerate(rows):
+            y = self._scaled(65 + index * 22, scale)
+            username_font = _fit_hud_font_to_width(
+                draw,
+                username,
+                max(1, width - self._scaled(160, scale)),
+                self._scaled(11, scale),
+                self._scaled(7, scale),
+            )
+            self._draw_text(draw, left, y, username, self.FG, username_font)
+            self._draw_text(draw, right, y, damage, self.FG, damage_font, "ra")
+        total_y = self._scaled(76 + len(rows) * 22, scale)
+        line_y = max(self._scaled(56, scale), total_y - self._scaled(8, scale))
+        draw.line((left, line_y, right, line_y), fill=(170, 160, 255, 150), width=1)
+        total_font = _load_hud_font(self._scaled(12, scale), bold=True)
+        self._draw_text(draw, left, total_y, "总伤害", self.ACCENT, total_font)
+        self._draw_text(
+            draw,
+            right,
+            total_y,
+            format_ecliptica_number(self.party_total_damage),
+            self.ACCENT,
+            total_font,
+            "ra",
+        )
+        self._draw_edit_grip(draw, width, height)
+        self._render_layered_image(window, image)
 
     def _create_resize_grip(self, window, key):
         grip = Label(
@@ -1092,8 +1204,10 @@ class EclipticaDesktopHud:
             self._set_window_pair_geometry(key, window, x, y, width, height)
             if key == "damage":
                 self._render_damage_text()
-            else:
+            elif key == "boss_lock":
                 self._render_lock_text()
+            else:
+                self._render_party_text()
 
     def _set_preview_geometry(self, key, x, y, width, height):
         window = self._background_window(key)
@@ -1162,15 +1276,47 @@ class EclipticaDesktopHud:
         self._set_click_through(background, True)
         self._set_click_through(window, True)
 
+    def _create_party_window(self):
+        background = self._create_background_window()
+        window = Toplevel(self.root)
+        self._configure_content_window(window)
+        self.party_canvas = Canvas(
+            window,
+            bg=self.TRANSPARENT,
+            width=HUD_MIN_SIZES["party_damage"][0],
+            height=HUD_MIN_SIZES["party_damage"][1],
+            highlightthickness=0,
+        )
+        self.party_canvas.pack(fill=BOTH, expand=True)
+        self.party_canvas.bind("<Configure>", self._render_party_text)
+        self.party_background_window = background
+        self.party_window = window
+        self.party_preview_canvas = Canvas(background, bg=self.BG, highlightthickness=0)
+        self.party_preview_canvas.pack(fill=BOTH, expand=True)
+        self.party_preview_canvas.bind(
+            "<Configure>", lambda _event: self._render_edit_preview("party_damage")
+        )
+        self._bind_edit_surface(background, "party_damage")
+        self._bind_edit_surface(self.party_preview_canvas, "party_damage")
+        self._bind_drag(window, "party_damage", window)
+        self._bind_drag(self.party_canvas, "party_damage", window)
+        self._create_resize_grip(window, "party_damage")
+        self._render_party_text()
+        self._set_click_through(background, True)
+        self._set_click_through(window, True)
+
     def _ensure_windows(self):
         if not self.damage_window or not self.damage_window.winfo_exists():
             self._create_damage_window()
         if not self.lock_window or not self.lock_window.winfo_exists():
             self._create_lock_window()
+        if not self.party_window or not self.party_window.winfo_exists():
+            self._create_party_window()
 
     def _default_layout(self):
         self.damage_window.update_idletasks()
         self.lock_window.update_idletasks()
+        self.party_window.update_idletasks()
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         return hud_default_preset_layout(screen_w, screen_h)
@@ -1200,8 +1346,17 @@ class EclipticaDesktopHud:
 
     def _place_windows(self):
         defaults = self._default_layout()
+        party_geometry = dict(self.layout.get("party_damage", defaults["party_damage"]))
+        required_party_height = max(
+            HUD_MIN_SIZES["party_damage"][1],
+            100 + len(getattr(self, "party_rows", ())) * 22,
+        )
+        if int(party_geometry.get("height", 0)) < required_party_height:
+            party_geometry["height"] = required_party_height
+            self.layout["party_damage"] = party_geometry
         self._apply_window_layout("damage", self.damage_window, defaults)
         self._apply_window_layout("boss_lock", self.lock_window, defaults)
+        self._apply_window_layout("party_damage", self.party_window, defaults)
 
     def set_opacity(self, opacity):
         self.opacity = normalize_hud_opacity(opacity)
@@ -1209,6 +1364,7 @@ class EclipticaDesktopHud:
         for background, content in (
             (self.damage_background_window, self.damage_window),
             (self.lock_background_window, self.lock_window),
+            (self.party_background_window, self.party_window),
         ):
             if background and background.winfo_exists():
                 background.attributes("-alpha", visible_opacity)
@@ -1222,17 +1378,25 @@ class EclipticaDesktopHud:
         self.layout = {key: dict(value) for key, value in defaults.items()}
         self._apply_window_layout("damage", self.damage_window, defaults)
         self._apply_window_layout("boss_lock", self.lock_window, defaults)
+        self._apply_window_layout("party_damage", self.party_window, defaults)
         self.damage_window.update_idletasks()
         self.lock_window.update_idletasks()
+        self.party_window.update_idletasks()
         self._render_damage_text()
         self._render_lock_text()
+        self._render_party_text()
         if getattr(self, "editing", False):
             self._render_edit_preview("damage")
             self._render_edit_preview("boss_lock")
+            self._render_edit_preview("party_damage")
         return {key: dict(value) for key, value in self.layout.items()}
 
     def _apply_edit_visuals(self):
-        for key, window in (("damage", self.damage_window), ("boss_lock", self.lock_window)):
+        for key, window in (
+            ("damage", self.damage_window),
+            ("boss_lock", self.lock_window),
+            ("party_damage", self.party_window),
+        ):
             background = self._background_window(key)
             background.configure(highlightbackground=self.ACCENT, highlightthickness=2)
             background.attributes("-alpha", max(0.2, self.opacity))
@@ -1246,6 +1410,8 @@ class EclipticaDesktopHud:
             self.display_mode in ("both", "boss_lock")
             and (self.editing or self.boss_lock_active)
         )
+        party_background = getattr(self, "party_background_window", None)
+        party_window = getattr(self, "party_window", None)
         if show_damage:
             self.damage_background_window.deiconify()
             if self.editing:
@@ -1266,19 +1432,31 @@ class EclipticaDesktopHud:
         else:
             self.lock_background_window.withdraw()
             self.lock_window.withdraw()
+        if party_background and party_window:
+            party_background.deiconify()
+            if self.editing:
+                party_window.withdraw()
+            else:
+                party_window.deiconify()
+                party_window.lift(party_background)
 
-    def begin_edit(self, snapshot, display_mode="both", selected_fields=None):
+    def begin_edit(self, snapshot, display_mode="both", selected_fields=None, party_players=None):
         self.editing = True
-        self.update(snapshot, display_mode, selected_fields)
+        self.update(snapshot, display_mode, selected_fields, party_players)
         self._apply_edit_visuals()
 
     def end_edit(self):
         self._ensure_windows()
         self._capture_window_layout("damage", self.damage_window)
         self._capture_window_layout("boss_lock", self.lock_window)
+        self._capture_window_layout("party_damage", self.party_window)
         self.editing = False
         self._pointer_operation = None
-        for key, window in (("damage", self.damage_window), ("boss_lock", self.lock_window)):
+        for key, window in (
+            ("damage", self.damage_window),
+            ("boss_lock", self.lock_window),
+            ("party_damage", self.party_window),
+        ):
             self.resize_grips[key].place_forget()
             background = self._background_window(key)
             background.configure(highlightbackground=self.BORDER, highlightthickness=1)
@@ -1289,18 +1467,53 @@ class EclipticaDesktopHud:
         defaults = self._default_layout()
         self._apply_window_layout("damage", self.damage_window, defaults)
         self._apply_window_layout("boss_lock", self.lock_window, defaults)
+        self._apply_window_layout("party_damage", self.party_window, defaults)
         self._render_damage_text()
         self._render_lock_text()
+        self._render_party_text()
         self._apply_display_visibility()
         return self.get_layout()
 
     def get_layout(self):
-        for key, window in (("damage", self.damage_window), ("boss_lock", self.lock_window)):
+        for key, window in (
+            ("damage", self.damage_window),
+            ("boss_lock", self.lock_window),
+            ("party_damage", self.party_window),
+        ):
             if window and window.winfo_exists():
                 self._capture_window_layout(key, window)
         return {key: dict(value) for key, value in self.layout.items()}
 
-    def update(self, snapshot, display_mode=None, selected_fields=None):
+    def _set_party_players(self, party_players):
+        party_rows = []
+        party_total = 0
+        seen_players = set()
+        for player in party_players if isinstance(party_players, list) else []:
+            if not isinstance(player, dict):
+                continue
+            player_id = str(player.get("vrc_user_id") or "").strip()
+            username = str(player.get("vrc_username") or "").strip()
+            identity = player_id or username.casefold()
+            if not username or not identity or identity in seen_players:
+                continue
+            seen_players.add(identity)
+            try:
+                damage = max(0, int(player.get("boss_damage") or 0))
+            except (TypeError, ValueError, OverflowError):
+                damage = 0
+            party_total += damage
+            party_rows.append((username, format_ecliptica_number(damage)))
+        self.party_rows = party_rows
+        self.party_total_damage = party_total
+
+    def update_party(self, party_players):
+        self._ensure_windows()
+        self._set_party_players(party_players)
+        self._render_party_text()
+        if not self.editing and self.party_window.state() == "normal":
+            self._set_click_through(self.party_window, True)
+
+    def update(self, snapshot, display_mode=None, selected_fields=None, party_players=None):
         self._ensure_windows()
         if display_mode is not None:
             self.display_mode = normalize_hud_display_mode(display_mode)
@@ -1332,6 +1545,8 @@ class EclipticaDesktopHud:
         field_keys = normalize_hud_damage_fields(selected_fields)
         self.damage_rows = [rows[key] for key in field_keys]
 
+        self._set_party_players(party_players)
+
         aggro = snapshot.get("aggro", {})
         target = aggro.get("target", "-")
         self.lock_target = str(target)
@@ -1342,6 +1557,7 @@ class EclipticaDesktopHud:
         )
         self._render_damage_text()
         self._render_lock_text()
+        self._render_party_text()
         self._place_windows()
         self._apply_display_visibility()
         if self.editing:
@@ -1352,8 +1568,10 @@ class EclipticaDesktopHud:
                 self.damage_window,
                 self.lock_background_window,
                 self.lock_window,
+                getattr(self, "party_background_window", None),
+                getattr(self, "party_window", None),
             ):
-                if window.state() == "normal":
+                if window and window.state() == "normal":
                     self._set_click_through(window, True)
 
     def hide(self, force=False):
@@ -1364,6 +1582,8 @@ class EclipticaDesktopHud:
             self.damage_window,
             self.lock_background_window,
             self.lock_window,
+            getattr(self, "party_background_window", None),
+            getattr(self, "party_window", None),
         ):
             if window and window.winfo_exists():
                 window.withdraw()
@@ -1374,6 +1594,8 @@ class EclipticaDesktopHud:
             self.damage_window,
             self.lock_background_window,
             self.lock_window,
+            getattr(self, "party_background_window", None),
+            getattr(self, "party_window", None),
         ):
             if window and window.winfo_exists():
                 try:
@@ -1384,6 +1606,8 @@ class EclipticaDesktopHud:
         self.damage_window = None
         self.lock_background_window = None
         self.lock_window = None
+        self.party_background_window = None
+        self.party_window = None
 
 
 def format_ecliptica_number(value):
@@ -3000,6 +3224,12 @@ class SlashCoMonitorCN:
             sync_snapshot = self.ecliptica_sync.snapshot()
             self.ecliptica_sync_status_var.set(sync_snapshot["status"])
             self._refresh_ecliptica_sync_players(sync_snapshot)
+            if (
+                self.ecliptica_hud
+                and not self.ecliptica_hud_editing
+                and self._should_show_ecliptica_hud()
+            ):
+                self.ecliptica_hud.update_party(sync_snapshot.get("players", []))
         except Exception as exc:
             self.ecliptica_sync_status_var.set("同步客户端异常")
             self.log(f"Ecliptica 实时同步更新失败: {exc}")
@@ -3211,6 +3441,7 @@ class SlashCoMonitorCN:
                 self.ecliptica_state.snapshot(),
                 self._ecliptica_hud_display_mode(),
                 self._ecliptica_hud_fields(),
+                self._ecliptica_party_hud_players(),
             )
         else:
             self.ecliptica_hud.hide(force=True)
@@ -3223,6 +3454,16 @@ class SlashCoMonitorCN:
         variables = getattr(self, "ecliptica_hud_field_vars", {})
         order = normalize_hud_field_order(getattr(self, "ecliptica_hud_field_order", None))
         return [key for key in order if key in variables and variables[key].get()]
+
+    def _ecliptica_party_hud_players(self):
+        sync_client = getattr(self, "ecliptica_sync", None)
+        if sync_client is None:
+            return []
+        try:
+            players = sync_client.snapshot().get("players", [])
+        except Exception:
+            return []
+        return players if isinstance(players, list) else []
 
     def _toggle_ecliptica_hud_panel(self, panel_name):
         panels = {
@@ -3464,6 +3705,7 @@ class SlashCoMonitorCN:
                     self.ecliptica_state.snapshot(),
                     "both",
                     self._ecliptica_hud_fields(),
+                    self._ecliptica_party_hud_players(),
                 )
             else:
                 self.ecliptica_hud.hide(force=True)
@@ -3479,6 +3721,7 @@ class SlashCoMonitorCN:
                 self.ecliptica_state.snapshot(),
                 self._ecliptica_hud_display_mode(),
                 self._ecliptica_hud_fields(),
+                self._ecliptica_party_hud_players(),
             )
 
     def _on_ecliptica_hud_fields_changed(self, refresh_list=True):
@@ -3490,6 +3733,7 @@ class SlashCoMonitorCN:
                 self.ecliptica_state.snapshot(),
                 self._ecliptica_hud_display_mode(),
                 self._ecliptica_hud_fields(),
+                self._ecliptica_party_hud_players(),
             )
 
     def _on_ecliptica_hud_layout_action(self):
@@ -3502,6 +3746,7 @@ class SlashCoMonitorCN:
                 self.ecliptica_state.snapshot(),
                 self._ecliptica_hud_display_mode(),
                 self._ecliptica_hud_fields(),
+                self._ecliptica_party_hud_players(),
             )
             self.log("HUD 布局预览已显示：拖动框体调整位置，拖动右下角调整大小")
             return
@@ -3515,6 +3760,7 @@ class SlashCoMonitorCN:
                 self.ecliptica_state.snapshot(),
                 self._ecliptica_hud_display_mode(),
                 self._ecliptica_hud_fields(),
+                self._ecliptica_party_hud_players(),
             )
         else:
             self.ecliptica_hud.hide(force=True)
@@ -3532,6 +3778,7 @@ class SlashCoMonitorCN:
                     snapshot,
                     self._ecliptica_hud_display_mode(),
                     self._ecliptica_hud_fields(),
+                    self._ecliptica_party_hud_players(),
                 )
                 self._update_ecliptica_ui()
             elif self.ecliptica_hud:

@@ -490,6 +490,39 @@ class HudLayoutTests(unittest.TestCase):
             ],
         )
 
+    def test_damage_hud_has_no_ecliptica_title(self):
+        hud = EclipticaDesktopHud(object())
+
+        self.assertEqual(hud.damage_title_text, "")
+
+    def test_party_hud_lists_every_player_and_sums_current_boss_damage(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud._ensure_windows = lambda: None
+        hud._render_damage_text = lambda: None
+        hud._render_lock_text = lambda: None
+        hud._render_party_text = lambda: None
+        hud._place_windows = lambda: None
+        hud._apply_display_visibility = lambda: None
+        hud.editing = False
+        hud.damage_background_window = FakeHudWindow()
+        hud.damage_window = FakeHudWindow()
+        hud.lock_background_window = FakeHudWindow()
+        hud.lock_window = FakeHudWindow()
+        hud.party_background_window = FakeHudWindow()
+        hud.party_window = FakeHudWindow()
+
+        hud.update(
+            {"aggro": {}},
+            party_players=[
+                {"vrc_user_id": "usr_alice", "vrc_username": "Alice", "boss_damage": 128200},
+                {"vrc_user_id": "usr_bob", "vrc_username": "Bob", "boss_damage": 69300},
+                {"vrc_user_id": "usr_alice", "vrc_username": "Alice", "boss_damage": 1},
+            ],
+        )
+
+        self.assertEqual(hud.party_rows, [("Alice", "128.2K"), ("Bob", "69.3K")])
+        self.assertEqual(hud.party_total_damage, 197500)
+
     def test_damage_hud_only_renders_selected_fields(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
         hud._ensure_windows = lambda: None
@@ -638,19 +671,25 @@ class HudLayoutTests(unittest.TestCase):
         hud.layout = {"damage": {"x": 900, "y": 700, "width": 500, "height": 400}}
         hud.damage_background_window = FakeGeometryWindow()
         hud.lock_background_window = FakeGeometryWindow("320x90+0+0")
+        hud.party_background_window = FakeGeometryWindow("320x180+0+0")
         hud.damage_window = FakeGeometryWindow("500x400+900+700")
         hud.lock_window = FakeGeometryWindow("500x150+800+500")
+        hud.party_window = FakeGeometryWindow("360x260+1200+300")
+        hud.party_rows = []
         hud._pointer_operation = {"kind": "drag"}
         hud._ensure_windows = lambda: None
         hud._render_damage_text = lambda: None
         hud._render_lock_text = lambda: None
+        hud._render_party_text = lambda: None
 
         layout = hud.reset_layout()
 
         self.assertEqual(layout["damage"], {"x": -1, "y": 468, "width": 353, "height": 245})
         self.assertEqual(layout["boss_lock"], {"x": 788, "y": 913, "width": 357, "height": 106})
+        self.assertEqual(layout["party_damage"], {"x": 1575, "y": 468, "width": 320, "height": 195})
         self.assertEqual(hud.damage_window.geometry(), hud.damage_background_window.geometry())
         self.assertEqual(hud.lock_window.geometry(), hud.lock_background_window.geometry())
+        self.assertEqual(hud.party_window.geometry(), hud.party_background_window.geometry())
         self.assertIsNone(hud._pointer_operation)
 
     def test_update_default_preset_matches_current_user_configuration(self):
@@ -662,6 +701,7 @@ class HudLayoutTests(unittest.TestCase):
             {
                 "damage": {"x": -1, "y": 624, "width": 471, "height": 327},
                 "boss_lock": {"x": 1050, "y": 1217, "width": 476, "height": 141},
+                "party_damage": {"x": 2100, "y": 624, "width": 360, "height": 260},
             },
         )
         self.assertEqual(preset["fields"], list(HUD_DEFAULT_PRESET_FIELDS))
@@ -726,17 +766,22 @@ class HudLayoutTests(unittest.TestCase):
         hud.opacity = 0.9
         hud.damage_background_window = FakeHudWindow()
         hud.lock_background_window = FakeHudWindow()
+        hud.party_background_window = FakeHudWindow()
         hud.damage_window = FakeHudWindow()
         hud.lock_window = FakeHudWindow()
+        hud.party_window = FakeHudWindow()
 
         hud.set_opacity(0.45)
 
         self.assertEqual(hud.damage_background_window.alpha, 0.45)
         self.assertEqual(hud.lock_background_window.alpha, 0.45)
+        self.assertEqual(hud.party_background_window.alpha, 0.45)
         self.assertEqual(hud.damage_window.alpha, 1.0)
         self.assertEqual(hud.lock_window.alpha, 1.0)
+        self.assertEqual(hud.party_window.alpha, 1.0)
         self.assertIs(hud.damage_window.lifted_above, hud.damage_background_window)
         self.assertIs(hud.lock_window.lifted_above, hud.lock_background_window)
+        self.assertIs(hud.party_window.lifted_above, hud.party_background_window)
 
     def test_hud_opacity_is_clamped_and_invalid_values_use_default(self):
         self.assertEqual(normalize_hud_opacity(0.65), 0.65)
