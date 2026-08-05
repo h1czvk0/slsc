@@ -720,6 +720,34 @@ class HudLayoutTests(unittest.TestCase):
             {"x": 640, "y": 360, "width": 300, "height": 240},
         )
 
+    def test_get_layout_uses_text_canvas_instead_of_cropped_background(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud.layout = {}
+        hud.damage_background_window = FakeGeometryWindow("367x294+100+100")
+        hud.damage_window = FakeGeometryWindow("471x327+100+100")
+        hud.lock_window = None
+        hud.party_window = None
+
+        layout = hud.get_layout()
+
+        self.assertEqual(
+            layout["damage"],
+            {"x": 100, "y": 100, "width": 471, "height": 327},
+        )
+
+    def test_edit_layout_capture_uses_visible_resize_background(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud.layout = {}
+        hud.damage_background_window = FakeGeometryWindow("600x420+200+150")
+        content = FakeGeometryWindow("300x210+100+100")
+
+        hud._capture_window_layout("damage", content, use_background=True)
+
+        self.assertEqual(
+            hud.layout["damage"],
+            {"x": 200, "y": 150, "width": 600, "height": 420},
+        )
+
     def test_reset_layout_restores_default_positions_and_sizes(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
         hud.root = FakeScreenRoot()

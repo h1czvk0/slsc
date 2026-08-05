@@ -1321,10 +1321,11 @@ class EclipticaDesktopHud:
         screen_h = self.root.winfo_screenheight()
         return hud_default_preset_layout(screen_w, screen_h)
 
-    def _capture_window_layout(self, key, window):
-        background = self._background_window(key)
-        if background and background.winfo_exists():
-            window = background
+    def _capture_window_layout(self, key, window, use_background=False):
+        if use_background:
+            background = self._background_window(key)
+            if background and background.winfo_exists():
+                window = background
         x, y, width, height = _native_window_rect(window)
         self.layout[key] = {
             "x": x,
@@ -1512,9 +1513,9 @@ class EclipticaDesktopHud:
 
     def end_edit(self):
         self._ensure_windows()
-        self._capture_window_layout("damage", self.damage_window)
-        self._capture_window_layout("boss_lock", self.lock_window)
-        self._capture_window_layout("party_damage", self.party_window)
+        self._capture_window_layout("damage", self.damage_window, use_background=True)
+        self._capture_window_layout("boss_lock", self.lock_window, use_background=True)
+        self._capture_window_layout("party_damage", self.party_window, use_background=True)
         self.editing = False
         self._pointer_operation = None
         for key, window in (
@@ -1536,6 +1537,8 @@ class EclipticaDesktopHud:
         self._render_damage_text()
         self._render_lock_text()
         self._render_party_text()
+        self._fit_background_to_content("damage", self.damage_window)
+        self._fit_background_to_content("party_damage", self.party_window)
         self._apply_display_visibility()
         return self.get_layout()
 
