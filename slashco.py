@@ -43,6 +43,7 @@ from ecliptica_log_parser import (
     line_might_affect_ecliptica_state,
     parse_ecliptica_line,
 )
+from ecliptica_history import EclipticaHistoryClient, EclipticaHistoryDialog
 from ecliptica_sync import DEFAULT_SYNC_URL, EclipticaSyncClient
 from slashco_updater import (
     APP_VERSION,
@@ -1714,6 +1715,7 @@ class SlashCoMonitorCN:
         self.current_game_mode = "slashco"
         self.ecliptica_hud = None
         self.ecliptica_hud_editing = False
+        self.ecliptica_history_dialog = None
 
         self.last_reset_time = 0.0
         self.last_battery_event = {"SC_generator1": 0.0, "SC_generator2": 0.0}
@@ -2560,6 +2562,11 @@ class SlashCoMonitorCN:
             variable=self.ecliptica_sync_enabled,
             command=self._on_ecliptica_sync_settings_changed,
         ).pack(side=LEFT)
+        ttk.Button(
+            sync_enable_row,
+            text="查看历史对局",
+            command=self._show_ecliptica_history,
+        ).pack(side=LEFT, padx=(8, 0))
         ttk.Label(
             sync_enable_row,
             textvariable=self.ecliptica_sync_status_var,
@@ -2615,23 +2622,25 @@ class SlashCoMonitorCN:
 
         ttk.Label(
             frame,
-            text="同局玩家实时伤害（最多 4 人）",
+            text="同局玩家实时伤害",
             foreground="#1f6f3a",
             font=("微软雅黑", 11, "bold"),
         ).pack(anchor=W, pady=(0, 4))
         sync_columns = ("Player", "Boss", "Phase", "BossDamage", "TotalDamage", "Status")
+        sync_tree_container = ttk.Frame(frame)
+        sync_tree_container.pack(fill=BOTH, expand=True)
         self.ecliptica_sync_tree = ttk.Treeview(
-            frame,
+            sync_tree_container,
             columns=sync_columns,
             show="headings",
-            height=4,
+            height=8,
         )
         sync_labels = {
             "Player": "VRC 用户名",
             "Boss": "当前 BOSS",
             "Phase": "阶段",
             "BossDamage": "本 BOSS 伤害",
-            "TotalDamage": "本局总伤害",
+            "TotalDamage": "BOSS 结算总伤害",
             "Status": "状态",
         }
         sync_widths = {
@@ -2639,7 +2648,7 @@ class SlashCoMonitorCN:
             "Boss": 130,
             "Phase": 50,
             "BossDamage": 100,
-            "TotalDamage": 100,
+            "TotalDamage": 120,
             "Status": 65,
         }
         for column in sync_columns:
@@ -2649,7 +2658,14 @@ class SlashCoMonitorCN:
                 width=sync_widths[column],
                 anchor=W if column in ("Player", "Boss") else CENTER,
             )
-        self.ecliptica_sync_tree.pack(fill=X)
+        self.ecliptica_sync_tree.pack(side=LEFT, fill=BOTH, expand=True)
+        sync_scrollbar = ttk.Scrollbar(
+            sync_tree_container,
+            orient=VERTICAL,
+            command=self.ecliptica_sync_tree.yview,
+        )
+        sync_scrollbar.pack(side=RIGHT, fill=Y)
+        self.ecliptica_sync_tree.configure(yscrollcommand=sync_scrollbar.set)
 
         ttk.Label(
             frame,
@@ -2687,24 +2703,6 @@ class SlashCoMonitorCN:
             self.ecliptica_settlement_tree.column(column, width=widths[column], anchor=CENTER)
         self.ecliptica_settlement_tree.pack(fill=BOTH, expand=True)
 
-        ttk.Label(
-            frame,
-            text="受到伤害来源",
-            foreground="#c0392b",
-            font=("微软雅黑", 11, "bold"),
-        ).pack(anchor=W, pady=(12, 4))
-        source_columns = ("Source", "Damage")
-        self.ecliptica_source_tree = ttk.Treeview(
-            frame,
-            columns=source_columns,
-            show="headings",
-            height=7,
-        )
-        self.ecliptica_source_tree.heading("Source", text="来源")
-        self.ecliptica_source_tree.heading("Damage", text="累计伤害")
-        self.ecliptica_source_tree.column("Source", width=420, anchor=W)
-        self.ecliptica_source_tree.column("Damage", width=110, anchor=E)
-        self.ecliptica_source_tree.pack(fill=BOTH, expand=True)
 
     def _panel_mode_preference(self):
         label = self.panel_mode_var.get() if hasattr(self, "panel_mode_var") else PANEL_MODE_LABELS["auto"]
@@ -2819,12 +2817,6 @@ class SlashCoMonitorCN:
                     f"{settlement['dps']:.1f}",
                 ),
             )
-
-        for item in self.ecliptica_source_tree.get_children():
-            self.ecliptica_source_tree.delete(item)
-        sources = sorted(self.ecliptica_state.damage_sources.items(), key=lambda item: item[1], reverse=True)
-        for source, amount in sources[:30]:
-            self.ecliptica_source_tree.insert("", END, values=(source, format_ecliptica_number(amount)))
 
     def _load_ecliptica_config(self):
         self.ecliptica_hud_enabled = BooleanVar(value=False)
@@ -2966,6 +2958,22 @@ class SlashCoMonitorCN:
         )
         self._save_ecliptica_config()
         self.ecliptica_sync_status_var.set(self.ecliptica_sync.snapshot()["status"])
+
+    def _show_ecliptica_history(self):
+        dialog = getattr(self, "ecliptica_history_dialog", None)
+        if dialog is not None and dialog.is_open:
+            dialog.show()
+            return
+        try:
+            self.ecliptica_history_dialog = EclipticaHistoryDialog(
+                self.root,
+                EclipticaHistoryClient(DEFAULT_SYNC_URL),
+                initial_username=self.ecliptica_state.local_player_name,
+                initial_user_id=self.ecliptica_state.local_player_id,
+            )
+        except Exception as exc:
+            self.log(f"打开历史对局失败: {exc}")
+            messagebox.showerror("历史对局", f"无法打开历史对局：{exc}")
 
     def _refresh_ecliptica_sync_players(self, sync_snapshot):
         tree = getattr(self, "ecliptica_sync_tree", None)

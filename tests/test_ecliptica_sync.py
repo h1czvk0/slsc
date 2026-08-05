@@ -9,7 +9,6 @@ sys.path.insert(0, str(ROOT))
 from ecliptica_sync import (  # noqa: E402
     DEFAULT_SYNC_URL,
     EclipticaSyncClient,
-    MAX_ROOM_PLAYERS,
     build_damage_update,
     build_join_message,
     normalize_room_players,
@@ -28,9 +27,10 @@ def local_snapshot(**overrides):
         "class_name": "Thaumaturge",
         "current_boss": "JimBringer",
         "current_boss_phase": 2,
-        "current_boss_damage": 128200,
+        "current_boss_damage": 120000,
         "current_phase_damage": 128200,
         "session_total_damage": 302500,
+        "live_session_total_damage": 310700,
         "session_damage_taken": 6900,
         "defeated_count": 3,
         "intermission": False,
@@ -64,7 +64,7 @@ class SyncProtocolTests(unittest.TestCase):
         self.assertIsNone(sync_identity(local_snapshot(local_player_id="Alice")))
         self.assertIsNone(sync_identity(local_snapshot(local_player_name="")))
 
-    def test_join_and_damage_messages_use_log_identity_and_cumulative_damage(self):
+    def test_realtime_damage_and_historical_settlement_damage_are_distinct(self):
         snapshot = local_snapshot()
 
         join = build_join_message(snapshot)
@@ -77,7 +77,7 @@ class SyncProtocolTests(unittest.TestCase):
         self.assertEqual(update["game"]["session_total_damage"], 302500)
         self.assertNotIn("delta_damage", update["game"])
 
-    def test_room_state_is_limited_deduplicated_and_sorted(self):
+    def test_room_state_keeps_all_unique_players_and_sorts_them(self):
         players = []
         for index in range(6):
             players.append(
@@ -94,8 +94,11 @@ class SyncProtocolTests(unittest.TestCase):
             "284719",
         )
 
-        self.assertEqual(len(normalized), MAX_ROOM_PLAYERS)
-        self.assertEqual([item["boss_damage"] for item in normalized], [500, 400, 300, 200])
+        self.assertEqual(len(normalized), 6)
+        self.assertEqual(
+            [item["boss_damage"] for item in normalized],
+            [500, 400, 300, 200, 100, 0],
+        )
 
     def test_other_session_and_older_room_state_are_ignored(self):
         client = EclipticaSyncClient()

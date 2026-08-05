@@ -9,7 +9,6 @@ from urllib.parse import urlparse, urlunparse
 PROTOCOL_VERSION = 1
 DEFAULT_SYNC_INTERVAL_SECONDS = 0.1
 DEFAULT_SYNC_URL = "ws://zzu2.wch1.top:44976/ws"
-MAX_ROOM_PLAYERS = 4
 HEARTBEAT_INTERVAL_SECONDS = 10.0
 
 
@@ -71,12 +70,10 @@ def build_damage_update(snapshot: dict, sequence: int) -> dict:
             "class_name": str(snapshot.get("class_name") or "-"),
             "boss_name": str(snapshot.get("current_boss") or "-"),
             "boss_phase": snapshot.get("current_boss_phase"),
-            "boss_damage": _as_non_negative_int(
-                snapshot.get("live_current_boss_damage", snapshot.get("current_boss_damage"))
-            ),
-            "session_total_damage": _as_non_negative_int(
-                snapshot.get("live_session_total_damage", snapshot.get("session_total_damage"))
-            ),
+            # 实时显示使用战斗期间的全部伤害事件，包含 BOSS 召唤的小怪。
+            "boss_damage": _as_non_negative_int(snapshot.get("current_phase_damage")),
+            # 历史对局只保存日志中 BOSS 结算条目的累计伤害。
+            "session_total_damage": _as_non_negative_int(snapshot.get("session_total_damage")),
             "damage_taken": _as_non_negative_int(snapshot.get("session_damage_taken")),
             "defeated_count": _as_non_negative_int(snapshot.get("defeated_count")),
             "intermission": bool(snapshot.get("intermission", False)),
@@ -132,7 +129,7 @@ def normalize_room_players(message: dict, expected_session_id: str) -> list[dict
             }
         )
     players.sort(key=lambda item: (-item["boss_damage"], item["vrc_username"].casefold()))
-    return players[:MAX_ROOM_PLAYERS]
+    return players
 
 
 class EclipticaSyncClient:
