@@ -1344,12 +1344,71 @@ class EclipticaDesktopHud:
         y = min(max(0, int(geometry["y"])), screen_h - 40)
         self._set_window_pair_geometry(key, window, x, y, width, height)
 
+    def _content_background_size(self, key, width, height):
+        """Return the opaque background size needed by the current text."""
+        width = max(1, int(width))
+        height = max(1, int(height))
+        if key not in ("damage", "party_damage"):
+            return width, height
+
+        scale = self._hud_scale(key, width, height)
+        if key == "party_damage":
+            rows = getattr(self, "party_rows", ())
+            total_y = self._scaled(76 + len(rows) * 22, scale)
+            fitted_height = total_y + self._scaled(28, scale)
+            # The right-hand column is aligned to the HUD's right edge, so the
+            # background must retain the full configured width.
+            return width, min(height, max(self._scaled(104, scale), fitted_height))
+
+        rows = getattr(self, "damage_rows", ())
+        if not rows:
+            return min(width, self._scaled(190, scale)), min(height, self._scaled(40, scale))
+
+        image = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        label_font = _load_hud_font(self._scaled(13, scale))
+        value_font = _load_hud_font(self._scaled(14, scale), bold=True)
+        right_edge = self._scaled(14, scale)
+        value_x = self._scaled(160, scale)
+        for label, value in rows:
+            right_edge = max(
+                right_edge,
+                self._scaled(14, scale) + _hud_text_width(draw, label, label_font),
+                value_x + _hud_text_width(draw, value, value_font),
+            )
+        fitted_width = int(round(right_edge)) + self._scaled(14, scale)
+        last_y = self._scaled(12 + (len(rows) - 1) * 19, scale)
+        fitted_height = last_y + self._scaled(25, scale)
+        return (
+            min(width, max(self._scaled(190, scale), fitted_width)),
+            min(height, max(self._scaled(40, scale), fitted_height)),
+        )
+
+    def _fit_background_to_content(self, key, window):
+        if self.editing:
+            return
+        background = self._background_window(key)
+        if not background or not background.winfo_exists():
+            return
+        geometry = self.layout.get(key, {})
+        x = int(geometry.get("x", window.winfo_x()))
+        y = int(geometry.get("y", window.winfo_y()))
+        width = int(geometry.get("width", window.winfo_width()))
+        height = int(geometry.get("height", window.winfo_height()))
+        fitted_width, fitted_height = self._content_background_size(key, width, height)
+        _set_native_window_rect(background, x, y, fitted_width, fitted_height)
+        window.lift(background)
+
+    def _required_party_content_height(self, width):
+        width_scale = max(1.0, float(width) / HUD_MIN_SIZES["party_damage"][0])
+        natural_height = (104 + len(getattr(self, "party_rows", ())) * 22) * width_scale
+        return max(HUD_MIN_SIZES["party_damage"][1], int(natural_height + 0.999))
+
     def _place_windows(self):
         defaults = self._default_layout()
         party_geometry = dict(self.layout.get("party_damage", defaults["party_damage"]))
-        required_party_height = max(
-            HUD_MIN_SIZES["party_damage"][1],
-            100 + len(getattr(self, "party_rows", ())) * 22,
+        required_party_height = self._required_party_content_height(
+            party_geometry.get("width", HUD_MIN_SIZES["party_damage"][0])
         )
         if int(party_geometry.get("height", 0)) < required_party_height:
             party_geometry["height"] = required_party_height
@@ -1357,6 +1416,8 @@ class EclipticaDesktopHud:
         self._apply_window_layout("damage", self.damage_window, defaults)
         self._apply_window_layout("boss_lock", self.lock_window, defaults)
         self._apply_window_layout("party_damage", self.party_window, defaults)
+        self._fit_background_to_content("damage", self.damage_window)
+        self._fit_background_to_content("party_damage", self.party_window)
 
     def set_opacity(self, opacity):
         self.opacity = normalize_hud_opacity(opacity)
@@ -1410,6 +1471,7 @@ class EclipticaDesktopHud:
             self.display_mode in ("both", "boss_lock")
             and (self.editing or self.boss_lock_active)
         )
+        show_party_damage = self.editing or self.boss_lock_active
         party_background = getattr(self, "party_background_window", None)
         party_window = getattr(self, "party_window", None)
         if show_damage:
@@ -1432,13 +1494,16 @@ class EclipticaDesktopHud:
         else:
             self.lock_background_window.withdraw()
             self.lock_window.withdraw()
-        if party_background and party_window:
+        if party_background and party_window and show_party_damage:
             party_background.deiconify()
             if self.editing:
                 party_window.withdraw()
             else:
                 party_window.deiconify()
                 party_window.lift(party_background)
+        elif party_background and party_window:
+            party_background.withdraw()
+            party_window.withdraw()
 
     def begin_edit(self, snapshot, display_mode="both", selected_fields=None, party_players=None):
         self.editing = True
@@ -1509,6 +1574,20 @@ class EclipticaDesktopHud:
     def update_party(self, party_players):
         self._ensure_windows()
         self._set_party_players(party_players)
+        party_geometry = self.layout.get("party_damage")
+        required_height = self._required_party_content_height(
+            (party_geometry or {}).get("width", HUD_MIN_SIZES["party_damage"][0])
+        )
+        if not party_geometry or int(party_geometry.get("height", 0)) < required_height:
+            defaults = self._default_layout()
+            party_geometry = dict(party_geometry or defaults["party_damage"])
+            party_geometry["height"] = max(
+                int(party_geometry.get("height", 0)),
+                required_height,
+            )
+            self.layout["party_damage"] = party_geometry
+            self._apply_window_layout("party_damage", self.party_window, defaults)
+        self._fit_background_to_content("party_damage", self.party_window)
         self._render_party_text()
         if not self.editing and self.party_window.state() == "normal":
             self._set_click_through(self.party_window, True)

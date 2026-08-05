@@ -599,12 +599,67 @@ class HudLayoutTests(unittest.TestCase):
         hud.damage_window = FakeHudWindow()
         hud.lock_background_window = FakeHudWindow()
         hud.lock_window = FakeHudWindow()
+        hud.party_background_window = FakeHudWindow()
+        hud.party_window = FakeHudWindow()
 
         hud._apply_display_visibility()
 
         self.assertEqual(hud.damage_window.state(), "normal")
         self.assertEqual(hud.lock_background_window.state(), "withdrawn")
         self.assertEqual(hud.lock_window.state(), "withdrawn")
+        self.assertEqual(hud.party_background_window.state(), "withdrawn")
+        self.assertEqual(hud.party_window.state(), "withdrawn")
+
+    def test_party_damage_hud_is_visible_during_boss_battle(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud.display_mode = "both"
+        hud.editing = False
+        hud.boss_lock_active = True
+        hud.damage_background_window = FakeHudWindow()
+        hud.damage_window = FakeHudWindow()
+        hud.lock_background_window = FakeHudWindow()
+        hud.lock_window = FakeHudWindow()
+        hud.party_background_window = FakeHudWindow()
+        hud.party_window = FakeHudWindow()
+
+        hud._apply_display_visibility()
+
+        self.assertEqual(hud.party_background_window.state(), "normal")
+        self.assertEqual(hud.party_window.state(), "normal")
+
+    def test_hud_background_height_follows_rendered_text(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud.damage_rows = [("总耗时", "01:27:26")] * 7
+        hud.party_rows = [("TestPlayer", "0")]
+
+        damage_width, damage_height = hud._content_background_size("damage", 471, 327)
+        party_width, party_height = hud._content_background_size("party_damage", 471, 450)
+
+        self.assertLess(damage_width, 471)
+        self.assertLess(damage_height, 327)
+        self.assertEqual(party_width, 471)
+        self.assertLess(party_height, 450)
+
+    def test_party_background_expands_as_players_are_added(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud.party_rows = [("Player 1", "1.0K")]
+        _width, one_player_height = hud._content_background_size("party_damage", 360, 500)
+        hud.party_rows = [(f"Player {index}", "1.0K") for index in range(1, 9)]
+        _width, eight_player_height = hud._content_background_size("party_damage", 360, 500)
+
+        self.assertGreater(eight_player_height, one_player_height)
+
+    def test_party_content_height_accounts_for_hud_width_scale(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud.party_rows = [(f"Player {index}", "1.0K") for index in range(1, 9)]
+
+        required_height = hud._required_party_content_height(640)
+        _width, background_height = hud._content_background_size(
+            "party_damage", 640, required_height
+        )
+
+        self.assertEqual(required_height, 560)
+        self.assertLessEqual(background_height, required_height)
 
     def test_boss_lock_hud_only_keeps_the_target_line(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
