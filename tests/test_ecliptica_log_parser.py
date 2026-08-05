@@ -105,6 +105,8 @@ class EclipticaStateTests(unittest.TestCase):
 
         snapshot = state.snapshot(now=105.0)
         self.assertEqual(snapshot["current_phase_damage"], 500)
+        self.assertEqual(snapshot["live_current_boss_damage"], 500)
+        self.assertEqual(snapshot["live_session_total_damage"], 500)
         self.assertEqual(snapshot["current_phase_damage_taken"], 75)
         self.assertEqual(snapshot["recent_5s_dps"], 100.0)
         self.assertEqual(snapshot["recent_3s_dps"], 100.0)
@@ -303,6 +305,20 @@ class EclipticaStateTests(unittest.TestCase):
         state.apply(self.make_event("session", "24172", timestamp=2.0))
         self.assertEqual(state.session_id, "24172")
         self.assertEqual(state.session_total_damage, 0)
+
+    def test_blank_session_stops_sync_identity_and_clears_previous_totals(self):
+        state = EclipticaState()
+        state.apply(self.make_event("authenticated", "Alice", "usr_alice", timestamp=1.0))
+        state.apply(self.make_event("session", "24172", timestamp=2.0))
+        state.session_total_damage = 1234
+
+        state.apply(self.make_event("session_blank", timestamp=3.0))
+        snapshot = state.snapshot(now=3.0)
+
+        self.assertEqual(snapshot["session_id"], "-")
+        self.assertEqual(snapshot["session_total_damage"], 0)
+        self.assertEqual(snapshot["local_player_name"], "Alice")
+        self.assertEqual(snapshot["local_player_id"], "usr_alice")
 
     def test_reentering_ecliptica_room_preserves_same_session(self):
         state = EclipticaState()

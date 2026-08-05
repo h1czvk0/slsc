@@ -29,6 +29,7 @@ a = Analysis(
         'ssl',
         'json',
         'threading',
+        'websocket',
         'concurrent.futures',
         'mitmproxy',
         'mitmproxy.tools.dump',

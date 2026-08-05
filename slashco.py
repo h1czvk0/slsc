@@ -43,6 +43,7 @@ from ecliptica_log_parser import (
     line_might_affect_ecliptica_state,
     parse_ecliptica_line,
 )
+from ecliptica_sync import EclipticaSyncClient, normalize_sync_url
 from slashco_updater import (
     APP_VERSION,
     download_update,
@@ -1449,6 +1450,7 @@ FUEL_REQUIRED_COUNT = 8
 ROUND_TIMEOUT_SECONDS = 25 * 60
 ECLIPTICA_CONFIG_FILENAME = os.path.join(DATA_DIR, "ecliptica_config.json")
 ECLIPTICA_HUD_REFRESH_MS = 500
+ECLIPTICA_SYNC_INTERVAL_MS = 100
 PANEL_MODE_LABELS = {
     "auto": "自动",
     "slashco": "SlashCo",
@@ -1673,6 +1675,7 @@ class SlashCoMonitorCN:
         self._pending_tick_after_id = None
         self._round_timer_after_id = None
         self._ecliptica_hud_after_id = None
+        self._ecliptica_sync_after_id = None
         self._ecliptica_osc_test_after_id = None
         self._ecliptica_auto_jump_after_id = None
         self._ecliptica_osc_test_active = False
@@ -1755,6 +1758,14 @@ class SlashCoMonitorCN:
         )
         self.ecliptica_auto_jump.set_enabled(self.ecliptica_auto_jump_enabled.get())
         self.ecliptica_auto_jump.start()
+        self.ecliptica_sync = EclipticaSyncClient(
+            interval_seconds=ECLIPTICA_SYNC_INTERVAL_MS / 1000.0,
+        )
+        self.ecliptica_sync.configure(
+            self.ecliptica_sync_enabled.get(),
+            self.ecliptica_sync_url_var.get(),
+        )
+        self.ecliptica_sync.start()
 
         self.setup_ui()
         self.ecliptica_hud = EclipticaDesktopHud(
@@ -1768,6 +1779,10 @@ class SlashCoMonitorCN:
         self._ecliptica_hud_after_id = self.root.after(
             ECLIPTICA_HUD_REFRESH_MS,
             self._ecliptica_hud_tick,
+        )
+        self._ecliptica_sync_after_id = self.root.after(
+            ECLIPTICA_SYNC_INTERVAL_MS,
+            self._ecliptica_sync_tick,
         )
         self._ecliptica_auto_jump_after_id = self.root.after(
             200,
@@ -2534,6 +2549,43 @@ class SlashCoMonitorCN:
         self.ecliptica_osc_prefix_entry.bind("<Return>", self._on_ecliptica_osc_format_changed)
         self._update_ecliptica_osc_prefix_state()
 
+        sync_frame = ttk.LabelFrame(self.ecliptica_left_frame, text="同局伤害同步", padding=7)
+        sync_frame.pack(fill=X, padx=5, pady=5)
+        sync_enable_row = ttk.Frame(sync_frame)
+        sync_enable_row.pack(fill=X)
+        ttk.Checkbutton(
+            sync_enable_row,
+            text="启用 100ms 实时同步",
+            variable=self.ecliptica_sync_enabled,
+            command=self._on_ecliptica_sync_settings_changed,
+        ).pack(side=LEFT)
+        ttk.Label(
+            sync_enable_row,
+            textvariable=self.ecliptica_sync_status_var,
+            foreground="#666666",
+            font=("微软雅黑", 8),
+        ).pack(side=RIGHT)
+        sync_url_row = ttk.Frame(sync_frame)
+        sync_url_row.pack(fill=X, pady=(5, 0))
+        ttk.Label(sync_url_row, text="服务器：").pack(side=LEFT)
+        self.ecliptica_sync_url_entry = ttk.Entry(
+            sync_url_row,
+            textvariable=self.ecliptica_sync_url_var,
+        )
+        self.ecliptica_sync_url_entry.pack(side=LEFT, fill=X, expand=True)
+        self.ecliptica_sync_url_entry.bind(
+            "<FocusOut>", self._on_ecliptica_sync_settings_changed
+        )
+        self.ecliptica_sync_url_entry.bind(
+            "<Return>", self._on_ecliptica_sync_settings_changed
+        )
+        ttk.Label(
+            sync_frame,
+            text="会话 ID 与 VRC 身份将自动从日志获取；仅同步同一会话。",
+            foreground="#666666",
+            font=("微软雅黑", 8),
+        ).pack(anchor=W, pady=(5, 0))
+
         summary = ttk.LabelFrame(self.ecliptica_left_frame, text="战斗概览", padding=8)
         summary.pack(fill=X, padx=5, pady=2)
         rows = (
@@ -2568,10 +2620,48 @@ class SlashCoMonitorCN:
 
         ttk.Label(
             frame,
+            text="同局玩家实时伤害（最多 4 人）",
+            foreground="#1f6f3a",
+            font=("微软雅黑", 11, "bold"),
+        ).pack(anchor=W, pady=(0, 4))
+        sync_columns = ("Player", "Boss", "Phase", "BossDamage", "TotalDamage", "Status")
+        self.ecliptica_sync_tree = ttk.Treeview(
+            frame,
+            columns=sync_columns,
+            show="headings",
+            height=4,
+        )
+        sync_labels = {
+            "Player": "VRC 用户名",
+            "Boss": "当前 BOSS",
+            "Phase": "阶段",
+            "BossDamage": "本 BOSS 伤害",
+            "TotalDamage": "本局总伤害",
+            "Status": "状态",
+        }
+        sync_widths = {
+            "Player": 150,
+            "Boss": 130,
+            "Phase": 50,
+            "BossDamage": 100,
+            "TotalDamage": 100,
+            "Status": 65,
+        }
+        for column in sync_columns:
+            self.ecliptica_sync_tree.heading(column, text=sync_labels[column])
+            self.ecliptica_sync_tree.column(
+                column,
+                width=sync_widths[column],
+                anchor=W if column in ("Player", "Boss") else CENTER,
+            )
+        self.ecliptica_sync_tree.pack(fill=X)
+
+        ttk.Label(
+            frame,
             text="BOSS 伤害结算",
             foreground="#6c4cff",
             font=("微软雅黑", 11, "bold"),
-        ).pack(anchor=W, pady=(0, 4))
+        ).pack(anchor=W, pady=(12, 4))
         settlement_columns = ("Boss", "Phase", "Strike", "NonStrike", "Total", "Duration", "DPS")
         self.ecliptica_settlement_tree = ttk.Treeview(
             frame,
@@ -2697,8 +2787,12 @@ class SlashCoMonitorCN:
         self.ecliptica_vars["stage"].set(stage_text)
         self.ecliptica_vars["boss"].set(snapshot.get("current_boss", "-"))
         self.ecliptica_vars["phase"].set(str(phase) if phase is not None else "-")
-        self.ecliptica_vars["boss_damage"].set(format_ecliptica_number(snapshot.get("current_boss_damage", 0)))
-        self.ecliptica_vars["total_damage"].set(format_ecliptica_number(snapshot.get("session_total_damage", 0)))
+        self.ecliptica_vars["boss_damage"].set(
+            format_ecliptica_number(snapshot.get("live_current_boss_damage", 0))
+        )
+        self.ecliptica_vars["total_damage"].set(
+            format_ecliptica_number(snapshot.get("live_session_total_damage", 0))
+        )
         self.ecliptica_vars["dps"].set(f"{snapshot.get('last_settlement_dps', 0.0):.1f}")
         self.ecliptica_vars["damage_taken"].set(format_ecliptica_number(snapshot.get("session_damage_taken", 0)))
         self.ecliptica_vars["defeated"].set(str(snapshot.get("defeated_count", 0)))
@@ -2763,6 +2857,10 @@ class SlashCoMonitorCN:
         self.ecliptica_osc_host_var = StringVar(value=DEFAULT_OSC_HOST)
         self.ecliptica_osc_port_var = StringVar(value=str(DEFAULT_OSC_PORT))
         self.ecliptica_osc_status_var = StringVar(value="未启用")
+        self.ecliptica_sync_enabled = BooleanVar(value=False)
+        self.ecliptica_sync_url_var = StringVar(value="")
+        self.ecliptica_sync_status_var = StringVar(value="未启用")
+        self._ecliptica_sync_player_rows = ()
         self.ecliptica_hud_layout = {}
         self.ecliptica_hud_default_preset_version = 0
         self._ecliptica_hud_preset_save_pending = False
@@ -2805,6 +2903,12 @@ class SlashCoMonitorCN:
                 self.ecliptica_osc_host_var.set(normalize_osc_host(config.get("osc_host")))
                 self.ecliptica_osc_port_var.set(str(normalize_osc_port(config.get("osc_port"))))
                 self.ecliptica_osc_status_var.set("等待锁定目标" if osc_enabled else "未启用")
+                sync_enabled = bool(config.get("sync_enabled", False))
+                self.ecliptica_sync_enabled.set(sync_enabled)
+                self.ecliptica_sync_url_var.set(normalize_sync_url(config.get("sync_url")))
+                self.ecliptica_sync_status_var.set(
+                    "等待日志中的会话与 VRC 身份" if sync_enabled else "未启用"
+                )
         except Exception:
             config = {}
 
@@ -2848,6 +2952,8 @@ class SlashCoMonitorCN:
                         "osc_prefix": normalize_osc_prefix(self.ecliptica_osc_prefix_var.get()),
                         "osc_host": normalize_osc_host(self.ecliptica_osc_host_var.get()),
                         "osc_port": normalize_osc_port(self.ecliptica_osc_port_var.get()),
+                        "sync_enabled": bool(self.ecliptica_sync_enabled.get()),
+                        "sync_url": normalize_sync_url(self.ecliptica_sync_url_var.get()),
                     },
                     config_file,
                     ensure_ascii=False,
@@ -2856,6 +2962,68 @@ class SlashCoMonitorCN:
         except Exception as exc:
             if hasattr(self, "txt_log"):
                 self.log(f"保存 Ecliptica HUD 设置失败: {exc}")
+
+    def _on_ecliptica_sync_settings_changed(self, _event=None):
+        raw_url = self.ecliptica_sync_url_var.get()
+        normalized_url = normalize_sync_url(raw_url)
+        if normalized_url:
+            self.ecliptica_sync_url_var.set(normalized_url)
+        self.ecliptica_sync.configure(
+            bool(self.ecliptica_sync_enabled.get()),
+            normalized_url or raw_url,
+        )
+        self._save_ecliptica_config()
+        self.ecliptica_sync_status_var.set(self.ecliptica_sync.snapshot()["status"])
+
+    def _refresh_ecliptica_sync_players(self, sync_snapshot):
+        tree = getattr(self, "ecliptica_sync_tree", None)
+        if tree is None:
+            return
+        local_player_id = self.ecliptica_state.local_player_id
+        rows = []
+        for player in sync_snapshot.get("players", []):
+            player_name = player.get("vrc_username", "-")
+            if player.get("vrc_user_id") == local_player_id:
+                player_name = f"{player_name}（我）"
+            phase = player.get("boss_phase")
+            rows.append(
+                (
+                    player_name,
+                    player.get("boss_name", "-"),
+                    str(phase) if phase is not None else "-",
+                    format_ecliptica_number(player.get("boss_damage", 0)),
+                    format_ecliptica_number(player.get("session_total_damage", 0)),
+                    "在线" if player.get("online", True) else "离线",
+                )
+            )
+        rows = tuple(rows)
+        if rows == self._ecliptica_sync_player_rows:
+            return
+        self._ecliptica_sync_player_rows = rows
+        for item in tree.get_children():
+            tree.delete(item)
+        for row in rows:
+            tree.insert("", END, values=row)
+
+    def _ecliptica_sync_tick(self):
+        self._ecliptica_sync_after_id = None
+        if self._is_shutting_down:
+            return
+        try:
+            self.ecliptica_sync.update_local_state(self.ecliptica_state.snapshot())
+            sync_snapshot = self.ecliptica_sync.snapshot()
+            self.ecliptica_sync_status_var.set(sync_snapshot["status"])
+            self._refresh_ecliptica_sync_players(sync_snapshot)
+        except Exception as exc:
+            self.ecliptica_sync_status_var.set("同步客户端异常")
+            self.log(f"Ecliptica 实时同步更新失败: {exc}")
+        try:
+            self._ecliptica_sync_after_id = self.root.after(
+                ECLIPTICA_SYNC_INTERVAL_MS,
+                self._ecliptica_sync_tick,
+            )
+        except Exception:
+            self._ecliptica_sync_after_id = None
 
     def _configure_ecliptica_osc(self):
         host = normalize_osc_host(self.ecliptica_osc_host_var.get())
@@ -5060,6 +5228,11 @@ class SlashCoMonitorCN:
                 self.ecliptica_auto_jump.stop()
         except Exception:
             pass
+        try:
+            if getattr(self, "ecliptica_sync", None):
+                self.ecliptica_sync.stop(timeout=1.5)
+        except Exception:
+            pass
 
         if HAS_SPONSOR_PROXY:
             try:
@@ -5079,6 +5252,7 @@ class SlashCoMonitorCN:
             "_tree_rebuild_after_id",
             "_round_timer_after_id",
             "_ecliptica_hud_after_id",
+            "_ecliptica_sync_after_id",
             "_ecliptica_osc_test_after_id",
             "_ecliptica_auto_jump_after_id",
         ):

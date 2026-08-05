@@ -251,6 +251,7 @@ class EclipticaState:
             self._begin_session(event.groups[0])
             return True
         if kind == "session_blank":
+            self.reset(preserve_world=True)
             return True
         if kind == "stage":
             if self.run_started_at is None or self.run_ended_at is not None:
@@ -424,6 +425,10 @@ class EclipticaState:
             if self.current_boss_encounter_id is not None
             else 0
         )
+        current_phase_is_settled = phase_identity in self._settled_phases
+        unsettled_phase_damage = 0 if current_phase_is_settled else phase_damage
+        live_boss_damage = self.current_boss_damage + unsettled_phase_damage
+        live_session_damage = self.session_total_damage + unsettled_phase_damage
         cutoff = current_time - 3.0
         while self._recent_damage_events and self._recent_damage_events[0][0] < cutoff:
             self._recent_damage_events.popleft()
@@ -447,6 +452,8 @@ class EclipticaState:
         return {
             "world": self.world_name or "Ecliptica",
             "session_id": self.session_id or "-",
+            "local_player_name": self.local_player_name,
+            "local_player_id": self.local_player_id,
             "stage": self.stage,
             "stage_progress": self.stage_progress,
             "run_phase": self.run_phase,
@@ -454,6 +461,7 @@ class EclipticaState:
             "current_boss": self.current_boss,
             "current_boss_phase": self.current_boss_phase,
             "current_boss_damage": self.current_boss_damage,
+            "live_current_boss_damage": live_boss_damage,
             "current_phase_damage": phase_damage,
             "current_phase_damage_taken": phase_damage_taken,
             "recent_3s_dps": recent_dps,
@@ -462,6 +470,7 @@ class EclipticaState:
             "current_boss_elapsed": boss_elapsed,
             "total_elapsed": total_elapsed,
             "session_total_damage": self.session_total_damage,
+            "live_session_total_damage": live_session_damage,
             "last_settlement_damage": self.last_settlement_damage,
             "last_settlement_dps": self.last_settlement_dps,
             "session_damage_taken": self.session_damage_taken,
