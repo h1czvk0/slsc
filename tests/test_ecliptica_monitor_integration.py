@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 from ecliptica_log_parser import EclipticaState, parse_ecliptica_line  # noqa: E402
 from slashco import (  # noqa: E402
     EclipticaDesktopHud,
+    HUD_DISPLAY_LABELS,
     HUD_DEFAULT_PRESET_FIELDS,
     HUD_DEFAULT_PRESET_ORDER,
     HUD_DEFAULT_PRESET_VERSION,
@@ -642,6 +643,24 @@ class HudLayoutTests(unittest.TestCase):
         self.assertEqual(hud.party_background_window.state(), "normal")
         self.assertEqual(hud.party_window.state(), "normal")
 
+    def test_party_damage_display_mode_hides_the_other_two_huds(self):
+        hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
+        hud.display_mode = "party_damage"
+        hud.editing = False
+        hud.boss_lock_active = True
+        hud.damage_background_window = FakeHudWindow()
+        hud.damage_window = FakeHudWindow()
+        hud.lock_background_window = FakeHudWindow()
+        hud.lock_window = FakeHudWindow()
+        hud.party_background_window = FakeHudWindow()
+        hud.party_window = FakeHudWindow()
+
+        hud._apply_display_visibility()
+
+        self.assertEqual(hud.damage_window.state(), "withdrawn")
+        self.assertEqual(hud.lock_window.state(), "withdrawn")
+        self.assertEqual(hud.party_window.state(), "normal")
+
     def test_hud_background_height_follows_rendered_text(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
         hud.damage_rows = [("总耗时", "01:27:26")] * 7
@@ -897,8 +916,18 @@ class HudLayoutTests(unittest.TestCase):
     def test_hud_display_mode_defaults_to_both_for_invalid_values(self):
         self.assertEqual(normalize_hud_display_mode("damage"), "damage")
         self.assertEqual(normalize_hud_display_mode("boss_lock"), "boss_lock")
+        self.assertEqual(normalize_hud_display_mode("party_damage"), "party_damage")
         self.assertEqual(normalize_hud_display_mode("both"), "both")
         self.assertEqual(normalize_hud_display_mode("invalid"), "both")
+        self.assertEqual(
+            tuple(HUD_DISPLAY_LABELS.values()),
+            (
+                "三者共同显示",
+                "只显示伤害数据",
+                "只显示 Boss 锁定",
+                "只显示伤害统计",
+            ),
+        )
 
     def test_layout_values_are_normalized_and_minimum_size_is_enforced(self):
         layout = normalize_hud_layout(

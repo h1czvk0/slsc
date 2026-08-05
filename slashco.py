@@ -190,9 +190,10 @@ HUD_MIN_SIZES = {
     "party_damage": (320, 180),
 }
 HUD_DISPLAY_LABELS = {
-    "both": "两者共同显示",
+    "both": "三者共同显示",
     "damage": "只显示伤害数据",
     "boss_lock": "只显示 Boss 锁定",
+    "party_damage": "只显示伤害统计",
 }
 HUD_DISPLAY_KEYS = {label: key for key, label in HUD_DISPLAY_LABELS.items()}
 HUD_DAMAGE_FIELDS = (
@@ -1472,7 +1473,10 @@ class EclipticaDesktopHud:
             self.display_mode in ("both", "boss_lock")
             and (self.editing or self.boss_lock_active)
         )
-        show_party_damage = self.editing or self.boss_lock_active
+        show_party_damage = (
+            self.display_mode in ("both", "party_damage")
+            and (self.editing or self.boss_lock_active)
+        )
         party_background = getattr(self, "party_background_window", None)
         party_window = getattr(self, "party_window", None)
         if show_damage:
