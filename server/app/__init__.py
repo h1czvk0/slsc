@@ -1,1 +1,0 @@
-"""SlashCoSense Ecliptica synchronization server."""
