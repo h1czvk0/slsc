@@ -149,7 +149,6 @@ class EclipticaHistoryDialog:
         self.window.minsize(850, 560)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.status_var = StringVar(master=self.window, value="正在读取历史对局…")
-        self.detail_title_var = StringVar(master=self.window, value="选中对局的 BOSS 伤害结算")
         self._closed = False
         self._request_tokens = {}
         self._result_queue = queue.Queue()
@@ -216,12 +215,12 @@ class EclipticaHistoryDialog:
         self.session_tree.configure(yscrollcommand=session_scroll.set)
         self.session_tree.bind("<Double-1>", lambda _event: self._load_selected_session())
 
-        detail_frame = ttk.LabelFrame(
+        self.detail_frame = ttk.LabelFrame(
             self.window,
-            textvariable=self.detail_title_var,
+            text="选中对局的 BOSS 伤害结算",
             padding=6,
         )
-        detail_frame.pack(fill=BOTH, expand=True, padx=10, pady=5)
+        self.detail_frame.pack(fill=BOTH, expand=True, padx=10, pady=5)
         detail_columns = (
             "Username",
             "Boss",
@@ -233,7 +232,7 @@ class EclipticaHistoryDialog:
             "DPS",
         )
         self.detail_tree = ttk.Treeview(
-            detail_frame,
+            self.detail_frame,
             columns=detail_columns,
             show="headings",
             height=12,
@@ -266,7 +265,11 @@ class EclipticaHistoryDialog:
                 anchor=W if column == "Username" else CENTER,
             )
         self.detail_tree.pack(side=LEFT, fill=BOTH, expand=True)
-        detail_scroll = ttk.Scrollbar(detail_frame, orient=VERTICAL, command=self.detail_tree.yview)
+        detail_scroll = ttk.Scrollbar(
+            self.detail_frame,
+            orient=VERTICAL,
+            command=self.detail_tree.yview,
+        )
         detail_scroll.pack(side=RIGHT, fill=Y)
         self.detail_tree.configure(yscrollcommand=detail_scroll.set)
 
@@ -388,5 +391,5 @@ class EclipticaHistoryDialog:
                     f"{float(settlement.get('dps') or 0):.1f}",
                 ),
             )
-        self.detail_title_var.set(f"对局 {session_name} · BOSS 伤害结算")
+        self.detail_frame.configure(text=f"对局 {session_name} · BOSS 伤害结算")
         self.status_var.set(f"该对局共有 {len(ordered)} 条玩家阶段结算记录")
