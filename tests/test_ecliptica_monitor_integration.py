@@ -823,9 +823,9 @@ class HudLayoutTests(unittest.TestCase):
 
         layout = hud.reset_layout()
 
-        self.assertEqual(layout["damage"], {"x": -1, "y": 468, "width": 353, "height": 245})
+        self.assertEqual(layout["damage"], {"x": -3, "y": 452, "width": 372, "height": 262})
         self.assertEqual(layout["boss_lock"], {"x": 788, "y": 913, "width": 357, "height": 106})
-        self.assertEqual(layout["party_damage"], {"x": 1575, "y": 468, "width": 320, "height": 195})
+        self.assertEqual(layout["party_damage"], {"x": -1, "y": 82, "width": 387, "height": 284})
         self.assertEqual(hud.damage_window.geometry(), hud.damage_background_window.geometry())
         self.assertEqual(hud.lock_window.geometry(), hud.lock_background_window.geometry())
         self.assertEqual(hud.party_window.geometry(), hud.party_background_window.geometry())
@@ -838,11 +838,16 @@ class HudLayoutTests(unittest.TestCase):
         self.assertEqual(
             preset["layout"],
             {
-                "damage": {"x": -1, "y": 624, "width": 471, "height": 327},
+                "damage": {"x": -4, "y": 602, "width": 496, "height": 350},
                 "boss_lock": {"x": 1050, "y": 1217, "width": 476, "height": 141},
-                "party_damage": {"x": 2100, "y": 624, "width": 360, "height": 260},
+                "party_damage": {"x": -1, "y": 110, "width": 516, "height": 379},
             },
         )
+        self.assertEqual(
+            preset["display_panels"],
+            ["damage", "boss_lock", "party_damage"],
+        )
+        self.assertEqual(preset["transparency"], 100.0)
         self.assertEqual(preset["fields"], list(HUD_DEFAULT_PRESET_FIELDS))
         self.assertEqual(preset["order"], list(HUD_DEFAULT_PRESET_ORDER))
 
@@ -851,7 +856,7 @@ class HudLayoutTests(unittest.TestCase):
 
         self.assertIsNone(pending_hud_default_preset(config, 2560, 1440))
         scaled = hud_default_preset_layout(1920, 1080)
-        self.assertEqual(scaled["damage"], {"x": -1, "y": 468, "width": 353, "height": 245})
+        self.assertEqual(scaled["damage"], {"x": -3, "y": 452, "width": 372, "height": 262})
 
     def test_hud_text_color_is_pure_white(self):
         self.assertEqual(EclipticaDesktopHud.FG, "#ffffff")

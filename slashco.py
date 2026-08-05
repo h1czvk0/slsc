@@ -214,7 +214,9 @@ HUD_DAMAGE_FIELDS = (
 )
 HUD_DAMAGE_FIELD_KEYS = tuple(key for key, _label in HUD_DAMAGE_FIELDS)
 HUD_DAMAGE_FIELD_LABELS = dict(HUD_DAMAGE_FIELDS)
-HUD_DEFAULT_PRESET_VERSION = 1
+HUD_DEFAULT_PRESET_VERSION = 2
+HUD_DEFAULT_PRESET_DISPLAY_PANELS = HUD_DISPLAY_PANEL_KEYS
+HUD_DEFAULT_PRESET_TRANSPARENCY = 100.0
 HUD_DEFAULT_PRESET_FIELDS = (
     "total_elapsed",
     "current_boss",
@@ -237,9 +239,9 @@ HUD_DEFAULT_PRESET_ORDER = (
 )
 HUD_DEFAULT_REFERENCE_SIZE = (2560, 1440)
 HUD_DEFAULT_REFERENCE_LAYOUT = {
-    "damage": {"x": -1, "y": 624, "width": 471, "height": 327},
+    "damage": {"x": -4, "y": 602, "width": 496, "height": 350},
     "boss_lock": {"x": 1050, "y": 1217, "width": 476, "height": 141},
-    "party_damage": {"x": 2100, "y": 624, "width": 360, "height": 260},
+    "party_damage": {"x": -1, "y": 110, "width": 516, "height": 379},
 }
 APP_USER_MODEL_ID = "SlashCoSense.Desktop"
 TK_BASE_SCALING = 96.0 / 72.0
@@ -346,6 +348,8 @@ def pending_hud_default_preset(config, screen_width, screen_height):
     return {
         "version": HUD_DEFAULT_PRESET_VERSION,
         "layout": hud_default_preset_layout(screen_width, screen_height),
+        "display_panels": list(HUD_DEFAULT_PRESET_DISPLAY_PANELS),
+        "transparency": HUD_DEFAULT_PRESET_TRANSPARENCY,
         "fields": list(HUD_DEFAULT_PRESET_FIELDS),
         "order": list(HUD_DEFAULT_PRESET_ORDER),
     }
@@ -3237,6 +3241,12 @@ class SlashCoMonitorCN:
         )
         if preset is not None:
             self.ecliptica_hud_layout = preset["layout"]
+            selected_panels = set(preset["display_panels"])
+            for key, variable in self.ecliptica_hud_display_vars.items():
+                variable.set(key in selected_panels)
+            hud_transparency = normalize_hud_transparency(preset["transparency"])
+            self.ecliptica_hud_opacity_var.set(hud_transparency)
+            self.ecliptica_hud_opacity_text_var.set(f"{round(hud_transparency)}%")
             self.ecliptica_hud_field_order = preset["order"]
             selected_fields = set(preset["fields"])
             for key, variable in self.ecliptica_hud_field_vars.items():
@@ -3806,8 +3816,10 @@ class SlashCoMonitorCN:
         for variable in self.ecliptica_hud_display_vars.values():
             variable.set(True)
         self.ecliptica_hud_foreground_only.set(True)
-        self.ecliptica_hud_opacity_var.set(10.0)
-        self.ecliptica_hud_opacity_text_var.set("10%")
+        self.ecliptica_hud_opacity_var.set(HUD_DEFAULT_PRESET_TRANSPARENCY)
+        self.ecliptica_hud_opacity_text_var.set(
+            f"{round(HUD_DEFAULT_PRESET_TRANSPARENCY)}%"
+        )
         self.ecliptica_hud_field_order = list(HUD_DEFAULT_PRESET_ORDER)
         for variable in self.ecliptica_hud_field_vars.values():
             variable.set(False)
