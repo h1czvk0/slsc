@@ -274,6 +274,21 @@ class EclipticaMonitorIntegrationTests(unittest.TestCase):
         self.assertEqual(monitor.current_game_mode, "slashco")
         self.assertEqual(monitor.ecliptica_state.session_damage_taken, 0)
 
+    def test_log_recovery_is_never_exposed_to_realtime_sync(self):
+        monitor = self.make_monitor()
+        monitor.ecliptica_state.apply(
+            parse_ecliptica_line(
+                "2026.08.05 21:00:00 Debug - ECLIPTICA - now in stage: "
+                "Stage_Bringer on phase: 1 as class: Thaumaturge"
+            )
+        )
+        monitor._recovering_log_state = True
+
+        self.assertIsNone(monitor._ecliptica_sync_local_state())
+
+        monitor._recovering_log_state = False
+        self.assertTrue(monitor._ecliptica_sync_local_state()["run_active"])
+
     def test_authentication_updates_identity_without_switching_panel(self):
         monitor = self.make_monitor()
         event = parse_ecliptica_line(

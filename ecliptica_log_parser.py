@@ -110,6 +110,7 @@ class EclipticaState:
         world_name = self.world_name if preserve_world else ""
         self.world_name = world_name
         self.session_id = ""
+        self.run_active = False
         self.stage = "-"
         self.stage_progress = None
         self.run_phase = None
@@ -162,6 +163,14 @@ class EclipticaState:
             self.reset(preserve_world=False)
             self.world_name = world_name
         self.session_id = session_id
+
+    def _begin_run(self):
+        if self.run_active:
+            return
+        session_id = self.session_id
+        self.reset(preserve_world=True)
+        self.session_id = session_id
+        self.run_active = True
 
     def _reset_aggro(self):
         self._aggro_since = None
@@ -254,6 +263,7 @@ class EclipticaState:
             self.reset(preserve_world=True)
             return True
         if kind == "stage":
+            self._begin_run()
             if self.run_started_at is None or self.run_ended_at is not None:
                 self.run_started_at = now
                 self.run_ended_at = None
@@ -271,6 +281,7 @@ class EclipticaState:
             self._reset_aggro()
             return True
         if kind == "boss":
+            self._begin_run()
             boss_name, boss_key, boss_phase = split_boss_name(event.groups[0])
             if self.run_started_at is None or self.run_ended_at is not None:
                 self.run_started_at = now
@@ -364,8 +375,10 @@ class EclipticaState:
             if encounter_id is not None and encounter_id not in self._defeated_boss_encounters:
                 self._defeated_boss_encounters.add(encounter_id)
                 self.defeated_bosses.append(self.current_boss)
-            if kind == "lobby" and self.run_started_at is not None:
-                self.run_ended_at = now
+            if kind == "lobby":
+                if self.run_started_at is not None:
+                    self.run_ended_at = now
+                self.run_active = False
             self.intermission = True
             self.current_boss = "-"
             self.current_boss_key = ""
@@ -452,6 +465,7 @@ class EclipticaState:
         return {
             "world": self.world_name or "Ecliptica",
             "session_id": self.session_id or "-",
+            "run_active": self.run_active,
             "local_player_name": self.local_player_name,
             "local_player_id": self.local_player_id,
             "stage": self.stage,

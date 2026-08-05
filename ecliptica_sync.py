@@ -102,7 +102,12 @@ def sync_identity(snapshot: dict | None):
     session_id = str(state.get("session_id") or "").strip()
     player_id = str(state.get("local_player_id") or "").strip()
     player_name = str(state.get("local_player_name") or "").strip()
-    if session_id in ("", "-") or not player_id.startswith("usr_") or not player_name:
+    if (
+        not bool(state.get("run_active"))
+        or session_id in ("", "-")
+        or not player_id.startswith("usr_")
+        or not player_name
+    ):
         return None
     return session_id, player_id, player_name
 
@@ -217,6 +222,7 @@ class EclipticaSyncClient:
         self._server_sequence = 0
         self._client_sequence = 0
         self._last_received_at = None
+        self._room_state_messages_to_skip = 0
 
     def start(self):
         with self._lock:
@@ -251,6 +257,7 @@ class EclipticaSyncClient:
                 self._configuration_version += 1
                 self._players = []
                 self._server_sequence = 0
+                self._room_state_messages_to_skip = 0
             if not self._enabled:
                 self._set_status_locked("未启用", connected=False)
             elif not self._url:
@@ -270,6 +277,7 @@ class EclipticaSyncClient:
                 self._players = []
                 self._server_sequence = 0
                 self._client_sequence = 0
+                self._room_state_messages_to_skip = 0
         if previous_identity != current_identity:
             self._close_connection()
         self._wake_event.set()
@@ -302,6 +310,9 @@ class EclipticaSyncClient:
             if message.get("type") == "room_state":
                 if str(message.get("session_id") or "") != expected_session_id:
                     return False
+                if self._room_state_messages_to_skip > 0:
+                    self._room_state_messages_to_skip -= 1
+                    return True
                 server_sequence = _as_non_negative_int(message.get("server_sequence"))
                 if server_sequence and server_sequence < self._server_sequence:
                     return False
@@ -405,6 +416,8 @@ class EclipticaSyncClient:
                 retry_delay = min(10.0, retry_delay * 2.0)
 
     def _connection_loop(self, connection, configuration_version, identity):
+        with self._lock:
+            self._room_state_messages_to_skip = 1
         connection.send(json.dumps(build_join_message(self._local_state), ensure_ascii=False))
         last_signature = None
         next_send_at = 0.0

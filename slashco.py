@@ -1985,6 +1985,7 @@ class SlashCoMonitorCN:
         self._ecliptica_sync_after_id = None
         self._ecliptica_osc_test_after_id = None
         self._ecliptica_auto_jump_after_id = None
+        self._recovering_log_state = False
         self._ecliptica_osc_test_active = False
         self._sponsor_op_lock = threading.Lock()
 
@@ -3302,7 +3303,7 @@ class SlashCoMonitorCN:
         if self._is_shutting_down:
             return
         try:
-            self.ecliptica_sync.update_local_state(self.ecliptica_state.snapshot())
+            self.ecliptica_sync.update_local_state(self._ecliptica_sync_local_state())
             sync_snapshot = self.ecliptica_sync.snapshot()
             self.ecliptica_sync_status_var.set(sync_snapshot["status"])
             self._refresh_ecliptica_sync_players(sync_snapshot)
@@ -3322,6 +3323,11 @@ class SlashCoMonitorCN:
             )
         except Exception:
             self._ecliptica_sync_after_id = None
+
+    def _ecliptica_sync_local_state(self):
+        if getattr(self, "_recovering_log_state", False):
+            return None
+        return self.ecliptica_state.snapshot()
 
     def _configure_ecliptica_osc(self):
         host = normalize_osc_host(self.ecliptica_osc_host_var.get())
@@ -5028,6 +5034,7 @@ class SlashCoMonitorCN:
     def _enqueue_log_lines(self, lines):
         if self._is_shutting_down or not lines:
             return
+        self._recovering_log_state = True
         for line in lines:
             self._pending_log_lines.put(line)
         if self._log_lines_after_id is None:
@@ -5053,6 +5060,9 @@ class SlashCoMonitorCN:
                 self._pending_log_lines.get_nowait()
         except queue.Empty:
             pass
+
+    def _finish_log_recovery(self):
+        self._recovering_log_state = False
 
     def _process_pending_log_lines(self):
         if self._is_shutting_down:
@@ -5086,6 +5096,8 @@ class SlashCoMonitorCN:
                 )
             except Exception:
                 self._log_lines_after_id = None
+        else:
+            self._finish_log_recovery()
 
     def monitor_loop(self):
         current_file_path = None
@@ -5107,12 +5119,17 @@ class SlashCoMonitorCN:
                         partial_line = ""
                         self.log(f"锁定日志: {os.path.basename(current_file_path)}")
                         try:
+                            self._recovering_log_state = True
                             self._clear_pending_log_lines()
                             recovery_lines = self._get_active_round_recovery_lines(current_file_path)
                             self._ui_after(self._reset_for_new_log)
                             current_offset = os.path.getsize(current_file_path)
-                            self._enqueue_log_lines(recovery_lines)
+                            if recovery_lines:
+                                self._enqueue_log_lines(recovery_lines)
+                            else:
+                                self._ui_after(self._finish_log_recovery)
                         except Exception:
+                            self._recovering_log_state = False
                             current_file_path = None
                             current_offset = 0
                             partial_line = ""

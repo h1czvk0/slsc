@@ -154,6 +154,7 @@ class EclipticaStateTests(unittest.TestCase):
         state.apply(self.make_event("strike_damage", "1000", timestamp=20.0))
         state.apply(self.make_event("non_strike_damage", "0", timestamp=20.0))
         state.apply(self.make_event("intermission", timestamp=21.0))
+        self.assertTrue(state.snapshot(now=21.0)["run_active"])
         state.apply(self.make_event("stage", "Bringer", "0.6", "Thaumaturge", timestamp=22.0))
         state.apply(self.make_event("boss", "Despair(Clone)", "0.7", timestamp=30.0))
         state.apply(self.make_event("damage_dealt", "250", "STRIKE", timestamp=34.0))
@@ -306,6 +307,40 @@ class EclipticaStateTests(unittest.TestCase):
         state.apply(self.make_event("session", "24172", timestamp=2.0))
         self.assertEqual(state.session_id, "24172")
         self.assertEqual(state.session_total_damage, 0)
+
+    def test_lobby_ends_live_sync_but_keeps_completed_results_locally(self):
+        state = EclipticaState()
+        state.apply(self.make_event("session", "5993", timestamp=1.0))
+        state.apply(self.make_event("stage", "Stage_Bringer", "1", "Thaumaturge", timestamp=2.0))
+        state.apply(self.make_event("boss", "JimBringerPhase3(Clone)", "1", timestamp=3.0))
+        state.apply(self.make_event("boss_dead", "JimBringerPhase3", timestamp=4.0))
+        state.apply(self.make_event("strike_damage", "49000", timestamp=4.0))
+        state.apply(self.make_event("non_strike_damage", "400", timestamp=4.0))
+
+        state.apply(self.make_event("lobby", timestamp=5.0))
+        completed = state.snapshot(now=5.0)
+
+        self.assertFalse(completed["run_active"])
+        self.assertEqual(completed["session_total_damage"], 49_400)
+        self.assertEqual(completed["settlements"][0]["total"], 49_400)
+        self.assertEqual(completed["current_boss"], "-")
+
+    def test_next_run_clears_previous_totals_even_if_session_id_is_reused(self):
+        state = EclipticaState()
+        state.apply(self.make_event("session", "5993", timestamp=1.0))
+        state.apply(self.make_event("stage", "Stage_Bringer", "1", "Thaumaturge", timestamp=2.0))
+        state.session_total_damage = 49_400
+        state.settlements = [{"total": 49_400}]
+        state.apply(self.make_event("lobby", timestamp=3.0))
+        state.apply(self.make_event("session", "5993", timestamp=4.0))
+
+        state.apply(self.make_event("stage", "Stage_Hallow", "0.1", "Thaumaturge", timestamp=5.0))
+        current = state.snapshot(now=5.0)
+
+        self.assertTrue(current["run_active"])
+        self.assertEqual(current["session_id"], "5993")
+        self.assertEqual(current["session_total_damage"], 0)
+        self.assertEqual(current["settlements"], [])
 
     def test_blank_session_stops_sync_identity_and_clears_previous_totals(self):
         state = EclipticaState()

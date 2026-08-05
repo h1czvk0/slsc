@@ -21,6 +21,7 @@ def local_snapshot(**overrides):
     snapshot = {
         "world": "Ecliptica",
         "session_id": "284719",
+        "run_active": True,
         "local_player_id": "usr_11111111-1111-1111-1111-111111111111",
         "local_player_name": "Alice",
         "stage": "Bringer",
@@ -75,6 +76,7 @@ class SyncProtocolTests(unittest.TestCase):
         self.assertIsNone(sync_identity(local_snapshot(session_id="-")))
         self.assertIsNone(sync_identity(local_snapshot(local_player_id="Alice")))
         self.assertIsNone(sync_identity(local_snapshot(local_player_name="")))
+        self.assertIsNone(sync_identity(local_snapshot(run_active=False)))
 
     def test_realtime_damage_and_historical_settlement_damage_are_distinct(self):
         snapshot = local_snapshot()
@@ -151,6 +153,73 @@ class SyncProtocolTests(unittest.TestCase):
             )
         )
         self.assertEqual(client.snapshot()["players"][0]["vrc_username"], "Bob")
+
+    def test_initial_cached_room_state_is_hidden_until_current_state_arrives(self):
+        client = EclipticaSyncClient()
+        client.update_local_state(local_snapshot())
+        client._room_state_messages_to_skip = 1
+        previous_player = {
+            "vrc_user_id": "usr_11111111-1111-1111-1111-111111111111",
+            "vrc_username": "Alice",
+            "boss_name": "PreviousBoss",
+            "boss_phase": 3,
+            "boss_damage": 0,
+            "session_total_damage": 49_400,
+        }
+        current_player = dict(
+            previous_player,
+            boss_name="-",
+            boss_phase=None,
+            session_total_damage=0,
+        )
+
+        self.assertTrue(
+            client.handle_server_message(
+                {
+                    "type": "room_state",
+                    "session_id": "284719",
+                    "server_sequence": 10,
+                    "players": [previous_player],
+                }
+            )
+        )
+        self.assertEqual(client.snapshot()["players"], [])
+
+        self.assertTrue(
+            client.handle_server_message(
+                {
+                    "type": "room_state",
+                    "session_id": "284719",
+                    "server_sequence": 11,
+                    "players": [current_player],
+                }
+            )
+        )
+        self.assertEqual(client.snapshot()["players"][0]["session_total_damage"], 0)
+
+    def test_ending_run_immediately_clears_realtime_room_players(self):
+        client = EclipticaSyncClient()
+        client.update_local_state(local_snapshot())
+        client.handle_server_message(
+            {
+                "type": "room_state",
+                "session_id": "284719",
+                "server_sequence": 1,
+                "players": [
+                    {
+                        "vrc_user_id": "usr_11111111-1111-1111-1111-111111111111",
+                        "vrc_username": "Alice",
+                        "session_total_damage": 49_400,
+                    }
+                ],
+            }
+        )
+        self.assertEqual(len(client.snapshot()["players"]), 1)
+
+        client.update_local_state(local_snapshot(run_active=False))
+
+        self.assertEqual(client.snapshot()["players"], [])
+        self.assertIsNone(sync_identity(client._local_state))
 
 
 if __name__ == "__main__":
