@@ -8,6 +8,7 @@ from urllib.parse import urlparse, urlunparse
 
 PROTOCOL_VERSION = 1
 DEFAULT_SYNC_INTERVAL_SECONDS = 0.1
+DEFAULT_SYNC_URL = "ws://zzu2.wch1.top:44976/ws"
 MAX_ROOM_PLAYERS = 4
 HEARTBEAT_INTERVAL_SECONDS = 10.0
 

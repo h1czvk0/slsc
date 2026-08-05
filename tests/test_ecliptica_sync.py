@@ -7,6 +7,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ecliptica_sync import (  # noqa: E402
+    DEFAULT_SYNC_URL,
     EclipticaSyncClient,
     MAX_ROOM_PLAYERS,
     build_damage_update,
@@ -39,6 +40,9 @@ def local_snapshot(**overrides):
 
 
 class SyncProtocolTests(unittest.TestCase):
+    def test_default_server_uses_nat_public_port(self):
+        self.assertEqual(DEFAULT_SYNC_URL, "ws://zzu2.wch1.top:44976/ws")
+
     def test_server_url_is_normalized_for_websocket_transport(self):
         self.assertEqual(normalize_sync_url("sync.example.com"), "wss://sync.example.com/ws")
         self.assertEqual(

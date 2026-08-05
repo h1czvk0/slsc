@@ -43,7 +43,7 @@ from ecliptica_log_parser import (
     line_might_affect_ecliptica_state,
     parse_ecliptica_line,
 )
-from ecliptica_sync import EclipticaSyncClient, normalize_sync_url
+from ecliptica_sync import DEFAULT_SYNC_URL, EclipticaSyncClient, normalize_sync_url
 from slashco_updater import (
     APP_VERSION,
     download_update,
@@ -2858,7 +2858,7 @@ class SlashCoMonitorCN:
         self.ecliptica_osc_port_var = StringVar(value=str(DEFAULT_OSC_PORT))
         self.ecliptica_osc_status_var = StringVar(value="未启用")
         self.ecliptica_sync_enabled = BooleanVar(value=False)
-        self.ecliptica_sync_url_var = StringVar(value="")
+        self.ecliptica_sync_url_var = StringVar(value=DEFAULT_SYNC_URL)
         self.ecliptica_sync_status_var = StringVar(value="未启用")
         self._ecliptica_sync_player_rows = ()
         self.ecliptica_hud_layout = {}
@@ -2905,7 +2905,8 @@ class SlashCoMonitorCN:
                 self.ecliptica_osc_status_var.set("等待锁定目标" if osc_enabled else "未启用")
                 sync_enabled = bool(config.get("sync_enabled", False))
                 self.ecliptica_sync_enabled.set(sync_enabled)
-                self.ecliptica_sync_url_var.set(normalize_sync_url(config.get("sync_url")))
+                saved_sync_url = normalize_sync_url(config.get("sync_url"))
+                self.ecliptica_sync_url_var.set(saved_sync_url or DEFAULT_SYNC_URL)
                 self.ecliptica_sync_status_var.set(
                     "等待日志中的会话与 VRC 身份" if sync_enabled else "未启用"
                 )
