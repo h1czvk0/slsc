@@ -281,6 +281,36 @@ class EclipticaStateTests(unittest.TestCase):
         self.assertEqual(aggro["locked_secs"], 6)
         self.assertFalse(aggro["stale"])
 
+    def test_new_boss_phase_uses_last_owner_until_a_new_lock_arrives(self):
+        state = EclipticaState()
+        state.apply(self.make_event("authenticated", "Local Player", "usr_local", timestamp=1.0))
+        state.apply(self.make_event("boss", "JimBringer(Clone)", "1", timestamp=10.0))
+        state.apply(self.make_event("ownership", "JimBringer", "Player A", timestamp=12.0))
+
+        state.apply(self.make_event("boss", "JimBringerPhase2(Clone)", "2", timestamp=20.0))
+        fallback = state.aggro_snapshot(now=21.0)
+
+        self.assertEqual(fallback["state"], "unknown")
+        self.assertEqual(fallback["target"], "Player A")
+        self.assertEqual(fallback["status"], "沿用上次锁定")
+        self.assertTrue(fallback["fallback"])
+
+        state.apply(self.make_event("ownership", "JimBringerPhase2", "Player B", timestamp=22.0))
+        current = state.aggro_snapshot(now=23.0)
+        self.assertEqual(current["target"], "Player B")
+        self.assertFalse(current["fallback"])
+
+    def test_last_owner_is_cleared_before_the_next_run(self):
+        state = EclipticaState()
+        state.apply(self.make_event("session", "5993", timestamp=1.0))
+        state.apply(self.make_event("boss", "JimBringer(Clone)", "1", timestamp=2.0))
+        state.apply(self.make_event("ownership", "JimBringer", "Player A", timestamp=3.0))
+        state.apply(self.make_event("lobby", timestamp=4.0))
+        state.apply(self.make_event("stage", "Stage_Bringer", "1", "Thaumaturge", timestamp=5.0))
+        state.apply(self.make_event("boss", "QueenBug(Clone)", "1", timestamp=6.0))
+
+        self.assertEqual(state.aggro_snapshot(now=7.0)["target"], "-")
+
     def test_ownership_from_another_boss_or_phase_is_ignored(self):
         state = EclipticaState()
         state.apply(self.make_event("boss", "ObisidusPhase2(Clone)", "1", timestamp=10.0))

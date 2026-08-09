@@ -152,6 +152,7 @@ class EclipticaState:
         self._aggro_since = None
         self._aggro_updated_at = None
         self._aggro_target_player = ""
+        self._last_aggro_target_player = ""
         self._aggro_state = "unknown"
 
     def _event_time(self, event: EclipticaEvent):
@@ -332,6 +333,7 @@ class EclipticaState:
                 self._aggro_since = now
             self._aggro_updated_at = now
             self._aggro_target_player = target_player
+            self._last_aggro_target_player = target_player
             if not self.local_player_name:
                 self._aggro_state = "unknown"
             elif target_player.casefold() == self.local_player_name.strip().casefold():
@@ -400,16 +402,24 @@ class EclipticaState:
                 "status": "未在 Boss 战",
                 "stale": True,
                 "locked_secs": 0,
+                "fallback": False,
             }
         if not self._aggro_target_player or self._aggro_updated_at is None:
             age = max(0.0, current_time - (self.current_boss_started_at or current_time))
+            fallback_target = self._last_aggro_target_player or "-"
+            is_local = bool(
+                fallback_target != "-"
+                and self.local_player_name
+                and fallback_target.casefold() == self.local_player_name.strip().casefold()
+            )
             return {
                 "state": "unknown",
-                "target": "-",
-                "is_local": False,
-                "status": "等待锁定目标",
+                "target": fallback_target,
+                "is_local": is_local,
+                "status": "沿用上次锁定" if fallback_target != "-" else "等待锁定目标",
                 "stale": age > self.AGGRO_STALE_SECONDS,
                 "locked_secs": int(age),
+                "fallback": fallback_target != "-",
             }
 
         updated_age = max(0.0, current_time - self._aggro_updated_at)
@@ -422,6 +432,7 @@ class EclipticaState:
             "status": "正在追击你" if is_local else ("追击其他玩家" if self._aggro_state == "other" else "仇恨中"),
             "stale": updated_age >= self.AGGRO_STALE_SECONDS,
             "locked_secs": max(0, int(current_time - since)),
+            "fallback": False,
         }
 
     def snapshot(self, now=None):
