@@ -1,6 +1,7 @@
 import pathlib
 import sys
 import unittest
+from unittest.mock import patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -11,6 +12,7 @@ from ecliptica_sync import (  # noqa: E402
     EclipticaSyncClient,
     build_damage_update,
     build_join_message,
+    is_boss_battle_active,
     normalize_room_players,
     normalize_sync_url,
     sync_identity,
@@ -77,6 +79,12 @@ class SyncProtocolTests(unittest.TestCase):
         self.assertIsNone(sync_identity(local_snapshot(local_player_id="Alice")))
         self.assertIsNone(sync_identity(local_snapshot(local_player_name="")))
         self.assertIsNone(sync_identity(local_snapshot(run_active=False)))
+
+    def test_boss_battle_requires_an_active_run_and_current_boss(self):
+        self.assertTrue(is_boss_battle_active(local_snapshot()))
+        self.assertFalse(is_boss_battle_active(local_snapshot(current_boss="-")))
+        self.assertFalse(is_boss_battle_active(local_snapshot(intermission=True)))
+        self.assertFalse(is_boss_battle_active(local_snapshot(run_active=False)))
 
     def test_realtime_damage_and_historical_settlement_damage_are_distinct(self):
         snapshot = local_snapshot()
@@ -220,6 +228,59 @@ class SyncProtocolTests(unittest.TestCase):
 
         self.assertEqual(client.snapshot()["players"], [])
         self.assertIsNone(sync_identity(client._local_state))
+
+    def test_entering_each_boss_battle_forces_one_reconnect(self):
+        class FakeConnection:
+            def __init__(self):
+                self.close_calls = 0
+
+            def close(self):
+                self.close_calls += 1
+
+        client = EclipticaSyncClient()
+        outside_boss = local_snapshot(current_boss="-", current_boss_phase=None)
+        client.update_local_state(outside_boss)
+        initial_version = client._configuration_version
+
+        first_connection = FakeConnection()
+        client._connection = first_connection
+        client.update_local_state(local_snapshot(current_boss="JimBringer", current_boss_phase=1))
+        self.assertEqual(first_connection.close_calls, 1)
+        self.assertEqual(client._configuration_version, initial_version + 1)
+
+        client.update_local_state(local_snapshot(current_boss="JimBringer", current_boss_phase=2))
+        self.assertEqual(client._configuration_version, initial_version + 1)
+
+        client.update_local_state(outside_boss)
+        second_connection = FakeConnection()
+        client._connection = second_connection
+        client.update_local_state(local_snapshot(current_boss="QueenBug", current_boss_phase=1))
+        self.assertEqual(second_connection.close_calls, 1)
+        self.assertEqual(client._configuration_version, initial_version + 2)
+
+    def test_unresponsive_connection_is_closed_for_automatic_retry(self):
+        class WebSocketTimeoutException(Exception):
+            pass
+
+        class UnresponsiveConnection:
+            def send(self, _payload):
+                pass
+
+            def recv(self):
+                raise WebSocketTimeoutException()
+
+        client = EclipticaSyncClient()
+        client.configure(True, "ws://sync.example.test/ws")
+        client.update_local_state(local_snapshot())
+        connection = UnresponsiveConnection()
+
+        with patch("ecliptica_sync.time.monotonic", side_effect=(0.0, 31.0)):
+            with self.assertRaisesRegex(ConnectionError, "长时间未响应"):
+                client._connection_loop(
+                    connection,
+                    client._configuration_version,
+                    sync_identity(client._local_state),
+                )
 
 
 if __name__ == "__main__":

@@ -3338,6 +3338,7 @@ class SlashCoMonitorCN:
         if self._is_shutting_down:
             return
         try:
+            self.ecliptica_sync.start()
             self.ecliptica_sync.update_local_state(self._ecliptica_sync_local_state())
             sync_snapshot = self.ecliptica_sync.snapshot()
             self.ecliptica_sync_status_var.set(sync_snapshot["status"])

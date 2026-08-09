@@ -12,6 +12,7 @@ PROTOCOL_VERSION = 1
 DEFAULT_SYNC_INTERVAL_SECONDS = 0.1
 DEFAULT_SYNC_URL = "ws://zzu2.wch1.top:44976/ws"
 HEARTBEAT_INTERVAL_SECONDS = 10.0
+CONNECTION_STALE_TIMEOUT_SECONDS = 30.0
 
 
 try:
@@ -110,6 +111,16 @@ def sync_identity(snapshot: dict | None):
     ):
         return None
     return session_id, player_id, player_name
+
+
+def is_boss_battle_active(snapshot: dict | None) -> bool:
+    state = snapshot if isinstance(snapshot, dict) else {}
+    boss_name = str(state.get("current_boss") or "").strip()
+    return (
+        bool(state.get("run_active"))
+        and not bool(state.get("intermission"))
+        and boss_name not in ("", "-")
+    )
 
 
 def build_damage_update(snapshot: dict, sequence: int) -> dict:
@@ -271,14 +282,22 @@ class EclipticaSyncClient:
         with self._lock:
             previous_identity = sync_identity(self._local_state)
             current_identity = sync_identity(state)
+            entered_boss_battle = (
+                not is_boss_battle_active(self._local_state)
+                and is_boss_battle_active(state)
+            )
             self._local_state = state
-            if previous_identity != current_identity:
+            reconnect_required = previous_identity != current_identity or entered_boss_battle
+            if reconnect_required:
                 self._configuration_version += 1
                 self._players = []
                 self._server_sequence = 0
                 self._client_sequence = 0
+                self._last_received_at = None
                 self._room_state_messages_to_skip = 0
-        if previous_identity != current_identity:
+                if entered_boss_battle and current_identity is not None:
+                    self._set_status_locked("Boss 战开始，正在重新连接…", connected=False)
+        if reconnect_required:
             self._close_connection()
         self._wake_event.set()
 
@@ -421,7 +440,8 @@ class EclipticaSyncClient:
         connection.send(json.dumps(build_join_message(self._local_state), ensure_ascii=False))
         last_signature = None
         next_send_at = 0.0
-        next_heartbeat_at = time.monotonic() + HEARTBEAT_INTERVAL_SECONDS
+        last_server_message_at = time.monotonic()
+        next_heartbeat_at = last_server_message_at + HEARTBEAT_INTERVAL_SECONDS
 
         while not self._stop_event.is_set():
             with self._lock:
@@ -434,6 +454,8 @@ class EclipticaSyncClient:
                 state = deepcopy(self._local_state)
 
             now = time.monotonic()
+            if now - last_server_message_at >= CONNECTION_STALE_TIMEOUT_SECONDS:
+                raise ConnectionError("同步服务器长时间未响应")
             with self._lock:
                 next_sequence = self._client_sequence + 1
             payload = build_damage_update(state, next_sequence)
@@ -463,6 +485,9 @@ class EclipticaSyncClient:
                 incoming = connection.recv()
                 if incoming is None or incoming == "":
                     raise ConnectionError("同步连接已关闭")
+                last_server_message_at = time.monotonic()
+                with self._lock:
+                    self._last_received_at = time.time()
                 self.handle_server_message(incoming)
             except Exception as exc:
                 if self._is_receive_timeout(exc):
