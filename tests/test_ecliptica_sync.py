@@ -229,7 +229,7 @@ class SyncProtocolTests(unittest.TestCase):
         self.assertEqual(client.snapshot()["players"], [])
         self.assertIsNone(sync_identity(client._local_state))
 
-    def test_entering_each_boss_battle_forces_one_reconnect(self):
+    def test_entering_each_boss_battle_retries_once_when_not_connected(self):
         class FakeConnection:
             def __init__(self):
                 self.close_calls = 0
@@ -257,6 +257,27 @@ class SyncProtocolTests(unittest.TestCase):
         client.update_local_state(local_snapshot(current_boss="QueenBug", current_boss_phase=1))
         self.assertEqual(second_connection.close_calls, 1)
         self.assertEqual(client._configuration_version, initial_version + 2)
+
+    def test_entering_boss_battle_preserves_a_healthy_connection(self):
+        class FakeConnection:
+            def __init__(self):
+                self.close_calls = 0
+
+            def close(self):
+                self.close_calls += 1
+
+        client = EclipticaSyncClient()
+        client.update_local_state(local_snapshot(current_boss="-", current_boss_phase=None))
+        initial_version = client._configuration_version
+        connection = FakeConnection()
+        client._connection = connection
+        client._connected = True
+
+        client.update_local_state(local_snapshot(current_boss="JimBringer", current_boss_phase=1))
+
+        self.assertEqual(connection.close_calls, 0)
+        self.assertTrue(client.snapshot()["connected"])
+        self.assertEqual(client._configuration_version, initial_version)
 
     def test_unresponsive_connection_is_closed_for_automatic_retry(self):
         class WebSocketTimeoutException(Exception):

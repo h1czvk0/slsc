@@ -287,7 +287,12 @@ class EclipticaSyncClient:
                 and is_boss_battle_active(state)
             )
             self._local_state = state
-            reconnect_required = previous_identity != current_identity or entered_boss_battle
+            boss_retry_required = (
+                entered_boss_battle
+                and current_identity is not None
+                and not self._connected
+            )
+            reconnect_required = previous_identity != current_identity or boss_retry_required
             if reconnect_required:
                 self._configuration_version += 1
                 self._players = []
@@ -295,7 +300,7 @@ class EclipticaSyncClient:
                 self._client_sequence = 0
                 self._last_received_at = None
                 self._room_state_messages_to_skip = 0
-                if entered_boss_battle and current_identity is not None:
+                if boss_retry_required:
                     self._set_status_locked("Boss 战开始，正在重新连接…", connected=False)
         if reconnect_required:
             self._close_connection()
