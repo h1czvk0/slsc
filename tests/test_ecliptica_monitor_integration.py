@@ -611,6 +611,7 @@ class HudLayoutTests(unittest.TestCase):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
         hud.display_panels = ("damage", "boss_lock", "party_damage")
         hud.editing = False
+        hud.boss_battle_active = False
         hud.boss_lock_active = False
         hud.damage_background_window = FakeHudWindow()
         hud.damage_window = FakeHudWindow()
@@ -628,11 +629,12 @@ class HudLayoutTests(unittest.TestCase):
         self.assertEqual(hud.party_background_window.state(), "withdrawn")
         self.assertEqual(hud.party_window.state(), "withdrawn")
 
-    def test_party_damage_hud_is_visible_during_boss_battle(self):
+    def test_party_damage_hud_is_visible_during_boss_battle_without_valid_lock(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
         hud.display_panels = ("damage", "boss_lock", "party_damage")
         hud.editing = False
-        hud.boss_lock_active = True
+        hud.boss_battle_active = True
+        hud.boss_lock_active = False
         hud.damage_background_window = FakeHudWindow()
         hud.damage_window = FakeHudWindow()
         hud.lock_background_window = FakeHudWindow()
@@ -645,11 +647,13 @@ class HudLayoutTests(unittest.TestCase):
 
         self.assertEqual(hud.party_background_window.state(), "normal")
         self.assertEqual(hud.party_window.state(), "normal")
+        self.assertEqual(hud.lock_window.state(), "withdrawn")
 
     def test_party_damage_panel_selection_hides_the_other_two_huds(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
         hud.display_panels = ("party_damage",)
         hud.editing = False
+        hud.boss_battle_active = True
         hud.boss_lock_active = True
         hud.damage_background_window = FakeHudWindow()
         hud.damage_window = FakeHudWindow()
@@ -669,6 +673,7 @@ class HudLayoutTests(unittest.TestCase):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)
         hud.display_panels = ("party_damage",)
         hud.editing = False
+        hud.boss_battle_active = True
         hud.boss_lock_active = True
         hud.damage_background_window = FakeHudWindow()
         hud.damage_window = FakeHudWindow()

@@ -44,7 +44,11 @@ from ecliptica_log_parser import (
     parse_ecliptica_line,
 )
 from ecliptica_history import EclipticaHistoryClient, EclipticaHistoryDialog
-from ecliptica_sync import DEFAULT_SYNC_URL, EclipticaSyncClient
+from ecliptica_sync import (
+    DEFAULT_SYNC_URL,
+    EclipticaSyncClient,
+    is_boss_battle_active,
+)
 from slashco_updater import (
     APP_VERSION,
     download_update,
@@ -767,6 +771,7 @@ class EclipticaDesktopHud:
         self.party_total_damage = 0
         self.lock_text = "Boss 当前锁定：-"
         self.lock_target = "-"
+        self.boss_battle_active = False
         self.boss_lock_active = False
         self.resize_grips = {}
         self._pointer_operation = None
@@ -1497,7 +1502,10 @@ class EclipticaDesktopHud:
             "party_damage" in self.display_panels
             and (
                 self.editing
-                or (self.boss_lock_active and len(getattr(self, "party_rows", ())) >= 2)
+                or (
+                    self.boss_battle_active
+                    and len(getattr(self, "party_rows", ())) >= 2
+                )
             )
         )
         party_background = getattr(self, "party_background_window", None)
@@ -1661,6 +1669,7 @@ class EclipticaDesktopHud:
         target = aggro.get("target", "-")
         self.lock_target = str(target)
         self.lock_text = f"Boss 当前锁定：{target}"
+        self.boss_battle_active = is_boss_battle_active(snapshot)
         self.boss_lock_active = (
             aggro.get("state") not in ("inactive", None)
             and str(target).strip() not in ("", "-", "某玩家")
