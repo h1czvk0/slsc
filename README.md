@@ -65,6 +65,10 @@ python 主程序脚本.py
 dist
 ```
 
+## GitHub Releases 发布
+
+仓库只通过 `.github/workflows/release.yml` 的手动 `workflow_dispatch` 发布版本，不会因普通提交、推送或 Tag 自动发布。只有明确决定发布到 Releases 时，才输入 `RELEASE` 触发工作流；工作流会校验版本、运行测试、构建 EXE、核对附件摘要，然后发布为 Latest Release。
+
 ## 注意事项
 
 - 本工具只依赖本地日志解析，不修改目标程序文件。
