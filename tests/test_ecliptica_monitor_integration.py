@@ -1,5 +1,8 @@
 import pathlib
+import queue
 import sys
+import threading
+import time
 import unittest
 
 from PIL import Image, ImageDraw
@@ -15,6 +18,7 @@ from slashco import (  # noqa: E402
     HUD_DEFAULT_PRESET_FIELDS,
     HUD_DEFAULT_PRESET_ORDER,
     HUD_DEFAULT_PRESET_VERSION,
+    LOG_RECOVERY_SYNC_TIMEOUT_SECONDS,
     PANEL_MODE_LABELS,
     SlashCoMonitorCN,
     _hud_text_runs,
@@ -136,6 +140,18 @@ class FakeAfterRoot:
 
     def after_cancel(self, _after_id):
         self.callback = None
+
+
+class FakeUiRoot:
+    def __init__(self):
+        self.after_calls = []
+
+    def winfo_exists(self):
+        return True
+
+    def after(self, delay, callback, *args):
+        self.after_calls.append((delay, callback, args))
+        return f"after-{len(self.after_calls)}"
 
 
 class FakeHudWindow:
@@ -290,6 +306,59 @@ class EclipticaMonitorIntegrationTests(unittest.TestCase):
 
         monitor._recovering_log_state = False
         self.assertTrue(monitor._ecliptica_sync_local_state()["run_active"])
+
+    def test_log_recovery_timeout_cannot_block_sync_forever(self):
+        monitor = self.make_monitor()
+        monitor.log_messages = []
+        monitor.log = monitor.log_messages.append
+        monitor.ecliptica_state.apply(
+            parse_ecliptica_line(
+                "2026.08.10 19:46:12 Debug - User Authenticated: TestPlayer "
+                "(usr_00000000-0000-0000-0000-000000000001)"
+            )
+        )
+        monitor.ecliptica_state.apply(parse_ecliptica_line("ECLIPTICA saving SESSION ID 24595"))
+        monitor.ecliptica_state.apply(
+            parse_ecliptica_line(
+                "ECLIPTICA - now fighting boss: Kakarot(Clone) on phase: 0"
+            )
+        )
+        monitor._recovering_log_state = True
+        monitor._log_recovery_started_at = (
+            time.monotonic() - LOG_RECOVERY_SYNC_TIMEOUT_SECONDS - 1
+        )
+
+        snapshot = monitor._ecliptica_sync_local_state()
+
+        self.assertEqual(snapshot["session_id"], "24595")
+        self.assertEqual(snapshot["local_player_name"], "TestPlayer")
+        self.assertFalse(monitor._recovering_log_state)
+        self.assertIsNone(monitor._log_recovery_started_at)
+        self.assertIn("日志恢复超时，已自动解除同步等待", monitor.log_messages)
+
+    def test_worker_ui_callback_is_queued_instead_of_calling_tk(self):
+        monitor = self.make_monitor()
+        monitor.root = FakeUiRoot()
+        monitor._is_shutting_down = False
+        monitor._ui_callback_queue = queue.Queue()
+        monitor._ui_callback_after_id = None
+        received = []
+
+        worker = threading.Thread(
+            target=lambda: monitor._ui_after(received.append, "done")
+        )
+        worker.start()
+        worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(received, [])
+        self.assertEqual(monitor.root.after_calls, [])
+        self.assertEqual(monitor._ui_callback_queue.qsize(), 1)
+
+        monitor._process_ui_callback_queue()
+
+        self.assertEqual(received, ["done"])
+        self.assertEqual(len(monitor.root.after_calls), 1)
 
     def test_authentication_updates_identity_without_switching_panel(self):
         monitor = self.make_monitor()

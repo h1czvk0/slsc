@@ -1786,6 +1786,9 @@ LOG_TAIL_SCAN_BYTES = 20 * 1024 * 1024
 LOG_TAIL_READ_BLOCK_BYTES = 1024 * 1024
 LOG_PROCESS_BATCH_SIZE = 200
 LOG_PROCESS_BATCH_DELAY_MS = 1
+LOG_RECOVERY_SYNC_TIMEOUT_SECONDS = 15.0
+UI_CALLBACK_POLL_INTERVAL_MS = 25
+UI_CALLBACK_BATCH_SIZE = 200
 TREE_REBUILD_DELAY_MS = 50
 IMAGE_SYNC_START_DELAY_MS = 2000
 LOG_FILE_CHECK_INTERVAL_SECONDS = 3.0
@@ -2022,7 +2025,10 @@ class SlashCoMonitorCN:
         self._ecliptica_sync_after_id = None
         self._ecliptica_osc_test_after_id = None
         self._ecliptica_auto_jump_after_id = None
+        self._ui_callback_after_id = None
+        self._ui_callback_queue = queue.Queue()
         self._recovering_log_state = False
+        self._log_recovery_started_at = None
         self._ecliptica_osc_test_active = False
         self._sponsor_op_lock = threading.Lock()
 
@@ -2141,6 +2147,10 @@ class SlashCoMonitorCN:
         self._log_lines_after_id = None
         self._tree_rebuild_after_id = None
         self._process_log_queue()
+        self._ui_callback_after_id = self.root.after(
+            UI_CALLBACK_POLL_INTERVAL_MS,
+            self._process_ui_callback_queue,
+        )
         self.log(f"当前版本: {APP_VERSION}")
 
         threading.Thread(target=self._check_app_update_worker, daemon=True).start()
@@ -2176,15 +2186,49 @@ class SlashCoMonitorCN:
 
 
     def _ui_after(self, callback, *args):
-        """安全投递到主线程：关闭中或窗口无效时直接丢弃。"""
+        """安全投递到主线程，避免工作线程直接调用 Tk。"""
         if self._is_shutting_down:
             return None
+        if threading.current_thread() is not threading.main_thread():
+            callback_queue = getattr(self, "_ui_callback_queue", None)
+            if callback_queue is None:
+                return None
+            callback_queue.put((callback, args))
+            return "queued"
         try:
             if not self.root.winfo_exists():
                 return None
             return self.root.after(0, callback, *args)
         except Exception:
             return None
+
+    def _process_ui_callback_queue(self):
+        """由 Tk 主线程轮询执行后台线程投递的回调。"""
+        self._ui_callback_after_id = None
+        if self._is_shutting_down:
+            return
+
+        processed = 0
+        while processed < UI_CALLBACK_BATCH_SIZE:
+            try:
+                callback, args = self._ui_callback_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                callback(*args)
+            except Exception as exc:
+                self.log(f"主线程回调执行失败: {exc}")
+            processed += 1
+
+        if self._is_shutting_down:
+            return
+        try:
+            self._ui_callback_after_id = self.root.after(
+                UI_CALLBACK_POLL_INTERVAL_MS,
+                self._process_ui_callback_queue,
+            )
+        except Exception:
+            self._ui_callback_after_id = None
 
     def _start_image_sync_thread(self):
         if self._is_shutting_down:
@@ -3371,7 +3415,14 @@ class SlashCoMonitorCN:
 
     def _ecliptica_sync_local_state(self):
         if getattr(self, "_recovering_log_state", False):
-            return None
+            started_at = getattr(self, "_log_recovery_started_at", None)
+            if started_at is None:
+                self._log_recovery_started_at = time.monotonic()
+                return None
+            if time.monotonic() - started_at < LOG_RECOVERY_SYNC_TIMEOUT_SECONDS:
+                return None
+            self.log("日志恢复超时，已自动解除同步等待")
+            self._finish_log_recovery()
         return self.ecliptica_state.snapshot()
 
     def _configure_ecliptica_osc(self):
@@ -5085,7 +5136,8 @@ class SlashCoMonitorCN:
     def _enqueue_log_lines(self, lines):
         if self._is_shutting_down or not lines:
             return
-        self._recovering_log_state = True
+        if not self._recovering_log_state:
+            self._begin_log_recovery()
         for line in lines:
             self._pending_log_lines.put(line)
         if self._log_lines_after_id is None:
@@ -5112,8 +5164,13 @@ class SlashCoMonitorCN:
         except queue.Empty:
             pass
 
+    def _begin_log_recovery(self):
+        self._recovering_log_state = True
+        self._log_recovery_started_at = time.monotonic()
+
     def _finish_log_recovery(self):
         self._recovering_log_state = False
+        self._log_recovery_started_at = None
 
     def _process_pending_log_lines(self):
         if self._is_shutting_down:
@@ -5170,7 +5227,7 @@ class SlashCoMonitorCN:
                         partial_line = ""
                         self.log(f"锁定日志: {os.path.basename(current_file_path)}")
                         try:
-                            self._recovering_log_state = True
+                            self._begin_log_recovery()
                             self._clear_pending_log_lines()
                             recovery_lines = self._get_active_round_recovery_lines(current_file_path)
                             self._ui_after(self._reset_for_new_log)
@@ -5180,7 +5237,7 @@ class SlashCoMonitorCN:
                             else:
                                 self._ui_after(self._finish_log_recovery)
                         except Exception:
-                            self._recovering_log_state = False
+                            self._finish_log_recovery()
                             current_file_path = None
                             current_offset = 0
                             partial_line = ""
@@ -5629,6 +5686,7 @@ class SlashCoMonitorCN:
 
         # 取消周期性 after 任务
         for attr in (
+            "_ui_callback_after_id",
             "_log_queue_after_id",
             "_log_lines_after_id",
             "_pending_tick_after_id",
