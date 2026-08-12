@@ -1,6 +1,7 @@
 import pathlib
 import queue
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -128,6 +129,18 @@ class FakeOscOutput:
     def clear(self, **_kwargs):
         self.clear_calls += 1
         return True
+
+
+class FakeSyncClient:
+    def __init__(self):
+        self.states = []
+        self.reconnect_calls = 0
+
+    def update_local_state(self, state):
+        self.states.append(state)
+
+    def reconnect_now(self):
+        self.reconnect_calls += 1
 
 
 class FakeAfterRoot:
@@ -370,6 +383,61 @@ class EclipticaMonitorIntegrationTests(unittest.TestCase):
         self.assertFalse(monitor._handle_ecliptica_event(event))
         self.assertEqual(monitor.current_game_mode, "slashco")
         self.assertEqual(monitor.ecliptica_state.local_player_name, "TestPlayer")
+
+    def test_identity_is_read_from_log_start_without_ecliptica_events(self):
+        monitor = self.make_monitor()
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "output_log_test.txt"
+            path.write_text(
+                "2026.08.11 21:13:48 Debug - User Authenticated: TestPlayer "
+                "(usr_00000000-0000-0000-0000-000000000001)\n"
+                "2026.08.11 21:13:54 Debug - [Behaviour] Entering Room: VRChat Home\n",
+                encoding="utf-8",
+            )
+
+            event = monitor._read_vrc_identity_event(str(path))
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event.kind, "authenticated")
+        self.assertEqual(event.groups[0], "TestPlayer")
+        self.assertEqual(event.groups[1], "usr_00000000-0000-0000-0000-000000000001")
+
+    def test_identity_reader_keeps_last_authentication_in_scan_window(self):
+        monitor = self.make_monitor()
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "output_log_test.txt"
+            path.write_text(
+                "User Authenticated: Old User (usr_old)\n"
+                "User Authenticated: Current User (usr_current)\n",
+                encoding="utf-8",
+            )
+
+            event = monitor._read_vrc_identity_event(str(path))
+
+        self.assertEqual(event.groups, ("Current User", "usr_current"))
+
+    def test_manual_connect_reloads_identity_and_releases_finished_recovery(self):
+        monitor = self.make_monitor()
+        monitor._pending_log_lines = queue.Queue()
+        monitor._recovering_log_state = True
+        monitor._log_recovery_started_at = time.monotonic()
+        monitor.ecliptica_sync = FakeSyncClient()
+        monitor.ecliptica_sync_status_var = FakeVar("")
+        monitor.get_latest_log_file = lambda: "current-log.txt"
+        monitor._read_vrc_identity_event = lambda _path: parse_ecliptica_line(
+            "User Authenticated: TestPlayer "
+            "(usr_00000000-0000-0000-0000-000000000001)"
+        )
+        monitor.log_messages = []
+        monitor.log = monitor.log_messages.append
+
+        monitor._manual_ecliptica_sync_connect()
+
+        self.assertEqual(monitor.ecliptica_state.local_player_name, "TestPlayer")
+        self.assertFalse(monitor._recovering_log_state)
+        self.assertEqual(monitor.ecliptica_sync.reconnect_calls, 1)
+        self.assertEqual(len(monitor.ecliptica_sync.states), 1)
+        self.assertIn("手动连接", monitor.ecliptica_sync_status_var.get())
 
 
 class PanelModeSelectionTests(unittest.TestCase):

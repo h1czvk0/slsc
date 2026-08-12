@@ -1784,6 +1784,7 @@ DEFAULT_SPONSOR_PROXY_PORT = 8080
 COMMON_ACCELERATOR_PORTS = (7890, 7891, 9090, 1080, 10808, 10080)
 LOG_TAIL_SCAN_BYTES = 20 * 1024 * 1024
 LOG_TAIL_READ_BLOCK_BYTES = 1024 * 1024
+LOG_IDENTITY_SCAN_BYTES = 2 * 1024 * 1024
 LOG_PROCESS_BATCH_SIZE = 200
 LOG_PROCESS_BATCH_DELAY_MS = 1
 LOG_RECOVERY_SYNC_TIMEOUT_SECONDS = 15.0
@@ -2950,6 +2951,12 @@ class SlashCoMonitorCN:
             foreground="#666666",
             font=("微软雅黑", 8),
         ).pack(side=LEFT)
+        self.ecliptica_sync_connect_button = ttk.Button(
+            sync_status_row,
+            text="手动连接",
+            command=self._manual_ecliptica_sync_connect,
+        )
+        self.ecliptica_sync_connect_button.pack(side=RIGHT)
         sync_url_row = ttk.Frame(sync_frame)
         sync_url_row.pack(fill=X, pady=(5, 0))
         ttk.Label(sync_url_row, text="服务器：").pack(side=LEFT)
@@ -3395,6 +3402,7 @@ class SlashCoMonitorCN:
             self.ecliptica_sync.update_local_state(self._ecliptica_sync_local_state())
             sync_snapshot = self.ecliptica_sync.snapshot()
             self.ecliptica_sync_status_var.set(sync_snapshot["status"])
+            self._update_ecliptica_sync_connect_button(sync_snapshot)
             self._refresh_ecliptica_sync_players(sync_snapshot)
             if (
                 self.ecliptica_hud
@@ -3412,6 +3420,35 @@ class SlashCoMonitorCN:
             )
         except Exception:
             self._ecliptica_sync_after_id = None
+
+    def _update_ecliptica_sync_connect_button(self, sync_snapshot):
+        button = getattr(self, "ecliptica_sync_connect_button", None)
+        if button is None:
+            return
+        if bool(sync_snapshot.get("connected")):
+            if button.winfo_manager():
+                button.pack_forget()
+        elif not button.winfo_manager():
+            button.pack(side=RIGHT)
+
+    def _manual_ecliptica_sync_connect(self):
+        identity_event = self._read_vrc_identity_event(self.get_latest_log_file())
+        if identity_event is not None:
+            self.ecliptica_state.apply(identity_event)
+            self._update_ecliptica_ui()
+            self.log(f"已重新读取 VRC 身份: {identity_event.groups[0]}")
+        else:
+            self.log("手动连接未在最新日志中找到 VRC 用户身份")
+        pending_lines = getattr(self, "_pending_log_lines", None)
+        if (
+            getattr(self, "_recovering_log_state", False)
+            and pending_lines is not None
+            and pending_lines.empty()
+        ):
+            self._finish_log_recovery()
+        self.ecliptica_sync.update_local_state(self.ecliptica_state.snapshot())
+        self.ecliptica_sync.reconnect_now()
+        self.ecliptica_sync_status_var.set("手动连接：正在重新读取状态…")
 
     def _ecliptica_sync_local_state(self):
         if getattr(self, "_recovering_log_state", False):
@@ -5039,6 +5076,23 @@ class SlashCoMonitorCN:
         except Exception:
             return None
 
+    def _read_vrc_identity_event(self, path: str | None):
+        """从日志开头独立读取 VRC 认证身份，不依赖 Ecliptica 对局恢复。"""
+        if not path:
+            return None
+        try:
+            with open(path, "rb") as log_file:
+                data = log_file.read(LOG_IDENTITY_SCAN_BYTES)
+        except (OSError, TypeError):
+            return None
+
+        latest_identity = None
+        for line in data.decode("utf-8", errors="ignore").splitlines():
+            event = parse_ecliptica_line(line)
+            if event is not None and event.kind == "authenticated":
+                latest_identity = event
+        return latest_identity
+
     def _is_round_start_line(self, line: str) -> bool:
         return is_round_start_line(line)
 
@@ -5229,8 +5283,21 @@ class SlashCoMonitorCN:
                         try:
                             self._begin_log_recovery()
                             self._clear_pending_log_lines()
+                            identity_event = self._read_vrc_identity_event(current_file_path)
                             recovery_lines = self._get_active_round_recovery_lines(current_file_path)
                             self._ui_after(self._reset_for_new_log)
+                            if identity_event is not None:
+                                recovery_lines = [
+                                    f"User Authenticated: {identity_event.groups[0]} "
+                                    f"({identity_event.groups[1]})"
+                                ] + [
+                                    line
+                                    for line in recovery_lines
+                                    if not (
+                                        (event := parse_ecliptica_line(line)) is not None
+                                        and event.kind == "authenticated"
+                                    )
+                                ]
                             current_offset = os.path.getsize(current_file_path)
                             if recovery_lines:
                                 self._enqueue_log_lines(recovery_lines)

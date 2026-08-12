@@ -113,6 +113,20 @@ def sync_identity(snapshot: dict | None):
     return session_id, player_id, player_name
 
 
+def sync_wait_status(snapshot: dict | None) -> str:
+    state = snapshot if isinstance(snapshot, dict) else {}
+    session_id = str(state.get("session_id") or "").strip()
+    player_id = str(state.get("local_player_id") or "").strip()
+    player_name = str(state.get("local_player_name") or "").strip()
+    if not player_id.startswith("usr_") or not player_name:
+        return "等待日志中的 VRC 用户名与 ID"
+    if session_id in ("", "-"):
+        return f"已识别 VRC 用户 {player_name}，等待会话 ID"
+    if not bool(state.get("run_active")):
+        return f"已识别 VRC 用户 {player_name}，等待本局开始"
+    return "准备连接同步服务器"
+
+
 def is_boss_battle_active(snapshot: dict | None) -> bool:
     state = snapshot if isinstance(snapshot, dict) else {}
     boss_name = str(state.get("current_boss") or "").strip()
@@ -306,6 +320,19 @@ class EclipticaSyncClient:
             self._close_connection()
         self._wake_event.set()
 
+    def reconnect_now(self):
+        """立即打断当前连接或重试退避，使用最新日志状态重新握手。"""
+        with self._lock:
+            self._configuration_version += 1
+            self._players = []
+            self._server_sequence = 0
+            self._client_sequence = 0
+            self._last_received_at = None
+            self._room_state_messages_to_skip = 0
+            self._set_status_locked("手动连接：正在重新读取状态…", connected=False)
+        self._close_connection()
+        self._wake_event.set()
+
     def snapshot(self) -> dict:
         with self._lock:
             return {
@@ -395,7 +422,7 @@ class EclipticaSyncClient:
                 self._wait(0.5)
                 continue
             if identity is None:
-                self._set_status("等待日志中的会话与 VRC 身份")
+                self._set_status(sync_wait_status(state))
                 self._wait(0.2)
                 continue
             factory = self._factory()

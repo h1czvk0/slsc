@@ -16,6 +16,7 @@ from ecliptica_sync import (  # noqa: E402
     normalize_room_players,
     normalize_sync_url,
     sync_identity,
+    sync_wait_status,
 )
 
 
@@ -79,6 +80,20 @@ class SyncProtocolTests(unittest.TestCase):
         self.assertIsNone(sync_identity(local_snapshot(local_player_id="Alice")))
         self.assertIsNone(sync_identity(local_snapshot(local_player_name="")))
         self.assertIsNone(sync_identity(local_snapshot(run_active=False)))
+
+    def test_wait_status_reports_the_exact_missing_log_field(self):
+        self.assertEqual(
+            sync_wait_status(local_snapshot(local_player_name="", local_player_id="")),
+            "等待日志中的 VRC 用户名与 ID",
+        )
+        self.assertEqual(
+            sync_wait_status(local_snapshot(session_id="-")),
+            "已识别 VRC 用户 Alice，等待会话 ID",
+        )
+        self.assertEqual(
+            sync_wait_status(local_snapshot(run_active=False)),
+            "已识别 VRC 用户 Alice，等待本局开始",
+        )
 
     def test_boss_battle_requires_an_active_run_and_current_boss(self):
         self.assertTrue(is_boss_battle_active(local_snapshot()))
@@ -228,6 +243,28 @@ class SyncProtocolTests(unittest.TestCase):
 
         self.assertEqual(client.snapshot()["players"], [])
         self.assertIsNone(sync_identity(client._local_state))
+
+    def test_manual_reconnect_clears_state_and_closes_current_connection(self):
+        class FakeConnection:
+            def __init__(self):
+                self.close_calls = 0
+
+            def close(self):
+                self.close_calls += 1
+
+        client = EclipticaSyncClient()
+        client.update_local_state(local_snapshot())
+        connection = FakeConnection()
+        client._connection = connection
+        client._connected = True
+        initial_version = client._configuration_version
+
+        client.reconnect_now()
+
+        self.assertEqual(connection.close_calls, 1)
+        self.assertFalse(client.snapshot()["connected"])
+        self.assertEqual(client._configuration_version, initial_version + 1)
+        self.assertIn("手动连接", client.snapshot()["status"])
 
     def test_entering_each_boss_battle_retries_once_when_not_connected(self):
         class FakeConnection:
