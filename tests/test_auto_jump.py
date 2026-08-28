@@ -114,6 +114,7 @@ class AutoJumpTests(unittest.TestCase):
 
         service.tick(now=0.0)
         self.assertEqual(sent, [])
+        service.set_context(True)
         service.set_enabled(True)
         state.update(foreground=True, space=True)
         service.tick(now=0.1)
@@ -134,6 +135,7 @@ class AutoJumpTests(unittest.TestCase):
             space_down_provider=lambda: True,
             key_hook=False,
         )
+        service.set_context(True)
         service.set_enabled(True)
         service.tick(now=0.0)
 
@@ -163,6 +165,7 @@ class AutoJumpTests(unittest.TestCase):
             space_down_provider=lambda: True,
             key_hook=False,
         )
+        service.set_context(True)
         service.set_enabled(True)
         service.tick(now=0.0)
         service.set_enabled(False)
@@ -172,6 +175,33 @@ class AutoJumpTests(unittest.TestCase):
 
         self.assertEqual(output.release_attempts, 2)
         self.assertEqual(output.last_value, 0)
+
+    def test_service_pauses_and_releases_when_context_becomes_unavailable(self):
+        sent = []
+        output = AutoJumpOscOutput(socket_factory=lambda *_args: FakeSocket(sent))
+        service = AutoJumpService(
+            output=output,
+            foreground_provider=lambda: True,
+            space_down_provider=lambda: True,
+            key_hook=False,
+        )
+        service.set_context(True)
+        service.set_enabled(True)
+        service.tick(now=0.0)
+        self.assertTrue(service.snapshot()["jumping"])
+
+        service.set_context(False, "幕间已自动暂停")
+        service.tick(now=0.001)
+
+        snapshot = service.snapshot()
+        self.assertEqual(output.last_value, 0)
+        self.assertFalse(snapshot["jumping"])
+        self.assertFalse(snapshot["context_allowed"])
+        self.assertEqual(snapshot["pause_reason"], "幕间已自动暂停")
+
+        service.set_context(True)
+        service.tick(now=0.1)
+        self.assertTrue(service.snapshot()["jumping"])
 
 
 if __name__ == "__main__":

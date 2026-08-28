@@ -2109,6 +2109,7 @@ class SlashCoMonitorCN:
             self.ecliptica_osc_host_var.get(),
             self.ecliptica_osc_port_var.get(),
         )
+        self._update_ecliptica_auto_jump_context()
         self.ecliptica_auto_jump.set_enabled(self.ecliptica_auto_jump_enabled.get())
         self.ecliptica_auto_jump.start()
         self.ecliptica_sync = EclipticaSyncClient(
@@ -2889,7 +2890,7 @@ class SlashCoMonitorCN:
         ).pack(anchor=W, pady=(5, 0))
         ttk.Label(
             auto_jump_frame,
-            text="仅在 VRChat 位于前台时生效，使用下方 OSC 主机和端口。",
+            text="仅在 Ecliptica 世界且非幕间、VRChat 位于前台时生效。",
             foreground="#777777",
             font=("微软雅黑", 8),
         ).pack(anchor=W, pady=(2, 0))
@@ -3163,9 +3164,10 @@ class SlashCoMonitorCN:
         )
 
     def _update_ecliptica_ui(self):
+        snapshot = self.ecliptica_state.snapshot()
+        self._update_ecliptica_auto_jump_context(snapshot)
         if not hasattr(self, "ecliptica_vars"):
             return
-        snapshot = self.ecliptica_state.snapshot()
         phase = snapshot.get("current_boss_phase")
         stage_progress = snapshot.get("stage_progress")
         stage_text = snapshot.get("stage", "-")
@@ -3283,7 +3285,7 @@ class SlashCoMonitorCN:
                 auto_jump_enabled = bool(config.get("auto_jump_enabled", False))
                 self.ecliptica_auto_jump_enabled.set(auto_jump_enabled)
                 self.ecliptica_auto_jump_status_var.set(
-                    "等待 VRChat 前台" if auto_jump_enabled else "未启用"
+                    "仅在 Ecliptica 世界生效" if auto_jump_enabled else "未启用"
                 )
                 self.ecliptica_osc_name_only.set(bool(config.get("osc_name_only", False)))
                 self.ecliptica_osc_prefix_var.set(normalize_osc_prefix(config.get("osc_prefix")))
@@ -3475,12 +3477,35 @@ class SlashCoMonitorCN:
     def _on_ecliptica_auto_jump_toggle(self):
         enabled = bool(self.ecliptica_auto_jump_enabled.get())
         self._configure_ecliptica_osc()
+        self._update_ecliptica_auto_jump_context()
         self.ecliptica_auto_jump.set_enabled(enabled)
-        self.ecliptica_auto_jump_status_var.set(
-            "等待 VRChat 前台" if enabled else "未启用"
-        )
+        status = self.ecliptica_auto_jump.snapshot()
+        if not enabled:
+            text = "未启用"
+        elif not status.get("context_allowed"):
+            text = status.get("pause_reason") or "当前状态已暂停"
+        else:
+            text = "等待 VRChat 前台"
+        self.ecliptica_auto_jump_status_var.set(text)
         self._save_ecliptica_config()
         self.log(f"自动连跳已{'启用' if enabled else '关闭'}")
+
+    def _update_ecliptica_auto_jump_context(self, snapshot=None):
+        service = getattr(self, "ecliptica_auto_jump", None)
+        if service is None:
+            return False
+        if snapshot is None:
+            snapshot = self.ecliptica_state.snapshot()
+        in_ecliptica = is_ecliptica_room(self.ecliptica_state.world_name)
+        intermission = bool(snapshot.get("intermission"))
+        if not in_ecliptica:
+            service.set_context(False, "仅在 Ecliptica 世界生效")
+            return False
+        if intermission:
+            service.set_context(False, "幕间已自动暂停")
+            return False
+        service.set_context(True)
+        return True
 
     def _test_ecliptica_auto_jump(self):
         host, port = self._configure_ecliptica_osc()
@@ -3518,6 +3543,8 @@ class SlashCoMonitorCN:
                 text = "未启用"
             elif status.get("testing"):
                 text = "正在发送测试跳跃..."
+            elif not status.get("context_allowed"):
+                text = status.get("pause_reason") or "当前状态已暂停"
             elif not status.get("vrchat_foreground"):
                 text = "等待 VRChat 前台"
             elif status.get("awaiting_release"):

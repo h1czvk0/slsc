@@ -340,6 +340,8 @@ class AutoJumpService:
         self.key_hook = key_hook if key_hook is not None else SpaceKeyHook()
         self.pulse = AutoJumpPulseController()
         self._enabled = False
+        self._context_allowed = False
+        self._pause_reason = "仅在 Ecliptica 世界生效"
         self._testing = False
         self._vrchat_foreground = False
         self._space_down = False
@@ -362,6 +364,21 @@ class AutoJumpService:
             self._enabled = bool(enabled)
             self._wake_event.set()
 
+    def set_context(self, allowed, pause_reason=""):
+        with self._lock:
+            normalized_allowed = bool(allowed)
+            normalized_reason = (
+                "" if normalized_allowed else str(pause_reason or "当前状态已暂停")
+            )
+            changed = (
+                self._context_allowed != normalized_allowed
+                or self._pause_reason != normalized_reason
+            )
+            self._context_allowed = normalized_allowed
+            self._pause_reason = normalized_reason
+            if changed:
+                self._wake_event.set()
+
     def start(self):
         with self._lock:
             if self._thread and self._thread.is_alive():
@@ -381,13 +398,18 @@ class AutoJumpService:
         current_time = float(self.clock() if now is None else now)
         with self._lock:
             enabled = self._enabled
+            context_allowed = self._context_allowed
             testing = self._testing
-            if enabled and current_time - self._last_foreground_check >= FOREGROUND_REFRESH_SECONDS:
+            if (
+                enabled
+                and context_allowed
+                and current_time - self._last_foreground_check >= FOREGROUND_REFRESH_SECONDS
+            ):
                 self._vrchat_foreground = bool(self.foreground_provider())
                 self._last_foreground_check = current_time
-            elif not enabled:
+            elif not enabled or not context_allowed:
                 self._vrchat_foreground = False
-            capture_space = enabled and not testing and self._vrchat_foreground
+            capture_space = enabled and context_allowed and not testing and self._vrchat_foreground
             if self.key_hook and self.key_hook.running:
                 self.key_hook.set_capture(capture_space)
                 self._space_down = bool(capture_space and self.key_hook.is_down())
@@ -396,7 +418,13 @@ class AutoJumpService:
                 self._last_error = self.key_hook.last_error or "keyboard hook is not running"
             else:
                 self._space_down = bool(capture_space and self.space_down_provider())
-            active = enabled and not testing and self._vrchat_foreground and self._space_down
+            active = (
+                enabled
+                and context_allowed
+                and not testing
+                and self._vrchat_foreground
+                and self._space_down
+            )
             actions = self.pulse.update(active, current_time)
             if not active and self.output.last_value == 1 and False not in actions:
                 actions.append(False)
@@ -441,6 +469,8 @@ class AutoJumpService:
         with self._lock:
             return {
                 "enabled": self._enabled,
+                "context_allowed": self._context_allowed,
+                "pause_reason": self._pause_reason,
                 "testing": self._testing,
                 "vrchat_foreground": self._vrchat_foreground,
                 "space_down": self._space_down,

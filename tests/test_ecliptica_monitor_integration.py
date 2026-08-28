@@ -143,6 +143,14 @@ class FakeSyncClient:
         self.reconnect_calls += 1
 
 
+class FakeAutoJumpContext:
+    def __init__(self):
+        self.contexts = []
+
+    def set_context(self, allowed, pause_reason=""):
+        self.contexts.append((bool(allowed), str(pause_reason)))
+
+
 class FakeAfterRoot:
     def __init__(self):
         self.callback = None
@@ -383,6 +391,37 @@ class EclipticaMonitorIntegrationTests(unittest.TestCase):
         self.assertFalse(monitor._handle_ecliptica_event(event))
         self.assertEqual(monitor.current_game_mode, "slashco")
         self.assertEqual(monitor.ecliptica_state.local_player_name, "TestPlayer")
+
+    def test_auto_jump_context_requires_ecliptica_and_pauses_during_intermission(self):
+        monitor = self.make_monitor()
+        monitor.ecliptica_auto_jump = FakeAutoJumpContext()
+
+        monitor._update_ecliptica_auto_jump_context()
+        self.assertEqual(
+            monitor.ecliptica_auto_jump.contexts[-1],
+            (False, "仅在 Ecliptica 世界生效"),
+        )
+
+        monitor.ecliptica_state.apply(
+            parse_ecliptica_line("[Behaviour] Entering Room: Ecliptica - Demo Playtest")
+        )
+        monitor._update_ecliptica_auto_jump_context()
+        self.assertEqual(monitor.ecliptica_auto_jump.contexts[-1], (True, ""))
+
+        monitor.ecliptica_state.apply(parse_ecliptica_line("ECLIPTICA - now in intermission"))
+        monitor._update_ecliptica_auto_jump_context()
+        self.assertEqual(
+            monitor.ecliptica_auto_jump.contexts[-1],
+            (False, "幕间已自动暂停"),
+        )
+
+        monitor.ecliptica_state.apply(
+            parse_ecliptica_line(
+                "ECLIPTICA - now in stage: Stage_Bringer on phase: 1 as class: Spellsword"
+            )
+        )
+        monitor._update_ecliptica_auto_jump_context()
+        self.assertEqual(monitor.ecliptica_auto_jump.contexts[-1], (True, ""))
 
     def test_identity_is_read_from_log_start_without_ecliptica_events(self):
         monitor = self.make_monitor()
