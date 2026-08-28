@@ -423,6 +423,41 @@ class EclipticaMonitorIntegrationTests(unittest.TestCase):
         monitor._update_ecliptica_auto_jump_context()
         self.assertEqual(monitor.ecliptica_auto_jump.contexts[-1], (True, ""))
 
+    def test_log_recovery_restores_room_before_session_for_auto_jump(self):
+        monitor = self.make_monitor()
+        monitor.log = lambda _message: None
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "output_log_test.txt"
+            path.write_text(
+                "2026.08.28 20:02:20 Debug - User Authenticated: TestPlayer "
+                "(usr_00000000-0000-0000-0000-000000000001)\n"
+                "2026.08.28 20:02:29 Debug - [Behaviour] Entering Room: VRChat Home\n"
+                "2026.08.28 20:03:07 Debug - [Behaviour] Entering Room: "
+                "Ecliptica - Demo Playtest\n"
+                "2026.08.28 20:03:10 Debug - ECLIPTICA saving SESSION ID 1161\n"
+                "2026.08.28 20:03:12 Debug - ECLIPTICA - now in stage: "
+                "Stage_GMBigcity on phase: 0.1 as class: Thaumaturge\n",
+                encoding="utf-8",
+            )
+
+            lines = monitor._get_active_round_recovery_lines(str(path))
+
+        events = [parse_ecliptica_line(line) for line in lines]
+        events = [event for event in events if event is not None]
+        kinds = [event.kind for event in events]
+        self.assertIn("room_entered", kinds)
+        self.assertLess(kinds.index("room_entered"), kinds.index("session"))
+
+        recovered_state = EclipticaState()
+        for event in events:
+            recovered_state.apply(event)
+        self.assertEqual(recovered_state.world_name, "Ecliptica - Demo Playtest")
+
+        monitor.ecliptica_state = recovered_state
+        monitor.ecliptica_auto_jump = FakeAutoJumpContext()
+        self.assertTrue(monitor._update_ecliptica_auto_jump_context())
+        self.assertEqual(monitor.ecliptica_auto_jump.contexts[-1], (True, ""))
+
     def test_identity_is_read_from_log_start_without_ecliptica_events(self):
         monitor = self.make_monitor()
         with tempfile.TemporaryDirectory() as directory:

@@ -5167,6 +5167,7 @@ class SlashCoMonitorCN:
         last_end_pos = None
         last_room_pos = None
         last_room_name = ""
+        last_room_line = ""
         last_authenticated_line = ""
         first_session_positions = {}
         last_session_id = ""
@@ -5180,6 +5181,7 @@ class SlashCoMonitorCN:
                 elif ecliptica_event and ecliptica_event.kind == "room_entered":
                     last_room_pos = pos
                     last_room_name = ecliptica_event.groups[0]
+                    last_room_line = line
                 elif ecliptica_event and ecliptica_event.kind == "session":
                     last_session_id = ecliptica_event.groups[0]
                     first_session_positions.setdefault(last_session_id, pos)
@@ -5193,6 +5195,8 @@ class SlashCoMonitorCN:
             recovery_pos = first_session_positions.get(last_session_id, last_room_pos)
             active_text = text[recovery_pos:]
             lines = [line for line in active_text.splitlines() if self._line_might_affect_state(line)]
+            if last_room_line and last_room_line not in lines:
+                lines.insert(0, last_room_line)
             if last_authenticated_line and last_authenticated_line not in lines:
                 lines.insert(0, last_authenticated_line)
             self.log(f"已从日志尾部恢复 Ecliptica 当前房间状态，共 {len(lines)} 行")
