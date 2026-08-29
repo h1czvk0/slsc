@@ -16,6 +16,8 @@ from osc_output import (
 
 VRCHAT_JUMP_ADDRESS = "/input/Jump"
 VK_SPACE = 0x20
+VK_LWIN = 0x5B
+VK_RWIN = 0x5C
 WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
 WM_SYSKEYDOWN = 0x0104
@@ -33,6 +35,19 @@ def is_space_down():
         return False
     try:
         return bool(ctypes.windll.user32.GetAsyncKeyState(VK_SPACE) & 0x8000)
+    except Exception:
+        return False
+
+
+def is_windows_key_down():
+    if os.name != "nt":
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        return bool(
+            (user32.GetAsyncKeyState(VK_LWIN) & 0x8000)
+            or (user32.GetAsyncKeyState(VK_RWIN) & 0x8000)
+        )
     except Exception:
         return False
 
@@ -103,11 +118,19 @@ class KbdLlHookStruct(ctypes.Structure):
 
 
 class SpaceKeyHook:
-    def __init__(self, physical_state_provider=is_space_down):
+    def __init__(
+        self,
+        physical_state_provider=is_space_down,
+        windows_key_state_provider=is_windows_key_down,
+    ):
         self.physical_state_provider = physical_state_provider
+        self.windows_key_state_provider = windows_key_state_provider
         self._capture_enabled = False
         self._awaiting_release = False
         self._space_down = False
+        self._windows_key_down = False
+        self._windows_keys_down = set()
+        self._passthrough_space = False
         self._thread = None
         self._thread_id = 0
         self._hook_handle = None
@@ -126,27 +149,57 @@ class SpaceKeyHook:
         with self._lock:
             return self._awaiting_release
 
+    @property
+    def windows_key_down(self):
+        with self._lock:
+            return self._windows_key_down
+
     def set_capture(self, enabled):
         capture = bool(enabled)
         with self._lock:
             if capture and not self._capture_enabled:
                 self._awaiting_release = bool(self.physical_state_provider())
+                self._windows_key_down = bool(self.windows_key_state_provider())
             elif not capture:
                 self._awaiting_release = False
             self._capture_enabled = capture
 
     def is_down(self):
         with self._lock:
-            return self._space_down and not self._awaiting_release
+            return bool(
+                self._space_down
+                and not self._awaiting_release
+                and not self._windows_key_down
+                and not self._passthrough_space
+            )
 
     def handle_space_event(self, message):
+        return self.handle_key_event(VK_SPACE, message)
+
+    def handle_key_event(self, virtual_key, message):
         is_down = message in (WM_KEYDOWN, WM_SYSKEYDOWN)
         is_up = message in (WM_KEYUP, WM_SYSKEYUP)
         if not is_down and not is_up:
             return False
         with self._lock:
+            if virtual_key in (VK_LWIN, VK_RWIN):
+                if is_down:
+                    self._windows_keys_down.add(virtual_key)
+                else:
+                    self._windows_keys_down.discard(virtual_key)
+                self._windows_key_down = bool(self._windows_keys_down)
+                return False
+            if virtual_key != VK_SPACE:
+                return False
             self._space_down = is_down
+            if is_up and self._passthrough_space:
+                self._passthrough_space = False
+                return False
             if not self._capture_enabled:
+                return False
+            if self._windows_key_down:
+                if is_down:
+                    self._passthrough_space = True
                 return False
             if self._awaiting_release:
                 if is_up:
@@ -189,6 +242,9 @@ class SpaceKeyHook:
             self._hook_handle = None
             self._callback = None
             self._space_down = False
+            self._windows_key_down = False
+            self._windows_keys_down.clear()
+            self._passthrough_space = False
             self._awaiting_release = False
 
     def _run(self):
@@ -225,7 +281,7 @@ class SpaceKeyHook:
             def callback(code, wparam, lparam):
                 if code >= 0:
                     event = ctypes.cast(lparam, ctypes.POINTER(KbdLlHookStruct)).contents
-                    if event.vkCode == VK_SPACE and self.handle_space_event(int(wparam)):
+                    if self.handle_key_event(int(event.vkCode), int(wparam)):
                         return 1
                 return user32.CallNextHookEx(hook_handle, code, wparam, lparam)
 
@@ -328,6 +384,7 @@ class AutoJumpService:
         output=None,
         foreground_provider=is_vrchat_foreground,
         space_down_provider=is_space_down,
+        windows_key_down_provider=is_windows_key_down,
         clock=time.monotonic,
         sleep=time.sleep,
         key_hook=None,
@@ -335,6 +392,7 @@ class AutoJumpService:
         self.output = output or AutoJumpOscOutput(host, port)
         self.foreground_provider = foreground_provider
         self.space_down_provider = space_down_provider
+        self.windows_key_down_provider = windows_key_down_provider
         self.clock = clock
         self.sleep = sleep
         self.key_hook = key_hook if key_hook is not None else SpaceKeyHook()
@@ -345,6 +403,7 @@ class AutoJumpService:
         self._testing = False
         self._vrchat_foreground = False
         self._space_down = False
+        self._windows_key_down = False
         self._last_foreground_check = float("-inf")
         self._last_error = ""
         self._lock = threading.RLock()
@@ -412,11 +471,19 @@ class AutoJumpService:
             capture_space = enabled and context_allowed and not testing and self._vrchat_foreground
             if self.key_hook and self.key_hook.running:
                 self.key_hook.set_capture(capture_space)
+                self._windows_key_down = bool(
+                    self.key_hook.windows_key_down
+                    or (capture_space and self.windows_key_down_provider())
+                )
                 self._space_down = bool(capture_space and self.key_hook.is_down())
             elif self.key_hook and enabled:
                 self._space_down = False
+                self._windows_key_down = False
                 self._last_error = self.key_hook.last_error or "keyboard hook is not running"
             else:
+                self._windows_key_down = bool(
+                    capture_space and self.windows_key_down_provider()
+                )
                 self._space_down = bool(capture_space and self.space_down_provider())
             active = (
                 enabled
@@ -424,6 +491,7 @@ class AutoJumpService:
                 and not testing
                 and self._vrchat_foreground
                 and self._space_down
+                and not self._windows_key_down
             )
             actions = self.pulse.update(active, current_time)
             if not active and self.output.last_value == 1 and False not in actions:
@@ -474,6 +542,7 @@ class AutoJumpService:
                 "testing": self._testing,
                 "vrchat_foreground": self._vrchat_foreground,
                 "space_down": self._space_down,
+                "windows_key_down": self._windows_key_down,
                 "jumping": self.pulse.jump_pressed,
                 "awaiting_release": bool(
                     self.key_hook and self.key_hook.awaiting_release

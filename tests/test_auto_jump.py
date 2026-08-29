@@ -12,6 +12,7 @@ from auto_jump import (  # noqa: E402
     AutoJumpPulseController,
     AutoJumpService,
     SpaceKeyHook,
+    VK_LWIN,
     WM_KEYDOWN,
     WM_KEYUP,
 )
@@ -59,6 +60,25 @@ class AutoJumpTests(unittest.TestCase):
         self.assertFalse(hook.handle_space_event(WM_KEYUP))
         self.assertFalse(hook.awaiting_release)
         self.assertTrue(hook.handle_space_event(WM_KEYDOWN))
+
+    def test_space_hook_passes_win_space_chord_through_without_sticking_key(self):
+        hook = SpaceKeyHook(
+            physical_state_provider=lambda: False,
+            windows_key_state_provider=lambda: False,
+        )
+        hook.set_capture(True)
+
+        self.assertFalse(hook.handle_key_event(VK_LWIN, WM_KEYDOWN))
+        self.assertFalse(hook.handle_space_event(WM_KEYDOWN))
+        self.assertFalse(hook.is_down())
+
+        # 即使先松开 Win，属于该组合键的空格抬起事件也必须继续透传。
+        self.assertFalse(hook.handle_key_event(VK_LWIN, WM_KEYUP))
+        self.assertFalse(hook.handle_space_event(WM_KEYUP))
+        self.assertFalse(hook.is_down())
+
+        self.assertTrue(hook.handle_space_event(WM_KEYDOWN))
+        self.assertTrue(hook.is_down())
 
     def test_jump_output_uses_vrchat_input_address_and_integer_value(self):
         sent = []
@@ -125,6 +145,32 @@ class AutoJumpTests(unittest.TestCase):
         service.tick(now=0.11)
         self.assertEqual(len(sent), 2)
         self.assertFalse(service.snapshot()["jumping"])
+
+    def test_service_pauses_and_releases_while_windows_key_is_held(self):
+        sent = []
+        state = {"space": True, "windows": False}
+        output = AutoJumpOscOutput(socket_factory=lambda *_args: FakeSocket(sent))
+        service = AutoJumpService(
+            output=output,
+            foreground_provider=lambda: True,
+            space_down_provider=lambda: state["space"],
+            windows_key_down_provider=lambda: state["windows"],
+            key_hook=False,
+        )
+        service.set_context(True)
+        service.set_enabled(True)
+        service.tick(now=0.0)
+        self.assertTrue(service.snapshot()["jumping"])
+
+        state["windows"] = True
+        service.tick(now=0.001)
+        self.assertEqual(output.last_value, 0)
+        self.assertFalse(service.snapshot()["jumping"])
+        self.assertTrue(service.snapshot()["windows_key_down"])
+
+        state["windows"] = False
+        service.tick(now=0.1)
+        self.assertTrue(service.snapshot()["jumping"])
 
     def test_service_releases_when_disabled(self):
         sent = []
