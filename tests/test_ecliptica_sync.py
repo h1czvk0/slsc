@@ -129,6 +129,14 @@ class SyncProtocolTests(unittest.TestCase):
                 }
             )
         players.append(dict(players[5]))
+        players.append(
+            {
+                "vrc_user_id": "usr_offline",
+                "vrc_username": "Offline Player",
+                "boss_damage": 999999,
+                "online": False,
+            }
+        )
 
         normalized = normalize_room_players(
             {"type": "room_state", "session_id": "284719", "players": players},

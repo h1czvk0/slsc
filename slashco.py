@@ -10,7 +10,6 @@ sys.path.insert(0, SCRIPT_DIR) # 优先加载同目录模块（如 sounddevice.p
 import time
 import re
 import threading
-import glob
 import ctypes
 from ctypes import wintypes
 import json
@@ -68,6 +67,7 @@ from osc_output import (
     normalize_osc_prefix,
 )
 from auto_jump import AutoJumpService
+from vrchat_log_selector import VrchatLogSelector, foreground_process_id
 
 try:
     import requests
@@ -1792,7 +1792,7 @@ UI_CALLBACK_POLL_INTERVAL_MS = 25
 UI_CALLBACK_BATCH_SIZE = 200
 TREE_REBUILD_DELAY_MS = 50
 IMAGE_SYNC_START_DELAY_MS = 2000
-LOG_FILE_CHECK_INTERVAL_SECONDS = 3.0
+LOG_FILE_CHECK_INTERVAL_SECONDS = 1.0
 FUEL_HIBERNATE_CONFIRM_DELAY_MS = 700
 FUEL_REQUIRED_COUNT = 8
 ROUND_TIMEOUT_SECONDS = 25 * 60
@@ -2046,6 +2046,10 @@ class SlashCoMonitorCN:
             pass
 
         self.log_dir = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\VRChat\VRChat")
+        self.vrchat_log_selector = VrchatLogSelector(self.log_dir)
+        self._current_log_path = ""
+        self._current_log_pid = 0
+        self._ecliptica_log_choice_paths = {}
         self.is_monitoring = True
         self.current_click_col = None
 
@@ -2108,6 +2112,7 @@ class SlashCoMonitorCN:
         self.ecliptica_auto_jump = AutoJumpService(
             self.ecliptica_osc_host_var.get(),
             self.ecliptica_osc_port_var.get(),
+            foreground_provider=self._is_selected_vrchat_foreground,
         )
         self._update_ecliptica_auto_jump_context()
         self.ecliptica_auto_jump.set_enabled(self.ecliptica_auto_jump_enabled.get())
@@ -2958,6 +2963,27 @@ class SlashCoMonitorCN:
             command=self._manual_ecliptica_sync_connect,
         )
         self.ecliptica_sync_connect_button.pack(side=RIGHT)
+        log_instance_row = ttk.Frame(sync_frame)
+        log_instance_row.pack(fill=X, pady=(5, 0))
+        ttk.Label(log_instance_row, text="VRChat 实例：").pack(side=LEFT)
+        self.ecliptica_log_instance_combo = ttk.Combobox(
+            log_instance_row,
+            textvariable=self.ecliptica_log_choice_var,
+            values=("自动选择",),
+            state="readonly",
+            width=34,
+        )
+        self.ecliptica_log_instance_combo.pack(side=LEFT, fill=X, expand=True)
+        self.ecliptica_log_instance_combo.bind(
+            "<<ComboboxSelected>>",
+            self._on_ecliptica_log_instance_selected,
+        )
+        ttk.Label(
+            sync_frame,
+            textvariable=self.ecliptica_log_status_var,
+            foreground="#666666",
+            font=("微软雅黑", 8),
+        ).pack(anchor=W, pady=(3, 0))
         sync_url_row = ttk.Frame(sync_frame)
         sync_url_row.pack(fill=X, pady=(5, 0))
         ttk.Label(sync_url_row, text="服务器：").pack(side=LEFT)
@@ -3245,6 +3271,8 @@ class SlashCoMonitorCN:
         self.ecliptica_osc_port_var = StringVar(value=str(DEFAULT_OSC_PORT))
         self.ecliptica_osc_status_var = StringVar(value="未启用")
         self.ecliptica_sync_status_var = StringVar(value="等待日志中的会话与 VRC 身份")
+        self.ecliptica_log_status_var = StringVar(value="正在识别 VRChat 实例")
+        self.ecliptica_log_choice_var = StringVar(value="自动选择")
         self._ecliptica_sync_player_rows = ()
         self.ecliptica_hud_layout = {}
         self.ecliptica_hud_default_preset_version = 0
@@ -3432,6 +3460,48 @@ class SlashCoMonitorCN:
                 button.pack_forget()
         elif not button.winfo_manager():
             button.pack(side=RIGHT)
+
+    def _update_ecliptica_log_instance_ui(self, selected, selector_snapshot):
+        combo = getattr(self, "ecliptica_log_instance_combo", None)
+        if combo is None:
+            return
+        candidates = selector_snapshot.get("candidates", [])
+        values = ["自动选择"]
+        choice_paths = {}
+        path_labels = {}
+        for candidate in candidates:
+            label = candidate.label
+            values.append(label)
+            choice_paths[label] = candidate.path
+            path_labels[candidate.path] = label
+        self._ecliptica_log_choice_paths = choice_paths
+        combo.configure(values=tuple(values))
+
+        manual_path = selector_snapshot.get("manual_path") or ""
+        if manual_path and manual_path in path_labels:
+            self.ecliptica_log_choice_var.set(path_labels[manual_path])
+        elif self.ecliptica_log_choice_var.get() not in values:
+            self.ecliptica_log_choice_var.set("自动选择")
+
+        if selected is not None:
+            self.ecliptica_log_status_var.set(f"已锁定：{selected.label}")
+        elif selector_snapshot.get("ambiguous"):
+            self.ecliptica_log_status_var.set("检测到多个可用实例，请选择正在游玩的账号")
+        else:
+            self.ecliptica_log_status_var.set("等待可用的 VRChat 实例")
+
+    def _on_ecliptica_log_instance_selected(self, _event=None):
+        choice = self.ecliptica_log_choice_var.get()
+        path = self._ecliptica_log_choice_paths.get(choice)
+        self.vrchat_log_selector.set_manual_path(path)
+        if path:
+            self.ecliptica_log_status_var.set("正在切换到所选 VRChat 实例…")
+        else:
+            self.ecliptica_log_status_var.set("已恢复自动选择 VRChat 实例")
+
+    def _is_selected_vrchat_foreground(self):
+        selected_pid = int(getattr(self, "_current_log_pid", 0) or 0)
+        return bool(selected_pid and foreground_process_id() == selected_pid)
 
     def _manual_ecliptica_sync_connect(self):
         identity_event = self._read_vrc_identity_event(self.get_latest_log_file())
@@ -3910,6 +3980,12 @@ class SlashCoMonitorCN:
         self._on_ecliptica_hud_fields_changed(refresh_list=False)
 
     def _is_hud_foreground(self):
+        foreground_pid = foreground_process_id()
+        if foreground_pid == os.getpid():
+            return True
+        selected_pid = int(getattr(self, "_current_log_pid", 0) or 0)
+        if selected_pid:
+            return foreground_pid == selected_pid
         return is_hud_foreground()
 
     def _should_show_ecliptica_hud(self):
@@ -5096,12 +5172,8 @@ class SlashCoMonitorCN:
             return
 
     def get_latest_log_file(self):
-        try:
-            files = glob.glob(os.path.join(self.log_dir, "output_log_*.txt"))
-            if not files: return None
-            return max(files, key=os.path.getctime)
-        except Exception:
-            return None
+        path = str(getattr(self, "_current_log_path", "") or "")
+        return path if path and os.path.exists(path) else None
 
     def _read_vrc_identity_event(self, path: str | None):
         """从日志开头独立读取 VRC 认证身份，不依赖 Ecliptica 对局恢复。"""
@@ -5301,10 +5373,31 @@ class SlashCoMonitorCN:
         while self.is_monitoring:
             try:
                 latest = None
+                selected = None
+                selection_checked = False
                 now = time.time()
                 if current_file_path is None or now - last_file_check_time >= LOG_FILE_CHECK_INTERVAL_SECONDS:
-                    latest = self.get_latest_log_file()
+                    selection_checked = True
+                    selected = self.vrchat_log_selector.select(current_file_path)
+                    latest = selected.path if selected is not None else None
                     last_file_check_time = now
+                    selector_snapshot = self.vrchat_log_selector.snapshot()
+                    self._ui_after(
+                        self._update_ecliptica_log_instance_ui,
+                        selected,
+                        selector_snapshot,
+                    )
+                    self._current_log_path = latest or ""
+                    self._current_log_pid = int(selected.pid or 0) if selected is not None else 0
+                if selection_checked and current_file_path is not None and latest is None:
+                    previous_name = os.path.basename(current_file_path)
+                    current_file_path = None
+                    current_offset = 0
+                    partial_line = ""
+                    self._clear_pending_log_lines()
+                    self._ui_after(self._reset_for_new_log)
+                    self._ui_after(self._finish_log_recovery)
+                    self.log(f"目标 VRChat 实例已离开，停止读取日志: {previous_name}")
                 if latest and latest != current_file_path:
                     if os.path.exists(latest) and os.path.getsize(latest) > 0:
                         current_file_path = latest
@@ -5343,9 +5436,14 @@ class SlashCoMonitorCN:
                             continue
                 if current_file_path:
                     if not os.path.exists(current_file_path):
+                        self._current_log_path = ""
+                        self._current_log_pid = 0
                         current_file_path = None
                         current_offset = 0
                         partial_line = ""
+                        self._clear_pending_log_lines()
+                        self._ui_after(self._reset_for_new_log)
+                        self._ui_after(self._finish_log_recovery)
                         time.sleep(1)
                         continue
 

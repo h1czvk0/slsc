@@ -200,6 +200,8 @@ def normalize_room_players(message: dict, expected_session_id: str) -> list[dict
     for raw in raw_players:
         if not isinstance(raw, dict):
             continue
+        if not bool(raw.get("online", True)):
+            continue
         player_id = str(raw.get("vrc_user_id") or "").strip()
         player_name = str(raw.get("vrc_username") or "").strip()
         if not player_id.startswith("usr_") or not player_name or player_id in seen:
