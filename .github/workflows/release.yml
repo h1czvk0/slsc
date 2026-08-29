@@ -85,7 +85,7 @@ jobs:
         shell: pwsh
         run: |
           .venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
-          .venv\Scripts\python.exe -m py_compile slashco.py ecliptica_sync.py ecliptica_log_parser.py slashco_updater.py
+          .venv\Scripts\python.exe -m py_compile slashco.py auto_jump.py vrchat_log_selector.py ecliptica_sync.py ecliptica_log_parser.py slashco_updater.py
           .venv\Scripts\python.exe -m pip check
 
       - name: 使用 PyInstaller 构建 EXE
