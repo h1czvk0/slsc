@@ -43,7 +43,7 @@ class OscOutputTests(unittest.TestCase):
             socket_factory=lambda *_args: FakeSocket(sent),
         )
 
-        self.assertTrue(output.publish_target("ಣಪರೀಕ್ಷೆ"))
+        self.assertTrue(output.publish_target("测试玩家"))
         packet, destination = sent[0]
         address, offset = read_osc_string(packet)
         tags, offset = read_osc_string(packet, offset)
@@ -52,31 +52,31 @@ class OscOutputTests(unittest.TestCase):
         self.assertEqual(destination, ("127.0.0.1", 9000))
         self.assertEqual(address, "/chatbox/input")
         self.assertEqual(tags, ",sTF")
-        self.assertEqual(message, "Boss 当前锁定：ಣಪರೀಕ್ಷೆ")
+        self.assertEqual(message, "Boss 当前锁定：测试玩家")
 
     def test_name_only_mode_omits_boss_lock_prefix(self):
         sent = []
         output = BossLockOscOutput(socket_factory=lambda *_args: FakeSocket(sent))
 
-        output.publish_target("ಣಪರೀಕ್ಷೆ", name_only=True, prefix="不会显示：")
+        output.publish_target("测试玩家", name_only=True, prefix="不会显示：")
 
         packet, _destination = sent[0]
         _address, offset = read_osc_string(packet)
         _tags, offset = read_osc_string(packet, offset)
         message, _offset = read_osc_string(packet, offset)
-        self.assertEqual(message, "ಣಪರೀಕ್ಷೆ")
+        self.assertEqual(message, "测试玩家")
 
     def test_custom_prefix_preserves_unicode_and_spacing(self):
         sent = []
         output = BossLockOscOutput(socket_factory=lambda *_args: FakeSocket(sent))
 
-        output.publish_target("ಣಪರೀಕ್ಷೆ", prefix="目标锁定 -> ")
+        output.publish_target("测试玩家", prefix="目标锁定 -> ")
 
         packet, _destination = sent[0]
         _address, offset = read_osc_string(packet)
         _tags, offset = read_osc_string(packet, offset)
         message, _offset = read_osc_string(packet, offset)
-        self.assertEqual(message, "目标锁定 -> ಣಪರೀಕ್ಷೆ")
+        self.assertEqual(message, "目标锁定 -> 测试玩家")
 
     def test_empty_custom_prefix_is_allowed_and_nulls_are_removed(self):
         self.assertEqual(normalize_osc_prefix(""), "")

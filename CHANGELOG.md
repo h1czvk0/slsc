@@ -104,7 +104,7 @@
 ## 3.9.9
 
 - 新增 Ecliptica Boss 当前锁定 OSC 输出，可配置目标主机和端口，默认使用 VRChat Chatbox 的 `/chatbox/input`。
-- OSC 文本使用 UTF-8 编码，兼容 `ಣಪರೀಕ್ಷೆ` 等包含特殊 Unicode 字符的玩家名称。
+- OSC 文本使用 UTF-8 编码，兼容 `测试玩家` 等包含特殊 Unicode 字符的玩家名称。
 
 ## 3.9.8
 

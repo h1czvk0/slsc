@@ -69,11 +69,11 @@ class EclipticaParserTests(unittest.TestCase):
 
     def test_boss_ownership_preserves_unicode_player_name(self):
         ownership = parse_ecliptica_line(
-            "2026.07.26 16:22:02 Debug - ownership of Obisidus transferred to ಣಪರೀಕ್ಷೆ"
+            "2026.07.26 16:22:02 Debug - ownership of Obisidus transferred to 测试玩家"
         )
 
         self.assertEqual(ownership.kind, "ownership")
-        self.assertEqual(ownership.groups, ("Obisidus", "ಣಪರೀಕ್ಷೆ"))
+        self.assertEqual(ownership.groups, ("Obisidus", "测试玩家"))
 
 
 class EclipticaStateTests(unittest.TestCase):

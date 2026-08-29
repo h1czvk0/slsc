@@ -623,10 +623,10 @@ class OscPublishingTests(unittest.TestCase):
     def test_active_boss_state_publishes_target(self):
         monitor = self.make_monitor()
 
-        monitor._publish_ecliptica_osc({"aggro": {"state": "other", "target": "ಣಪರೀಕ್ಷೆ"}})
+        monitor._publish_ecliptica_osc({"aggro": {"state": "other", "target": "测试玩家"}})
 
         self.assertEqual(monitor.ecliptica_osc.clear_calls, 0)
-        self.assertEqual(monitor.ecliptica_osc.published[0][0], "ಣಪರೀಕ್ಷೆ")
+        self.assertEqual(monitor.ecliptica_osc.published[0][0], "测试玩家")
         self.assertEqual(monitor.ecliptica_osc.published[0][1]["prefix"], "自定义锁定：")
 
     def test_unknown_boss_target_is_cleared_instead_of_published(self):
@@ -1088,9 +1088,9 @@ class HudLayoutTests(unittest.TestCase):
         self.assertEqual(draw.text_items[0][1]["fill"], "#ffffff")
 
     def test_hud_font_falls_back_for_kannada_without_losing_chinese(self):
-        runs = _hud_text_runs("Boss 当前锁定：ಣಪರೀಕ್ಷೆ", _load_hud_font(24, bold=True))
+        runs = _hud_text_runs("Boss 当前锁定：ಣపರೀಕ್ಷೆ", _load_hud_font(24, bold=True))
 
-        self.assertEqual("".join(text for text, _font in runs), "Boss 当前锁定：ಣಪರೀಕ್ಷೆ")
+        self.assertEqual("".join(text for text, _font in runs), "Boss 当前锁定：ಣపರೀಕ್ಷೆ")
         kannada_fonts = [font.getname()[0] for text, font in runs if "ಣ" in text]
         self.assertEqual(kannada_fonts, ["Nirmala UI"])
 

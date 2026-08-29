@@ -39,13 +39,13 @@ Windows PowerShell：
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-python 主程序脚本.py
+python slashco.py
 ```
 
 也可以不激活虚拟环境，直接使用：
 
 ```powershell
-.\.venv\Scripts\python.exe 主程序脚本.py
+.\.venv\Scripts\python.exe slashco.py
 ```
 
 ## 测试
@@ -57,7 +57,7 @@ python 主程序脚本.py
 ## 打包
 
 ```powershell
-.\.venv\Scripts\pyinstaller.exe --clean --noconfirm 打包配置.spec
+.\.venv\Scripts\pyinstaller.exe --clean --noconfirm slashco.spec
 ```
 
 打包完成后主程序位于：
