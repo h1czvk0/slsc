@@ -9,7 +9,10 @@ ROOM_PATTERN = re.compile(r"\[Behaviour\]\s+Entering Room:\s+(.+?)\s*$", re.IGNO
 PATTERNS = {
     "authenticated": re.compile(r"User Authenticated:\s*(.+?)\s*\((usr_[^)]+)\)\s*$", re.IGNORECASE),
     "ownership": re.compile(r"ownership of\s+(.+?)\s+transferred to\s+(.+?)\s*$", re.IGNORECASE),
-    "session": re.compile(r"ECLIPTICA\s+(?:loaded|saving)\s+SESSION ID\s+(\d+)", re.IGNORECASE),
+    "session": re.compile(
+        r"ECLIPTICA\s+(?:(?:loaded|saving)\s+SESSION ID\s+|MASTER\s+Setting\s+SESSION ID\s+to\s+)(\d+)",
+        re.IGNORECASE,
+    ),
     "session_blank": re.compile(r"ECLIPTICA\s+loaded blank session ID", re.IGNORECASE),
     "stage": re.compile(
         r"ECLIPTICA\s+-\s+now in stage:\s+(.+?)\s+on phase:\s+([0-9.]+)\s+as class:\s+(.+?)\s*$",
@@ -102,6 +105,7 @@ class EclipticaState:
 
     def __init__(self):
         self.world_name = ""
+        self.ecliptica_detected = False
         self.local_player_name = ""
         self.local_player_id = ""
         self.reset(preserve_world=True)
@@ -109,6 +113,7 @@ class EclipticaState:
     def reset(self, preserve_world=False):
         world_name = self.world_name if preserve_world else ""
         self.world_name = world_name
+        self.ecliptica_detected = False
         self.session_id = ""
         self.run_active = False
         self.stage = "-"
@@ -155,22 +160,30 @@ class EclipticaState:
         self._last_aggro_target_player = ""
         self._aggro_state = "unknown"
 
+    @property
+    def is_ecliptica_context(self):
+        return self.ecliptica_detected or is_ecliptica_room(self.world_name)
+
     def _event_time(self, event: EclipticaEvent):
         return float(event.timestamp if event.timestamp is not None else time.time())
 
     def _begin_session(self, session_id: str):
         if self.session_id and self.session_id != session_id:
             world_name = self.world_name
+            ecliptica_detected = self.ecliptica_detected
             self.reset(preserve_world=False)
             self.world_name = world_name
+            self.ecliptica_detected = ecliptica_detected
         self.session_id = session_id
 
     def _begin_run(self):
         if self.run_active:
             return
         session_id = self.session_id
+        ecliptica_detected = self.ecliptica_detected
         self.reset(preserve_world=True)
         self.session_id = session_id
+        self.ecliptica_detected = ecliptica_detected
         self.run_active = True
 
     def _reset_aggro(self):
@@ -252,18 +265,21 @@ class EclipticaState:
             return True
         if kind == "room_entered":
             room_name = event.groups[0]
-            if is_ecliptica_room(room_name):
-                self.world_name = room_name
-                return True
-            return False
+            self.world_name = room_name
+            self.ecliptica_detected = is_ecliptica_room(room_name)
+            return self.ecliptica_detected
 
         if kind == "session":
+            self.ecliptica_detected = True
             self._begin_session(event.groups[0])
             return True
         if kind == "session_blank":
+            self.ecliptica_detected = True
             self.reset(preserve_world=True)
+            self.ecliptica_detected = True
             return True
         if kind == "stage":
+            self.ecliptica_detected = True
             self._begin_run()
             if self.run_started_at is None or self.run_ended_at is not None:
                 self.run_started_at = now
@@ -282,6 +298,7 @@ class EclipticaState:
             self._reset_aggro()
             return True
         if kind == "boss":
+            self.ecliptica_detected = True
             self._begin_run()
             boss_name, boss_key, boss_phase = split_boss_name(event.groups[0])
             if self.run_started_at is None or self.run_ended_at is not None:
@@ -309,6 +326,7 @@ class EclipticaState:
                 self._reset_aggro()
             return True
         if kind == "boss_dead":
+            self.ecliptica_detected = True
             boss_name, boss_key, _boss_phase = split_boss_name(event.groups[0])
             self._pending_boss_raw = event.groups[0].strip()
             self._pending_boss_key = boss_key
@@ -321,6 +339,7 @@ class EclipticaState:
             self._pending_non_strike = None
             return True
         if kind == "ownership":
+            self.ecliptica_detected = True
             _owner_boss_name, owner_boss_key, owner_boss_phase = split_boss_name(event.groups[0])
             if owner_boss_key != self.current_boss_key or owner_boss_phase != self.current_boss_phase:
                 return False
@@ -373,6 +392,7 @@ class EclipticaState:
             self.stage_progress = int(event.groups[0])
             return True
         if kind in ("intermission", "lobby"):
+            self.ecliptica_detected = True
             encounter_id = self.current_boss_encounter_id
             if encounter_id is not None and encounter_id not in self._defeated_boss_encounters:
                 self._defeated_boss_encounters.add(encounter_id)

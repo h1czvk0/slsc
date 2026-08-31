@@ -458,6 +458,31 @@ class EclipticaMonitorIntegrationTests(unittest.TestCase):
         self.assertTrue(monitor._update_ecliptica_auto_jump_context())
         self.assertEqual(monitor.ecliptica_auto_jump.contexts[-1], (True, ""))
 
+    def test_log_recovery_detects_variant_world_from_ecliptica_activity(self):
+        monitor = self.make_monitor()
+        monitor.log = lambda _message: None
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "output_log_test.txt"
+            path.write_text(
+                "2026.08.31 15:46:52 Debug - User Authenticated: TestPlayer "
+                "(usr_00000000-0000-0000-0000-000000000001)\n"
+                "2026.08.31 15:46:52 Debug - [Behaviour] Entering Room: 看看蓝白碗\n"
+                "2026.08.31 15:47:13 Debug - ECLIPTICA MASTER Setting SESSION ID to 12445\n"
+                "2026.08.31 15:47:19 Debug - ECLIPTICA - now in stage: "
+                "Stage_Hall of Beginnings on phase: 0 as class: Spellsword\n",
+                encoding="utf-8",
+            )
+
+            lines = monitor._get_active_round_recovery_lines(str(path))
+
+        events = [parse_ecliptica_line(line) for line in lines]
+        events = [event for event in events if event is not None]
+        recovered_state = EclipticaState()
+        for event in events:
+            recovered_state.apply(event)
+        self.assertEqual(recovered_state.world_name, "看看蓝白碗")
+        self.assertTrue(recovered_state.is_ecliptica_context)
+
     def test_identity_is_read_from_log_start_without_ecliptica_events(self):
         monitor = self.make_monitor()
         with tempfile.TemporaryDirectory() as directory:

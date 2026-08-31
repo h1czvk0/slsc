@@ -3566,7 +3566,7 @@ class SlashCoMonitorCN:
             return False
         if snapshot is None:
             snapshot = self.ecliptica_state.snapshot()
-        in_ecliptica = is_ecliptica_room(self.ecliptica_state.world_name)
+        in_ecliptica = self.ecliptica_state.is_ecliptica_context
         intermission = bool(snapshot.get("intermission"))
         if not in_ecliptica:
             service.set_context(False, "仅在 Ecliptica 世界生效")
@@ -5241,6 +5241,7 @@ class SlashCoMonitorCN:
         last_room_name = ""
         last_room_line = ""
         last_authenticated_line = ""
+        last_ecliptica_pos = None
         first_session_positions = {}
         last_session_id = ""
         pos = 0
@@ -5257,13 +5258,29 @@ class SlashCoMonitorCN:
                 elif ecliptica_event and ecliptica_event.kind == "session":
                     last_session_id = ecliptica_event.groups[0]
                     first_session_positions.setdefault(last_session_id, pos)
+                    last_ecliptica_pos = pos
+                elif ecliptica_event and ecliptica_event.kind in {
+                    "session_blank",
+                    "stage",
+                    "boss",
+                    "intermission",
+                    "lobby",
+                }:
+                    last_ecliptica_pos = pos
                 if self._is_round_start_line(line):
                     last_start_pos = pos
                 if self._is_round_end_line(line):
                     last_end_pos = pos
             pos += len(raw_line)
 
-        if last_room_pos is not None and is_ecliptica_room(last_room_name):
+        ecliptica_activity_in_current_room = (
+            last_room_pos is not None
+            and last_ecliptica_pos is not None
+            and last_ecliptica_pos > last_room_pos
+        )
+        if last_room_pos is not None and (
+            is_ecliptica_room(last_room_name) or ecliptica_activity_in_current_room
+        ):
             recovery_pos = first_session_positions.get(last_session_id, last_room_pos)
             active_text = text[recovery_pos:]
             lines = [line for line in active_text.splitlines() if self._line_might_affect_state(line)]

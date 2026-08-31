@@ -33,6 +33,20 @@ class EclipticaParserTests(unittest.TestCase):
         self.assertEqual(stage.groups, ("Stage_BalboaRuins", "0.9238784", "Thaumaturge"))
         self.assertEqual(clean_stage_name(stage.groups[0]), "BalboaRuins")
 
+    def test_variant_world_is_detected_by_ecliptica_events(self):
+        state = EclipticaState()
+        make_event = lambda kind, *groups, timestamp=0.0: EclipticaEvent(
+            kind, tuple(str(group) for group in groups), timestamp
+        )
+        state.apply(make_event("room_entered", "看看蓝白碗", timestamp=1.0))
+        self.assertFalse(state.is_ecliptica_context)
+        state.apply(make_event("session", "12445", timestamp=2.0))
+        state.apply(make_event("stage", "Stage_Hall of Beginnings", "0", "Spellsword", timestamp=3.0))
+        self.assertTrue(state.is_ecliptica_context)
+        self.assertEqual(state.world_name, "看看蓝白碗")
+        state.apply(make_event("room_entered", "VRChat Home", timestamp=4.0))
+        self.assertFalse(state.is_ecliptica_context)
+
     def test_boss_phase_suffix_is_normalized(self):
         name, key, phase = split_boss_name("DespairPhase2(Clone)")
         self.assertEqual(name, "Despair")

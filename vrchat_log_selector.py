@@ -38,10 +38,11 @@ class VrchatLogCandidate:
     room_name: str = ""
     session_id: str = ""
     last_ecliptica_at: float = 0.0
+    ecliptica_activity: bool = False
 
     @property
     def in_ecliptica(self):
-        return is_ecliptica_room(self.room_name)
+        return is_ecliptica_room(self.room_name) or self.ecliptica_activity
 
     @property
     def label(self):
@@ -362,13 +363,19 @@ class VrchatLogSelector:
                     vrc_user_id=event.groups[1].strip(),
                 )
             elif event.kind == "room_entered":
-                updated = replace(updated, room_name=event.groups[0].strip())
+                updated = replace(
+                    updated,
+                    room_name=event.groups[0].strip(),
+                    ecliptica_activity=is_ecliptica_room(event.groups[0]),
+                )
             elif event.kind in ("session", "session_blank"):
                 session_id = event.groups[0].strip() if event.kind == "session" else ""
                 updated = replace(updated, session_id=session_id)
             if event.kind in ("session", "stage", "boss", "intermission", "lobby"):
-                if not updated.in_ecliptica:
-                    updated = replace(updated, room_name="Ecliptica（由日志活动识别）")
                 event_time = float(event.timestamp or updated.modified_at or 0.0)
-                updated = replace(updated, last_ecliptica_at=max(updated.last_ecliptica_at, event_time))
+                updated = replace(
+                    updated,
+                    last_ecliptica_at=max(updated.last_ecliptica_at, event_time),
+                    ecliptica_activity=True,
+                )
         return updated

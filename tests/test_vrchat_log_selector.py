@@ -69,6 +69,32 @@ class VrchatLogSelectorTests(unittest.TestCase):
         self.assertEqual(selected.pid, 101)
         self.assertEqual(selected.vrc_username, "Player One")
 
+    def test_variant_world_with_ecliptica_session_is_detected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_dir = pathlib.Path(directory)
+            path = log_dir / "output_log_2026-08-29_04-13-56.txt"
+            write_log(
+                path,
+                "Player One",
+                "usr_player_one",
+                "看看蓝白碗",
+                "ECLIPTICA Loading Settings...\n"
+                "ECLIPTICA MASTER Setting SESSION ID to 12445\n"
+                "ECLIPTICA - now in stage: Stage_Hall of Beginnings on phase: 0 as class: Spellsword\n",
+            )
+            processes = [self.make_process(path, 101)]
+            selector = VrchatLogSelector(
+                str(log_dir),
+                process_provider=lambda: processes,
+                foreground_pid_provider=lambda: 101,
+            )
+
+            selected = selector.select()
+
+        self.assertIsNotNone(selected)
+        self.assertTrue(selected.in_ecliptica)
+        self.assertEqual(selected.room_name, "看看蓝白碗")
+
     def test_current_ecliptica_selection_is_sticky_when_other_instance_is_foreground(self):
         with tempfile.TemporaryDirectory() as directory:
             log_dir = pathlib.Path(directory)
