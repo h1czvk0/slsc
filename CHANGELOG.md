@@ -1,5 +1,10 @@
 # 更新日志
 
+## 3.9.30
+
+- 新增 Demo Lobby 的 `Mega Patreon` 静态名称覆盖，与原 SlashCo 赞助者名单覆盖互斥。
+- Demo Lobby 覆盖设置默认折叠，并在“启用赞助者名单覆盖”右侧提供 `JZU` 展开/收起按钮。
+
 ## 3.9.29
 
 - 支持世界名称不含 Ecliptica 的改版世界，通过当前房间内的 Ecliptica 会话、阶段、Boss 和幕间日志自动识别。
