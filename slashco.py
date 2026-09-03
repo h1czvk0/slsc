@@ -2559,6 +2559,14 @@ class SlashCoMonitorCN:
                 command=self._on_sponsor_toggle_new
             )
             self.chk_sponsor.pack(side=LEFT)
+            self.demo_lobby_panel_visible = False
+            self.btn_toggle_demo_lobby = ttk.Button(
+                row1,
+                text="JZU ▼",
+                command=self.toggle_demo_lobby_panel,
+                width=16,
+            )
+            self.btn_toggle_demo_lobby.pack(side=LEFT, padx=(8, 0))
             self.lbl_sponsor_status = ttk.Label(row1, text="", foreground="gray", font=("\u5fae\u8f6f\u96c5\u9ed1", 8))
             self.lbl_sponsor_status.pack(side=RIGHT)
             
@@ -2593,14 +2601,13 @@ class SlashCoMonitorCN:
                 font=("\u5fae\u8f6f\u96c5\u9ed1", 8),
             ).pack(fill=X, pady=(2, 0))
 
-            demo_lobby_frame = ttk.LabelFrame(
+            self.demo_lobby_frame = ttk.LabelFrame(
                 self.left_content,
                 text="Demo Lobby Mega Patreon",
                 padding=5,
             )
-            demo_lobby_frame.pack(fill=X, padx=5, pady=2, before=self.mode_left_container)
 
-            demo_row1 = ttk.Frame(demo_lobby_frame)
+            demo_row1 = ttk.Frame(self.demo_lobby_frame)
             demo_row1.pack(fill=X, pady=2)
             self.chk_demo_lobby = ttk.Checkbutton(
                 demo_row1,
@@ -2617,7 +2624,7 @@ class SlashCoMonitorCN:
             )
             self.lbl_demo_lobby_status.pack(side=RIGHT)
 
-            demo_row2 = ttk.Frame(demo_lobby_frame)
+            demo_row2 = ttk.Frame(self.demo_lobby_frame)
             demo_row2.pack(fill=X, pady=2)
             ttk.Label(demo_row2, text="VRChat 名称：").pack(side=LEFT)
             self.entry_demo_lobby_name = ttk.Entry(
@@ -2633,11 +2640,12 @@ class SlashCoMonitorCN:
                 width=6,
             ).pack(side=RIGHT)
             ttk.Label(
-                demo_lobby_frame,
+                self.demo_lobby_frame,
                 text="仅覆盖 Demo Lobby 的 Mega Patreon；启用后重新进入世界。\n与上方功能互斥。",
                 foreground="#7f8c8d",
                 font=("微软雅黑", 8),
             ).pack(fill=X, pady=(2, 0))
+            self._refresh_demo_lobby_panel_button()
 
         # 参考图折叠区域
         self.img_visible = False
@@ -4456,6 +4464,7 @@ class SlashCoMonitorCN:
             if is_enabled:
                 self.demo_lobby_enabled.set(False)
                 self._update_demo_lobby_status("已停止", "gray")
+                self._refresh_demo_lobby_panel_button()
             self._save_sponsor_config()
             if is_enabled:
                 threading.Thread(target=self._start_sponsor_server, daemon=True).start()
@@ -4476,6 +4485,7 @@ class SlashCoMonitorCN:
             if is_enabled:
                 self.sponsor_enabled.set(False)
                 self._update_sponsor_status("已停止", "gray")
+            self._refresh_demo_lobby_panel_button()
             self._save_sponsor_config()
             if is_enabled:
                 threading.Thread(target=self._start_demo_lobby_server, daemon=True).start()
@@ -4539,6 +4549,7 @@ class SlashCoMonitorCN:
             if not name:
                 self._ui_after(messagebox.showwarning, "提示", "请先输入 VRChat 名称")
                 self._ui_after(self.demo_lobby_enabled.set, False)
+                self._ui_after(self._refresh_demo_lobby_panel_button)
                 self._ui_after(self._save_sponsor_config)
                 return
 
@@ -4569,6 +4580,7 @@ class SlashCoMonitorCN:
             else:
                 self._ui_after(self._update_demo_lobby_status, f"失败: {message}", "red")
                 self._ui_after(self.demo_lobby_enabled.set, False)
+                self._ui_after(self._refresh_demo_lobby_panel_button)
                 self._ui_after(self._save_sponsor_config)
         finally:
             self._sponsor_op_lock.release()
@@ -4670,6 +4682,31 @@ class SlashCoMonitorCN:
     def _update_demo_lobby_status(self, text, color):
         if hasattr(self, "lbl_demo_lobby_status"):
             self.lbl_demo_lobby_status.configure(text=text, foreground=color)
+
+    def _refresh_demo_lobby_panel_button(self):
+        if not hasattr(self, "btn_toggle_demo_lobby"):
+            return
+        enabled_mark = " ✓" if self.demo_lobby_enabled.get() else ""
+        direction = "▲" if self.demo_lobby_panel_visible else "▼"
+        self.btn_toggle_demo_lobby.configure(
+            text=f"JZU{enabled_mark} {direction}"
+        )
+
+    def toggle_demo_lobby_panel(self):
+        if not hasattr(self, "demo_lobby_frame"):
+            return
+        if self.demo_lobby_panel_visible:
+            self.demo_lobby_frame.pack_forget()
+            self.demo_lobby_panel_visible = False
+        else:
+            self.demo_lobby_frame.pack(
+                fill=X,
+                padx=5,
+                pady=2,
+                before=self.mode_left_container,
+            )
+            self.demo_lobby_panel_visible = True
+        self._refresh_demo_lobby_panel_button()
 
 
     def load_fixed_height_image(self):
