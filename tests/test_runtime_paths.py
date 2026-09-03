@@ -1,4 +1,6 @@
 import os
+import importlib.util
+import json
 import socket
 import sys
 import tempfile
@@ -186,6 +188,76 @@ class RuntimePathTests(unittest.TestCase):
         self.assertEqual(sponsor_mitm.normalize_sponsor_mode("mitmdump"), "mitm")
         self.assertEqual(sponsor_mitm.normalize_sponsor_mode("hosts + caddy"), "caddy")
         self.assertEqual(sponsor_mitm.normalize_sponsor_mode("unknown"), "mitm")
+
+    def test_demo_lobby_payload_contains_only_requested_mega_patreon_name(self):
+        payload = sponsor_mitm.build_demo_lobby_payload(
+            "  h1czvko  ",
+            last_updated="2026-09-04T00:00:00Z",
+        )
+
+        self.assertEqual(payload["Version"], "2.0")
+        self.assertEqual(payload["MemberCount"], 1)
+        self.assertEqual(payload["LastUpdated"], "2026-09-04T00:00:00Z")
+        self.assertEqual(
+            payload["GuildUsers"],
+            {sponsor_mitm.DEMO_LOBBY_ROLE_NAME: ["h1czvko"]},
+        )
+
+    def test_demo_lobby_addon_only_targets_vrclinking_urls(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            content_file = os.path.join(tmp_dir, "demo.json")
+            addon_file = os.path.join(tmp_dir, "addon.py")
+            hit_log = os.path.join(tmp_dir, "hits.log")
+            with open(content_file, "w", encoding="utf-8") as f:
+                f.write(sponsor_mitm.build_demo_lobby_content("h1czvko"))
+
+            with mock.patch.object(sponsor_mitm, "ADDON_SCRIPT_FILE", addon_file):
+                generated = sponsor_mitm._generate_addon_script(
+                    content_file,
+                    hit_log,
+                    profile=sponsor_mitm.OVERRIDE_PROFILE_DEMO_LOBBY,
+                )
+
+            with open(generated, "r", encoding="utf-8") as f:
+                text = f.read()
+            self.assertIn("data.vrclinking.com", text)
+            self.assertIn("linkingbotvrchat.github.io", text)
+            self.assertIn("application/json; charset=utf-8", text)
+            self.assertNotIn("pastebin.com", text)
+
+            spec = importlib.util.spec_from_file_location("demo_lobby_test_addon", generated)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+
+            class FakeRequest:
+                host = "data.vrclinking.com"
+                path = "/v2/0195cfe7-f085-75f4-ac19-9d5e08b21c05?cache=0"
+
+            class FakeFlow:
+                request = FakeRequest()
+                response = None
+
+            flow = FakeFlow()
+            module.addons[0].request(flow)
+            self.assertIsNotNone(flow.response)
+            self.assertEqual(flow.response.status_code, 200)
+            self.assertEqual(
+                json.loads(flow.response.content.decode("utf-8"))["GuildUsers"],
+                {sponsor_mitm.DEMO_LOBBY_ROLE_NAME: ["h1czvko"]},
+            )
+
+    def test_running_override_rejects_a_different_profile(self):
+        old_running = sponsor_mitm._running
+        old_profile = sponsor_mitm._active_profile
+        try:
+            sponsor_mitm._running = True
+            sponsor_mitm._active_profile = sponsor_mitm.OVERRIDE_PROFILE_SLASHCO
+            success, message = sponsor_mitm.start_demo_lobby_override("h1czvko")
+            self.assertFalse(success)
+            self.assertIn("另一个名单覆盖", message)
+        finally:
+            sponsor_mitm._running = old_running
+            sponsor_mitm._active_profile = old_profile
 
     def test_generate_caddyfile_uses_generated_cert_and_content_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

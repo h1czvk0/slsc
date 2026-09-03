@@ -2189,6 +2189,8 @@ class SlashCoMonitorCN:
         # 启动赞助者覆盖 (延迟到 mainloop 启动后)
         if HAS_SPONSOR_PROXY and self.sponsor_enabled.get():
             self.root.after(500, self._deferred_start_sponsor)
+        elif HAS_SPONSOR_PROXY and self.demo_lobby_enabled.get():
+            self.root.after(500, self._deferred_start_demo_lobby)
 
 
 
@@ -2589,6 +2591,52 @@ class SlashCoMonitorCN:
                 text="如果当前模式不生效，请停止后切换另一个模式再试。",
                 foreground="#c0392b",
                 font=("\u5fae\u8f6f\u96c5\u9ed1", 8),
+            ).pack(fill=X, pady=(2, 0))
+
+            demo_lobby_frame = ttk.LabelFrame(
+                self.left_content,
+                text="Demo Lobby Mega Patreon",
+                padding=5,
+            )
+            demo_lobby_frame.pack(fill=X, padx=5, pady=2, before=self.mode_left_container)
+
+            demo_row1 = ttk.Frame(demo_lobby_frame)
+            demo_row1.pack(fill=X, pady=2)
+            self.chk_demo_lobby = ttk.Checkbutton(
+                demo_row1,
+                text="启用 Demo Lobby 覆盖",
+                variable=self.demo_lobby_enabled,
+                command=self._on_demo_lobby_toggle,
+            )
+            self.chk_demo_lobby.pack(side=LEFT)
+            self.lbl_demo_lobby_status = ttk.Label(
+                demo_row1,
+                text="",
+                foreground="gray",
+                font=("微软雅黑", 8),
+            )
+            self.lbl_demo_lobby_status.pack(side=RIGHT)
+
+            demo_row2 = ttk.Frame(demo_lobby_frame)
+            demo_row2.pack(fill=X, pady=2)
+            ttk.Label(demo_row2, text="VRChat 名称：").pack(side=LEFT)
+            self.entry_demo_lobby_name = ttk.Entry(
+                demo_row2,
+                textvariable=self.demo_lobby_name,
+                width=20,
+            )
+            self.entry_demo_lobby_name.pack(side=LEFT, padx=(0, 5), fill=X, expand=True)
+            ttk.Button(
+                demo_row2,
+                text="保存",
+                command=self._save_sponsor_config,
+                width=6,
+            ).pack(side=RIGHT)
+            ttk.Label(
+                demo_lobby_frame,
+                text="仅覆盖 Demo Lobby 的 Mega Patreon；启用后重新进入世界。\n与上方功能互斥。",
+                foreground="#7f8c8d",
+                font=("微软雅黑", 8),
             ).pack(fill=X, pady=(2, 0))
 
         # 参考图折叠区域
@@ -4299,13 +4347,15 @@ class SlashCoMonitorCN:
             messagebox.showerror("错误", f"导出文件失败: {e}")
 
     # =========================================================
-    # 赞助者名单覆盖 (Caddy 方案)
+    # 赞助者名单覆盖
     # =========================================================
     def _load_sponsor_config(self):
         """加载赞助者配置"""
         self.sponsor_enabled = BooleanVar(value=False)
         self.sponsor_name = StringVar(value="")
         self.sponsor_mode = StringVar(value="mitm")
+        self.demo_lobby_enabled = BooleanVar(value=False)
+        self.demo_lobby_name = StringVar(value="")
 
         config_path = os.path.join(self.base_dir, "sponsor_config.json")
         try:
@@ -4314,10 +4364,14 @@ class SlashCoMonitorCN:
                     cfg = json.load(f)
                 self.sponsor_enabled.set(cfg.get("enabled", False))
                 self.sponsor_name.set(cfg.get("name", ""))
+                self.demo_lobby_enabled.set(cfg.get("demo_lobby_enabled", False))
+                self.demo_lobby_name.set(cfg.get("demo_lobby_name", ""))
                 mode = cfg.get("mode", "mitm")
                 if HAS_SPONSOR_PROXY and hasattr(sponsor_caddy, "normalize_sponsor_mode"):
                     mode = sponsor_caddy.normalize_sponsor_mode(mode)
                 self.sponsor_mode.set(mode if mode in ("mitm", "caddy") else "mitm")
+                if self.sponsor_enabled.get() and self.demo_lobby_enabled.get():
+                    self.demo_lobby_enabled.set(False)
         except Exception:
             pass
 
@@ -4331,12 +4385,18 @@ class SlashCoMonitorCN:
             "enabled": self.sponsor_enabled.get(),
             "name": self.sponsor_name.get().strip(),
             "mode": mode,
+            "demo_lobby_enabled": self.demo_lobby_enabled.get(),
+            "demo_lobby_name": self.demo_lobby_name.get().strip(),
         }
         try:
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
             mode_label = "hosts + Caddy" if cfg["mode"] == "caddy" else "mitmdump"
             self.log(f"赞助者设置已保存 (名称: {cfg['name'] or '未设置'}, 模式: {mode_label})")
+            self.log(
+                "Demo Lobby 设置已保存 "
+                f"(名称: {cfg['demo_lobby_name'] or '未设置'})"
+            )
         except Exception as e:
             self.log(f"保存赞助者设置失败: {e}")
 
@@ -4393,24 +4453,50 @@ class SlashCoMonitorCN:
         """开关切换事件"""
         try:
             is_enabled = self.sponsor_enabled.get()
+            if is_enabled:
+                self.demo_lobby_enabled.set(False)
+                self._update_demo_lobby_status("已停止", "gray")
             self._save_sponsor_config()
             if is_enabled:
                 threading.Thread(target=self._start_sponsor_server, daemon=True).start()
             else:
                 # 放入线程防止卡死 UI
-                threading.Thread(target=self._stop_sponsor_server, daemon=True).start()
+                threading.Thread(
+                    target=self._stop_sponsor_server,
+                    kwargs={"profile": "slashco"},
+                    daemon=True,
+                ).start()
         except Exception as e:
             self.log(f"Toggle error: {e}")
 
-    # --- 赞助者名单覆盖: Caddy 集成 ---
+    def _on_demo_lobby_toggle(self):
+        """Demo Lobby Mega Patreon 开关切换事件。"""
+        try:
+            is_enabled = self.demo_lobby_enabled.get()
+            if is_enabled:
+                self.sponsor_enabled.set(False)
+                self._update_sponsor_status("已停止", "gray")
+            self._save_sponsor_config()
+            if is_enabled:
+                threading.Thread(target=self._start_demo_lobby_server, daemon=True).start()
+            else:
+                threading.Thread(
+                    target=self._stop_sponsor_server,
+                    kwargs={"profile": "demo_lobby"},
+                    daemon=True,
+                ).start()
+        except Exception as e:
+            self.log(f"Demo Lobby toggle error: {e}")
+
+    # --- 赞助者名单覆盖 ---
 
     def _start_sponsor_server(self):
-        """使用 Caddy 启动赞助者名单覆盖"""
-        if not self._sponsor_op_lock.acquire(blocking=False):
-            self.log("赞助覆盖操作进行中，已忽略本次启动请求")
-            return
+        """启动原有赞助者名单覆盖。"""
+        self._sponsor_op_lock.acquire()
         name = self.sponsor_name.get().strip()
         try:
+            if not self.sponsor_enabled.get():
+                return
             if not name:
                 self._ui_after(messagebox.showwarning, "提示", "请先输入显示名称")
                 self._ui_after(self.sponsor_enabled.set, False)
@@ -4426,6 +4512,12 @@ class SlashCoMonitorCN:
             def _log_to_ui(msg):
                 self.log(msg)
 
+            get_active_profile = getattr(sponsor_caddy, "get_active_profile", None)
+            active_profile = get_active_profile() if callable(get_active_profile) else None
+            if sponsor_caddy.is_running() and active_profile != "slashco":
+                sponsor_caddy.stop_sponsor_override(log_func=_log_to_ui)
+                self._ui_after(self._update_demo_lobby_status, "已停止", "gray")
+
             success, message = sponsor_caddy.start_sponsor_override(name, log_func=_log_to_ui, mode=mode)
 
             if success:
@@ -4437,16 +4529,73 @@ class SlashCoMonitorCN:
         finally:
             self._sponsor_op_lock.release()
 
-    def _stop_sponsor_server(self):
-        """停止赞助者名单覆盖"""
-        if not self._sponsor_op_lock.acquire(blocking=False):
-            self.log("赞助覆盖操作进行中，已忽略本次停止请求")
-            return
+    def _start_demo_lobby_server(self):
+        """启动 Demo Lobby Mega Patreon 覆盖。"""
+        self._sponsor_op_lock.acquire()
+        name = self.demo_lobby_name.get().strip()
         try:
+            if not self.demo_lobby_enabled.get():
+                return
+            if not name:
+                self._ui_after(messagebox.showwarning, "提示", "请先输入 VRChat 名称")
+                self._ui_after(self.demo_lobby_enabled.set, False)
+                self._ui_after(self._save_sponsor_config)
+                return
+
+            self._ui_after(self._update_demo_lobby_status, "正在启动...", "#f39c12")
+            self._prepare_sponsor_proxy_port()
+
+            def _log_to_ui(msg):
+                self.log(msg)
+
+            get_active_profile = getattr(sponsor_caddy, "get_active_profile", None)
+            active_profile = get_active_profile() if callable(get_active_profile) else None
+            if sponsor_caddy.is_running() and active_profile != "demo_lobby":
+                sponsor_caddy.stop_sponsor_override(log_func=_log_to_ui)
+                self._ui_after(self._update_sponsor_status, "已停止", "gray")
+
+            start_demo = getattr(sponsor_caddy, "start_demo_lobby_override", None)
+            if not callable(start_demo):
+                success, message = False, "当前版本不支持 Demo Lobby 覆盖"
+            else:
+                success, message = start_demo(name, log_func=_log_to_ui)
+
+            if success:
+                self._ui_after(
+                    self._update_demo_lobby_status,
+                    "运行中 ✓ (mitmdump)",
+                    "#27ae60",
+                )
+            else:
+                self._ui_after(self._update_demo_lobby_status, f"失败: {message}", "red")
+                self._ui_after(self.demo_lobby_enabled.set, False)
+                self._ui_after(self._save_sponsor_config)
+        finally:
+            self._sponsor_op_lock.release()
+
+    def _stop_sponsor_server(self, profile=None):
+        """停止赞助者名单覆盖"""
+        self._sponsor_op_lock.acquire()
+        try:
+            if profile == "slashco" and self.sponsor_enabled.get():
+                return
+            if profile == "demo_lobby" and self.demo_lobby_enabled.get():
+                return
+            get_active_profile = getattr(sponsor_caddy, "get_active_profile", None)
+            active_profile = get_active_profile() if callable(get_active_profile) else None
+            if profile and active_profile and active_profile != profile:
+                if profile == "demo_lobby":
+                    self._ui_after(self._update_demo_lobby_status, "已停止", "gray")
+                else:
+                    self._ui_after(self._update_sponsor_status, "已停止", "gray")
+                return
             self._ui_after(self.log, "正在停止赞助者名单覆盖...")
             log_func = None if self._is_shutting_down else self.log
             sponsor_caddy.stop_sponsor_override(log_func=log_func)
-            self._ui_after(self._update_sponsor_status, "已停止", "gray")
+            if profile == "demo_lobby":
+                self._ui_after(self._update_demo_lobby_status, "已停止", "gray")
+            else:
+                self._ui_after(self._update_sponsor_status, "已停止", "gray")
         except Exception as e:
             self._ui_after(self.log, f"停止失败: {e}")
         finally:
@@ -4518,6 +4667,10 @@ class SlashCoMonitorCN:
         if hasattr(self, 'lbl_sponsor_status'):
             self.lbl_sponsor_status.configure(text=text, foreground=color)
 
+    def _update_demo_lobby_status(self, text, color):
+        if hasattr(self, "lbl_demo_lobby_status"):
+            self.lbl_demo_lobby_status.configure(text=text, foreground=color)
+
 
     def load_fixed_height_image(self):
         if not os.path.exists(IMAGE_FILENAME):
@@ -4572,6 +4725,11 @@ class SlashCoMonitorCN:
         if self._is_shutting_down:
             return
         threading.Thread(target=self._start_sponsor_server, daemon=True).start()
+
+    def _deferred_start_demo_lobby(self):
+        if self._is_shutting_down:
+            return
+        threading.Thread(target=self._start_demo_lobby_server, daemon=True).start()
 
     def force_reset(self):
         if getattr(self, "current_game_mode", "slashco") == "ecliptica":

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-sponsor_mitm.py — 赞助者名单覆盖 (mitmproxy 方案)
+sponsor_mitm.py — 游戏名单覆盖 (mitmproxy / Caddy 方案)
 
-使用 mitmproxy 作为本地系统代理，拦截 VRChat 对 Pastebin 的 HTTPS 请求。
+使用本地代理拦截 VRChat 的指定名单请求，支持 SlashCo 与 Demo Lobby 配置。
 优势:
   - 无需修改 DNS / hosts 文件
   - 不需要端口 53
@@ -136,11 +136,41 @@ DYNAMIC_PORT_MAX = 60999
 DYNAMIC_PORT_SAMPLE_COUNT = 140
 EPHEMERAL_PORT_ATTEMPTS = 24
 PASTEBIN_URL = "https://pastebin.com/raw/2WVJpW1N"
+DEMO_LOBBY_MAIN_URL = (
+    "https://data.vrclinking.com/v2/0195cfe7-f085-75f4-ac19-9d5e08b21c05"
+)
+DEMO_LOBBY_FALLBACK_URL = (
+    "https://linkingbotvrchat.github.io/v2data/worlds/"
+    "0195cfe7-f085-75f4-ac19-9d5e08b21c05"
+)
+DEMO_LOBBY_ROLE_NAME = "⭐ Mega Patreon"
+OVERRIDE_PROFILE_SLASHCO = "slashco"
+OVERRIDE_PROFILE_DEMO_LOBBY = "demo_lobby"
+OVERRIDE_TARGETS = {
+    OVERRIDE_PROFILE_SLASHCO: (
+        ("pastebin.com", "/raw/2WVJpW1N"),
+        ("www.pastebin.com", "/raw/2WVJpW1N"),
+    ),
+    OVERRIDE_PROFILE_DEMO_LOBBY: (
+        ("data.vrclinking.com", "/v2/0195cfe7-f085-75f4-ac19-9d5e08b21c05"),
+        (
+            "linkingbotvrchat.github.io",
+            "/v2data/worlds/0195cfe7-f085-75f4-ac19-9d5e08b21c05",
+        ),
+    ),
+}
+OVERRIDE_ALLOWED_HOSTS = {
+    OVERRIDE_PROFILE_SLASHCO: r"^(?:www\.)?pastebin\.com(?::\d+)?$",
+    OVERRIDE_PROFILE_DEMO_LOBBY: (
+        r"^(?:data\.vrclinking\.com|linkingbotvrchat\.github\.io)(?::\d+)?$"
+    ),
+}
 SEPARATOR = "\u2674"  # ♴  (正确分隔符)
 WRONG_SEPARATORS = ["\u2634", "\u2734"]  # 旧代码使用的错误分隔符
 
 # 配置文件和临时文件放在数据目录 (可写)
 MODIFIED_CONTENT_FILE = os.path.join(_get_data_dir(), "sponsors.dat")
+DEMO_LOBBY_CONTENT_FILE = os.path.join(_get_data_dir(), "demo_lobby_mega_patreon.json")
 ADDON_SCRIPT_FILE = os.path.join(_get_data_dir(), "tools", "mitm_addon.py")
 HIT_LOG_FILE = os.path.join(_get_data_dir(), "tools", "sponsor_override_hits.log")
 CA_INSTALLED_FLAG = os.path.join(_get_data_dir(), "tools", ".mitm_ca_trusted")
@@ -164,6 +194,7 @@ _lock = threading.Lock()
 _original_proxy_settings = None
 _active_proxy_port = None
 _active_mode = None
+_active_profile = None
 
 
 def _log(msg, log_func=None):
@@ -501,12 +532,45 @@ def build_modified_content(original, names):
     return content
 
 
+def build_demo_lobby_payload(display_name, last_updated=None):
+    """构建 Demo Lobby 的最小 VRCLinking Mega Patreon 数据。"""
+    name = str(display_name or "").strip()
+    if not name:
+        raise ValueError("display_name 不能为空")
+    updated_at = last_updated or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return {
+        "Version": "2.0",
+        "LastUpdated": updated_at,
+        "MemberCount": 1,
+        "GuildUsers": {
+            DEMO_LOBBY_ROLE_NAME: [name],
+        },
+    }
+
+
+def build_demo_lobby_content(display_name, last_updated=None):
+    payload = build_demo_lobby_payload(display_name, last_updated=last_updated)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
 # ==================== mitmproxy Addon 生成 ====================
-def _generate_addon_script(content_file_path, hit_log_file=None):
+def _generate_addon_script(
+    content_file_path,
+    hit_log_file=None,
+    profile=OVERRIDE_PROFILE_SLASHCO,
+):
     """生成 mitmproxy addon 脚本"""
+    if profile not in OVERRIDE_TARGETS:
+        raise ValueError(f"未知覆盖配置: {profile}")
     # 使用 正斜杠 路径 避免转义问题
     safe_path = content_file_path.replace("\\", "/")
     safe_log_path = (hit_log_file or HIT_LOG_FILE).replace("\\", "/")
+    targets = repr(OVERRIDE_TARGETS[profile])
+    content_type = (
+        "application/json; charset=utf-8"
+        if profile == OVERRIDE_PROFILE_DEMO_LOBBY
+        else "text/plain; charset=utf-8"
+    )
 
     addon_code = f'''# -*- coding: utf-8 -*-
 # Auto-generated mitmproxy addon for sponsor list override
@@ -516,10 +580,9 @@ import time
 
 CONTENT_FILE = r"{safe_path}"
 HIT_LOG_FILE = r"{safe_log_path}"
-TARGETS = (
-    ("pastebin.com", "/raw/2WVJpW1N"),
-    ("www.pastebin.com", "/raw/2WVJpW1N"),
-)
+PROFILE = {profile!r}
+TARGETS = {targets}
+CONTENT_TYPE = {content_type!r}
 
 def _clean_path(path: str) -> str:
     path = path.split("?", 1)[0]
@@ -555,13 +618,13 @@ class SponsorOverrideAddon:
                 200,
                 modified.encode("utf-8"),
                 {{
-                    "Content-Type": "text/plain; charset=utf-8",
+                    "Content-Type": CONTENT_TYPE,
                     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
                     "Pragma": "no-cache",
                     "Expires": "0",
                 }},
             )
-            _append_hit_log(f"OVERRIDE {{host}}{{path}} len={{len(modified)}}")
+            _append_hit_log(f"OVERRIDE {{PROFILE}} {{host}}{{path}} len={{len(modified)}}")
         except Exception as e:
             _append_hit_log(f"OVERRIDE_ERROR {{host}}{{path}} {{e}}")
 
@@ -570,7 +633,7 @@ class SponsorOverrideAddon:
         path = _clean_path(flow.request.path)
         if _is_target(host, path):
             body_len = len(flow.response.content or b"")
-            _append_hit_log(f"RESP {{host}}{{path}} status={{flow.response.status_code}} body={{body_len}}")
+            _append_hit_log(f"RESP {{PROFILE}} {{host}}{{path}} status={{flow.response.status_code}} body={{body_len}}")
 
 addons = [SponsorOverrideAddon()]
 '''
@@ -935,6 +998,50 @@ def _self_test_override(proxy_port, expected_names, log_func=None):
     return False
 
 
+def _self_test_demo_lobby_override(proxy_port, expected_name, log_func=None):
+    """验证 Demo Lobby VRCLinking 响应中只包含指定的 Mega Patreon 名称。"""
+    name = str(expected_name or "").strip()
+    if not name:
+        return False
+
+    try:
+        import ssl
+        import urllib.request
+    except Exception as e:
+        _log(f"Demo Lobby 代理自检失败: 无法导入 urllib ({e})", log_func)
+        return False
+
+    proxy = f"http://127.0.0.1:{int(proxy_port)}"
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
+        urllib.request.HTTPSHandler(context=ssl._create_unverified_context()),
+    )
+    urls = (DEMO_LOBBY_MAIN_URL, DEMO_LOBBY_FALLBACK_URL)
+    for idx, url in enumerate(urls, start=1):
+        try:
+            req = urllib.request.Request(
+                f"{url}?_ts={int(time.time() * 1000)}",
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                },
+            )
+            with opener.open(req, timeout=10) as resp:
+                body = resp.read().decode("utf-8", errors="strict")
+            payload = json.loads(body)
+            members = payload.get("GuildUsers", {}).get(DEMO_LOBBY_ROLE_NAME, [])
+            if members != [name]:
+                _log(f"Demo Lobby 代理自检名单不匹配 (地址 {idx})", log_func)
+                return False
+        except Exception as e:
+            _log(f"Demo Lobby 代理自检请求失败 (地址 {idx}): {e}", log_func)
+            return False
+
+    _log("Demo Lobby 代理自检通过 (主地址和备用地址)", log_func)
+    return True
+
+
 def _restore_proxy(log_func=None):
     """恢复原始代理设置"""
     global _original_proxy_settings
@@ -1020,7 +1127,13 @@ def _get_mitmdump_path():
     return "mitmdump"
 
 
-def _start_mitmdump(addon_path, listen_port, upstream_proxy=None, log_func=None):
+def _start_mitmdump(
+    addon_path,
+    listen_port,
+    upstream_proxy=None,
+    log_func=None,
+    allowed_hosts_pattern=None,
+):
     """启动 mitmdump 进程"""
     global _mitm_process
 
@@ -1033,8 +1146,8 @@ def _start_mitmdump(addon_path, listen_port, upstream_proxy=None, log_func=None)
         "--listen-port", str(int(listen_port)),
         "--ssl-insecure",                 # 不验证上游证书
         "--set", "flow_detail=0",         # 减少日志
-        # 仅允许 pastebin.com 流量进入 mitm 处理，行为与 fish 版本保持一致。
-        "--allow-hosts", r"^(?:www\.)?pastebin\.com(?::\d+)?$",
+        # 只解密当前覆盖配置需要的域名，避免影响其他 HTTPS 流量。
+        "--allow-hosts", allowed_hosts_pattern or OVERRIDE_ALLOWED_HOSTS[OVERRIDE_PROFILE_SLASHCO],
         "-s", addon_path,                 # addon 脚本
         "--quiet",                        # 安静模式
     ]
@@ -1601,6 +1714,19 @@ def _prepare_modified_sponsor_content(name_list, log_func=None):
     return True, ""
 
 
+def _prepare_demo_lobby_content(display_name, log_func=None):
+    _log("步骤 1/5: 构建 Demo Lobby Mega Patreon 数据...", log_func)
+    try:
+        content = build_demo_lobby_content(display_name)
+        os.makedirs(os.path.dirname(DEMO_LOBBY_CONTENT_FILE), exist_ok=True)
+        with open(DEMO_LOBBY_CONTENT_FILE, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception as e:
+        return False, f"无法生成 Demo Lobby 数据: {e}"
+    _log(f"Demo Lobby 数据已保存 ({len(content)} 字符)", log_func)
+    return True, ""
+
+
 def start_sponsor_override(name, log_func=None, mode=SPONSOR_MODE_MITM):
     selected_mode = normalize_sponsor_mode(mode)
     if selected_mode == SPONSOR_MODE_CADDY:
@@ -1608,26 +1734,53 @@ def start_sponsor_override(name, log_func=None, mode=SPONSOR_MODE_MITM):
     return _start_sponsor_override_mitm(name, log_func=log_func)
 
 
+def start_demo_lobby_override(name, log_func=None):
+    """启动 Demo Lobby Mega Patreon 覆盖；该配置仅使用 mitmdump。"""
+    return _start_mitm_override(
+        name,
+        log_func=log_func,
+        profile=OVERRIDE_PROFILE_DEMO_LOBBY,
+    )
+
+
 def _start_sponsor_override_mitm(name, log_func=None):
-    """
-    启动赞助者名单覆盖 (mitmproxy + Global Proxy)
-    """
+    return _start_mitm_override(
+        name,
+        log_func=log_func,
+        profile=OVERRIDE_PROFILE_SLASHCO,
+    )
+
+
+def _start_mitm_override(name, log_func=None, profile=OVERRIDE_PROFILE_SLASHCO):
+    """启动指定配置的 mitmproxy 覆盖。"""
     global _running, _original_proxy_settings, _active_proxy_port, _active_mode
+    global _active_profile
+
+    if profile not in OVERRIDE_TARGETS:
+        return False, f"未知覆盖配置: {profile}"
 
     with _lock:
         if _running:
-            return True, "已在运行中"
+            if _active_profile == profile:
+                return True, "已在运行中"
+            return False, "另一个名单覆盖正在运行，请先停止"
 
     if not name:
         return False, "请先输入显示名称"
 
-    name_list = _parse_sponsor_names(name)
+    if profile == OVERRIDE_PROFILE_DEMO_LOBBY:
+        display_name = str(name).strip()
+        name_list = [display_name] if display_name else []
+    else:
+        name_list = _parse_sponsor_names(name)
+        display_name = name_list[0] if name_list else ""
     if not name_list:
         return False, "请先输入显示名称"
 
     # log 显示
     name_display = ", ".join(name_list)
-    _log(f"启动赞助者覆盖: {name_display}", log_func)
+    profile_label = "Demo Lobby Mega Patreon" if profile == OVERRIDE_PROFILE_DEMO_LOBBY else "赞助者名单"
+    _log(f"启动{profile_label}覆盖: {name_display}", log_func)
 
     startup_proxy_settings = _get_proxy_settings()
 
@@ -1650,7 +1803,12 @@ def _start_sponsor_override_mitm(name, log_func=None):
     else:
         _log("保留当前系统代理设置，稍后用于停止恢复和上游代理", log_func)
 
-    ok, message = _prepare_modified_sponsor_content(name_list, log_func)
+    if profile == OVERRIDE_PROFILE_DEMO_LOBBY:
+        ok, message = _prepare_demo_lobby_content(display_name, log_func)
+        content_file = DEMO_LOBBY_CONTENT_FILE
+    else:
+        ok, message = _prepare_modified_sponsor_content(name_list, log_func)
+        content_file = MODIFIED_CONTENT_FILE
     if not ok:
         return False, message
 
@@ -1670,7 +1828,11 @@ def _start_sponsor_override_mitm(name, log_func=None):
             os.remove(HIT_LOG_FILE)
     except Exception:
         pass
-    addon_path = _generate_addon_script(MODIFIED_CONTENT_FILE, HIT_LOG_FILE)
+    addon_path = _generate_addon_script(
+        content_file,
+        HIT_LOG_FILE,
+        profile=profile,
+    )
 
     _kill_stale_mitmdump_processes(log_func)
     upstream, _original_proxy_settings = _detect_upstream_proxy(startup_proxy_settings)
@@ -1686,7 +1848,13 @@ def _start_sponsor_override_mitm(name, log_func=None):
                 occupied_samples.append(candidate_port)
             continue
 
-        if _start_mitmdump(addon_path, candidate_port, upstream, log_func):
+        if _start_mitmdump(
+            addon_path,
+            candidate_port,
+            upstream,
+            log_func,
+            allowed_hosts_pattern=OVERRIDE_ALLOWED_HOSTS[profile],
+        ):
             selected_port = candidate_port
             break
 
@@ -1697,7 +1865,13 @@ def _start_sponsor_override_mitm(name, log_func=None):
             if not random_port:
                 break
             attempted_ports.add(random_port)
-            if _start_mitmdump(addon_path, random_port, upstream, log_func):
+            if _start_mitmdump(
+                addon_path,
+                random_port,
+                upstream,
+                log_func,
+                allowed_hosts_pattern=OVERRIDE_ALLOWED_HOSTS[profile],
+            ):
                 selected_port = random_port
                 break
 
@@ -1724,7 +1898,11 @@ def _start_sponsor_override_mitm(name, log_func=None):
 
     # 5. 自检代理链路
     _log("步骤 5/5: 验证拦截链路...", log_func)
-    if not _self_test_override(selected_port, name_list, log_func):
+    if profile == OVERRIDE_PROFILE_DEMO_LOBBY:
+        self_test_ok = _self_test_demo_lobby_override(selected_port, display_name, log_func)
+    else:
+        self_test_ok = _self_test_override(selected_port, name_list, log_func)
+    if not self_test_ok:
         _restore_proxy(log_func)
         _stop_mitmdump(log_func)
         _active_proxy_port = None
@@ -1734,11 +1912,12 @@ def _start_sponsor_override_mitm(name, log_func=None):
         _running = True
         _active_proxy_port = selected_port
         _active_mode = SPONSOR_MODE_MITM
+        _active_profile = profile
 
     # 注册退出清理
     atexit.register(lambda: stop_sponsor_override(log_func))
 
-    _log("✓ 赞助者名单覆盖已启动! (系统代理模式)", log_func)
+    _log(f"✓ {profile_label}覆盖已启动! (系统代理模式)", log_func)
     return True, "运行中"
 
 
@@ -1746,11 +1925,13 @@ def _start_sponsor_override_caddy(name, log_func=None):
     """
     启动赞助者名单覆盖 (hosts + Caddy)
     """
-    global _running, _active_mode, _active_proxy_port
+    global _running, _active_mode, _active_proxy_port, _active_profile
 
     with _lock:
         if _running:
-            return True, "已在运行中"
+            if _active_profile == OVERRIDE_PROFILE_SLASHCO:
+                return True, "已在运行中"
+            return False, "另一个名单覆盖正在运行，请先停止"
 
     name_list = _parse_sponsor_names(name)
     if not name_list:
@@ -1801,6 +1982,7 @@ def _start_sponsor_override_caddy(name, log_func=None):
     with _lock:
         _running = True
         _active_mode = SPONSOR_MODE_CADDY
+        _active_profile = OVERRIDE_PROFILE_SLASHCO
 
     atexit.register(lambda: stop_sponsor_override(log_func))
 
@@ -1810,7 +1992,7 @@ def _start_sponsor_override_caddy(name, log_func=None):
 
 def stop_sponsor_override(log_func=None):
     """停止赞助者名单覆盖并清理"""
-    global _running, _active_proxy_port, _active_mode
+    global _running, _active_proxy_port, _active_mode, _active_profile
 
     with _lock:
         if not _running:
@@ -1827,6 +2009,7 @@ def stop_sponsor_override(log_func=None):
             _running = False
             _active_proxy_port = None
             _active_mode = None
+            _active_profile = None
         _log("✓ 已停止，hosts 和代理绕过设置已恢复", log_func)
         return
 
@@ -1841,13 +2024,14 @@ def stop_sponsor_override(log_func=None):
         _running = False
         _active_proxy_port = None
         _active_mode = None
+        _active_profile = None
 
     _log("✓ 已停止，系统代理已恢复", log_func)
 
 
 def force_cleanup(log_func=None):
     """强制清理代理、进程和旧方案残留，用于异常退出兜底。"""
-    global _running, _active_proxy_port, _active_mode
+    global _running, _active_proxy_port, _active_mode, _active_profile
 
     should_restore_proxy = (
         _running
@@ -1889,8 +2073,14 @@ def force_cleanup(log_func=None):
         _running = False
         _active_proxy_port = None
         _active_mode = None
+        _active_profile = None
 
 
 def is_running():
     """检查是否正在运行"""
     return _running
+
+
+def get_active_profile():
+    """返回当前运行的覆盖配置。"""
+    return _active_profile if _running else None
