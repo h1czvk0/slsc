@@ -3,6 +3,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 
 
 ROOM_PATTERN = re.compile(r"\[Behaviour\]\s+Entering Room:\s+(.+?)\s*$", re.IGNORECASE)
@@ -39,6 +40,11 @@ PATTERNS = {
 }
 
 TIMESTAMP_PATTERN = re.compile(r"(\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}:\d{2})")
+EVENT_MARKERS = (
+    "ecliptica", "entering room:", "user authenticated:", "ownership of",
+    "boss", "dealing", "strike dmg:", "damage has been taken:",
+    "advancing stage progress to:",
+)
 PHASE_SUFFIX_PATTERN = re.compile(r"(?:\s*[-_ ]?Phase\s*(\d+))$", re.IGNORECASE)
 
 
@@ -49,14 +55,17 @@ class EclipticaEvent:
     timestamp: float | None = None
 
 
-def parse_log_timestamp(line: str):
-    match = TIMESTAMP_PATTERN.search(line)
-    if not match:
-        return None
+@lru_cache(maxsize=128)
+def _parse_timestamp_text(value):
     try:
-        return datetime.strptime(match.group(1), "%Y.%m.%d %H:%M:%S").timestamp()
+        return datetime.strptime(value, "%Y.%m.%d %H:%M:%S").timestamp()
     except ValueError:
         return None
+
+
+def parse_log_timestamp(line: str):
+    match = TIMESTAMP_PATTERN.search(line)
+    return _parse_timestamp_text(match.group(1)) if match else None
 
 
 def is_ecliptica_room(room_name: str) -> bool:
@@ -80,23 +89,31 @@ def split_boss_name(raw_name: str):
     return base_name, key, phase
 
 
-def parse_ecliptica_line(line: str):
-    text = str(line or "").strip()
-    if not text:
+def _match_event(text):
+    lowered = text.lower()
+    if not any(marker in lowered for marker in EVENT_MARKERS):
         return None
-    timestamp = parse_log_timestamp(text)
     room_match = ROOM_PATTERN.search(text)
     if room_match:
-        return EclipticaEvent("room_entered", (room_match.group(1).strip(),), timestamp)
+        return "room_entered", room_match
     for kind, pattern in PATTERNS.items():
         match = pattern.search(text)
         if match:
-            return EclipticaEvent(kind, match.groups(), timestamp)
+            return kind, match
     return None
 
 
+def parse_ecliptica_line(line: str):
+    text = str(line or "").strip()
+    result = _match_event(text)
+    if result is None:
+        return None
+    kind, match = result
+    return EclipticaEvent(kind, match.groups(), parse_log_timestamp(text))
+
+
 def line_might_affect_ecliptica_state(line: str) -> bool:
-    return parse_ecliptica_line(line) is not None
+    return _match_event(str(line or "").strip()) is not None
 
 
 class EclipticaState:

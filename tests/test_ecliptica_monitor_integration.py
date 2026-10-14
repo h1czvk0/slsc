@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
@@ -382,6 +383,38 @@ class EclipticaMonitorIntegrationTests(unittest.TestCase):
         self.assertEqual(received, ["done"])
         self.assertEqual(len(monitor.root.after_calls), 1)
 
+    def test_live_log_batches_preserve_order_and_flush_ui_once(self):
+        monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
+        monitor.root = FakeUiRoot()
+        monitor._is_shutting_down = False
+        monitor._pending_log_lines = queue.Queue()
+        monitor._log_lines_after_id = None
+        monitor._recovering_log_state = True
+        monitor._log_recovery_started_at = 1.0
+        monitor.log = self.fail
+        received = []
+        ui_refreshes = []
+        monitor._update_ecliptica_ui = lambda: ui_refreshes.append(tuple(received))
+
+        def process(line):
+            received.append(line)
+            self.assertTrue(monitor._defer_ecliptica_ui)
+            monitor._ecliptica_ui_dirty = True
+
+        monitor.process_line = process
+        monitor._process_live_log_lines(["first", "second", "third"])
+        self.assertEqual(received, [])
+        with patch("slashco.time.perf_counter", side_effect=[0.0, 0.009]):
+            monitor._process_pending_log_lines()
+        self.assertEqual(received, ["first"])
+        self.assertTrue(monitor._recovering_log_state)
+        with patch("slashco.time.perf_counter", return_value=0.0):
+            monitor._process_pending_log_lines()
+        self.assertEqual(received, ["first", "second", "third"])
+        self.assertEqual(ui_refreshes, [("first",), ("first", "second", "third")])
+        self.assertFalse(monitor._recovering_log_state)
+        self.assertFalse(monitor._defer_ecliptica_ui)
+
     def test_authentication_updates_identity_without_switching_panel(self):
         monitor = self.make_monitor()
         event = parse_ecliptica_line(
@@ -748,6 +781,57 @@ class HudLayoutTests(unittest.TestCase):
         hud = EclipticaDesktopHud(object())
 
         self.assertEqual(hud.damage_title_text, "")
+
+    def test_hud_reuses_images_but_refreshes_data_color_and_size(self):
+        for key, render_name, change in (
+            ("damage", "_render_damage_text", lambda hud: hud.damage_rows.append(("总耗时", "01:02:03"))),
+            ("boss_lock", "_render_lock_text", lambda hud: setattr(hud, "lock_text", "Boss 当前锁定：Alice")),
+            ("party_damage", "_render_party_text", lambda hud: hud.party_rows.append(("Alice", "1.0K"))),
+        ):
+            with self.subTest(panel=key):
+                hud = EclipticaDesktopHud(object())
+                hud.layout[key] = {"width": 600, "height": 400}
+                window_key = {"damage": "damage", "boss_lock": "lock", "party_damage": "party"}[key]
+                setattr(hud, f"{window_key}_window", FakeGeometryWindow())
+                setattr(hud, f"{window_key}_canvas", FakeGeometryWindow())
+                images = []
+                hud._render_layered_image = lambda _window, image: images.append(image)
+                render = getattr(hud, render_name)
+                render()
+                render()
+                self.assertEqual(len(images), 1)
+                change(hud)
+                render()
+                self.assertEqual(len(images), 2)
+                self.assertNotEqual(images[-1].tobytes(), images[-2].tobytes())
+                hud.font_color = hud.FG = "#ff0000"
+                render()
+                self.assertEqual(len(images), 3)
+                self.assertNotEqual(images[-1].tobytes(), images[-2].tobytes())
+                hud.layout[key]["width"] = 800
+                render()
+                self.assertEqual(images[-1].size, (800, 400))
+                hud.editing = True
+                render()
+                self.assertEqual(len(images), 5)
+                self.assertNotEqual(images[-1].tobytes(), images[-2].tobytes())
+
+    def test_unchanged_hud_update_can_show_again_after_hide(self):
+        hud = EclipticaDesktopHud(object())
+        hud._ensure_windows = lambda: None
+        hud._place_windows = lambda: None
+        hud._set_click_through = lambda *_args: None
+        for key in ("damage", "lock", "party"):
+            setattr(hud, f"{key}_background_window", FakeHudWindow())
+            setattr(hud, f"{key}_window", FakeHudWindow())
+            setattr(hud, f"_render_{key}_text", lambda: None)
+        snapshot = {"aggro": {}}
+        hud.update(snapshot)
+        self.assertEqual(hud.damage_window.state(), "normal")
+        hud.hide(force=True)
+        self.assertEqual(hud.damage_window.state(), "withdrawn")
+        hud.update(snapshot)
+        self.assertEqual(hud.damage_window.state(), "normal")
 
     def test_party_hud_lists_every_player_and_sums_current_boss_damage(self):
         hud = EclipticaDesktopHud.__new__(EclipticaDesktopHud)

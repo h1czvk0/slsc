@@ -297,6 +297,11 @@ def normalize_hud_display_mode(value):
     return mode if mode in HUD_LEGACY_DISPLAY_PANELS else "both"
 
 
+def set_var_if_changed(variable, value):
+    if variable.get() != value:
+        variable.set(value)
+
+
 def normalize_hud_display_panels(value):
     if value is None:
         return HUD_DISPLAY_PANEL_KEYS
@@ -786,6 +791,30 @@ class EclipticaDesktopHud:
         self.boss_lock_active = False
         self.resize_grips = {}
         self._pointer_operation = None
+        # Rendering the layered HUD images is relatively expensive.  Keep a
+        # small signature for each surface so timer/sync ticks that carry the
+        # same data do not recreate identical PIL images.
+        self._damage_render_signature = None
+        self._lock_render_signature = None
+        self._party_render_signature = None
+        self._window_placement_signature = None
+        self._visibility_signature = None
+
+    def _render_geometry(self, key, window):
+        geometry = self.layout.get(key, {})
+        width = max(1, int(geometry.get("width", window.winfo_width())))
+        height = max(1, int(geometry.get("height", window.winfo_height())))
+        return width, height
+
+    def _placement_signature(self):
+        return (
+            tuple(
+                (key, tuple(sorted(self.layout.get(key, {}).items())))
+                for key in ("damage", "boss_lock", "party_damage")
+            ),
+            len(getattr(self, "party_rows", ())),
+            bool(self.editing),
+        )
 
     def _set_click_through(self, window, enabled):
         if os.name != "nt":
@@ -1008,9 +1037,13 @@ class EclipticaDesktopHud:
     def _render_damage_text(self, _event=None):
         if not self.damage_canvas or not self.damage_canvas.winfo_exists():
             return
-        geometry = self.layout.get("damage", {})
-        width = max(1, int(geometry.get("width", self.damage_window.winfo_width())))
-        height = max(1, int(geometry.get("height", self.damage_window.winfo_height())))
+        width, height = self._render_geometry("damage", self.damage_window)
+        signature = (
+            width, height, self.damage_title_text, tuple(self.damage_rows),
+            self.font_color, bool(self.editing),
+        )
+        if signature == getattr(self, "_damage_render_signature", None):
+            return
         scale = self._hud_scale("damage", width, height)
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
@@ -1043,13 +1076,17 @@ class EclipticaDesktopHud:
             )
         self._draw_edit_grip(draw, width, height)
         self._render_layered_image(self.damage_window, image)
+        self._damage_render_signature = signature
 
     def _render_lock_text(self, _event=None):
         if not self.lock_canvas or not self.lock_canvas.winfo_exists():
             return
-        geometry = self.layout.get("boss_lock", {})
-        width = max(1, int(geometry.get("width", self.lock_window.winfo_width())))
-        height = max(1, int(geometry.get("height", self.lock_window.winfo_height())))
+        width, height = self._render_geometry("boss_lock", self.lock_window)
+        signature = (
+            width, height, self.lock_text, self.font_color, bool(self.editing),
+        )
+        if signature == getattr(self, "_lock_render_signature", None):
+            return
         scale = self._hud_scale("boss_lock", width, height)
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
@@ -1090,15 +1127,20 @@ class EclipticaDesktopHud:
             self._draw_text(draw, center_x, second_y, target, self.FG, target_font, "mm")
         self._draw_edit_grip(draw, width, height)
         self._render_layered_image(self.lock_window, image)
+        self._lock_render_signature = signature
 
     def _render_party_text(self, _event=None):
         canvas = getattr(self, "party_canvas", None)
         window = getattr(self, "party_window", None)
         if not canvas or not canvas.winfo_exists() or not window:
             return
-        geometry = self.layout.get("party_damage", {})
-        width = max(1, int(geometry.get("width", window.winfo_width())))
-        height = max(1, int(geometry.get("height", window.winfo_height())))
+        width, height = self._render_geometry("party_damage", window)
+        signature = (
+            width, height, tuple(self.party_rows), self.party_total_damage,
+            self.font_color, bool(self.editing),
+        )
+        if signature == getattr(self, "_party_render_signature", None):
+            return
         scale = self._hud_scale("party_damage", width, height)
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
@@ -1152,6 +1194,7 @@ class EclipticaDesktopHud:
         )
         self._draw_edit_grip(draw, width, height)
         self._render_layered_image(window, image)
+        self._party_render_signature = signature
 
     def _create_resize_grip(self, window, key):
         grip = Label(
@@ -1256,6 +1299,9 @@ class EclipticaDesktopHud:
         self._render_edit_preview(key)
 
     def _create_damage_window(self):
+        self._damage_render_signature = None
+        self._window_placement_signature = None
+        self._visibility_signature = None
         background = self._create_background_window()
         window = Toplevel(self.root)
         self._configure_content_window(window)
@@ -1285,6 +1331,9 @@ class EclipticaDesktopHud:
         self._set_click_through(window, True)
 
     def _create_lock_window(self):
+        self._lock_render_signature = None
+        self._window_placement_signature = None
+        self._visibility_signature = None
         background = self._create_background_window()
         window = Toplevel(self.root)
         self._configure_content_window(window)
@@ -1314,6 +1363,9 @@ class EclipticaDesktopHud:
         self._set_click_through(window, True)
 
     def _create_party_window(self):
+        self._party_render_signature = None
+        self._window_placement_signature = None
+        self._visibility_signature = None
         background = self._create_background_window()
         window = Toplevel(self.root)
         self._configure_content_window(window)
@@ -1443,6 +1495,9 @@ class EclipticaDesktopHud:
         return max(HUD_MIN_SIZES["party_damage"][1], int(natural_height + 0.999))
 
     def _place_windows(self):
+        placement_signature = self._placement_signature()
+        if placement_signature == getattr(self, "_window_placement_signature", None):
+            return
         defaults = self._default_layout()
         party_geometry = dict(self.layout.get("party_damage", defaults["party_damage"]))
         required_party_height = self._required_party_content_height(
@@ -1456,6 +1511,7 @@ class EclipticaDesktopHud:
         self._apply_window_layout("party_damage", self.party_window, defaults)
         self._fit_background_to_content("damage", self.damage_window)
         self._fit_background_to_content("party_damage", self.party_window)
+        self._window_placement_signature = self._placement_signature()
 
     def set_opacity(self, opacity):
         self.opacity = normalize_hud_opacity(opacity)
@@ -1535,6 +1591,11 @@ class EclipticaDesktopHud:
                 )
             )
         )
+        visibility_signature = (
+            show_damage, show_boss_lock, show_party_damage, bool(self.editing),
+        )
+        if visibility_signature == getattr(self, "_visibility_signature", None):
+            return False
         party_background = getattr(self, "party_background_window", None)
         party_window = getattr(self, "party_window", None)
         if show_damage:
@@ -1567,6 +1628,8 @@ class EclipticaDesktopHud:
         elif party_background and party_window:
             party_background.withdraw()
             party_window.withdraw()
+        self._visibility_signature = visibility_signature
+        return True
 
     def begin_edit(self, snapshot, display_panels=None, selected_fields=None, party_players=None):
         self.editing = True
@@ -1633,12 +1696,23 @@ class EclipticaDesktopHud:
                 damage = 0
             party_total += damage
             party_rows.append((username, format_ecliptica_number(damage)))
+        changed = (
+            party_rows != getattr(self, "party_rows", None)
+            or party_total != getattr(self, "party_total_damage", None)
+        )
         self.party_rows = party_rows
         self.party_total_damage = party_total
+        return changed
 
     def update_party(self, party_players):
         self._ensure_windows()
-        self._set_party_players(party_players)
+        party_changed = self._set_party_players(party_players)
+        if (
+            not party_changed
+            and getattr(self, "_party_render_signature", None) is not None
+            and getattr(self, "_visibility_signature", None) not in (None, "hidden")
+        ):
+            return
         party_geometry = self.layout.get("party_damage")
         required_height = self._required_party_content_height(
             (party_geometry or {}).get("width", HUD_MIN_SIZES["party_damage"][0])
@@ -1654,8 +1728,8 @@ class EclipticaDesktopHud:
             self._apply_window_layout("party_damage", self.party_window, defaults)
         self._fit_background_to_content("party_damage", self.party_window)
         self._render_party_text()
-        self._apply_display_visibility()
-        if not self.editing and self.party_window.state() == "normal":
+        visibility_changed = self._apply_display_visibility()
+        if visibility_changed and not self.editing and self.party_window.state() == "normal":
             self._set_click_through(self.party_window, True)
 
     def update(self, snapshot, display_panels=None, selected_fields=None, party_players=None):
@@ -1701,14 +1775,17 @@ class EclipticaDesktopHud:
             aggro.get("state") not in ("inactive", None)
             and str(target).strip() not in ("", "-", "某玩家")
         )
+        self._place_windows()
+        previous_damage_signature = getattr(self, "_damage_render_signature", None)
         self._render_damage_text()
+        if getattr(self, "_damage_render_signature", None) != previous_damage_signature:
+            self._fit_background_to_content("damage", self.damage_window)
         self._render_lock_text()
         self._render_party_text()
-        self._place_windows()
-        self._apply_display_visibility()
+        visibility_changed = self._apply_display_visibility()
         if self.editing:
             self._apply_edit_visuals()
-        else:
+        elif visibility_changed:
             for window in (
                 self.damage_background_window,
                 self.damage_window,
@@ -1723,6 +1800,8 @@ class EclipticaDesktopHud:
     def hide(self, force=False):
         if self.editing and not force:
             return
+        if getattr(self, "_visibility_signature", None) == "hidden":
+            return
         for window in (
             self.damage_background_window,
             self.damage_window,
@@ -1733,6 +1812,7 @@ class EclipticaDesktopHud:
         ):
             if window and window.winfo_exists():
                 window.withdraw()
+        self._visibility_signature = "hidden"
 
     def destroy(self):
         for window in (
@@ -1813,6 +1893,7 @@ LOG_TAIL_SCAN_BYTES = 20 * 1024 * 1024
 LOG_TAIL_READ_BLOCK_BYTES = 1024 * 1024
 LOG_IDENTITY_SCAN_BYTES = 2 * 1024 * 1024
 LOG_PROCESS_BATCH_SIZE = 200
+UI_WORK_BUDGET_SECONDS = 0.008
 LOG_PROCESS_BATCH_DELAY_MS = 1
 LOG_RECOVERY_SYNC_TIMEOUT_SECONDS = 15.0
 UI_CALLBACK_POLL_INTERVAL_MS = 25
@@ -2255,6 +2336,7 @@ class SlashCoMonitorCN:
             return
 
         processed = 0
+        started = time.perf_counter()
         while processed < UI_CALLBACK_BATCH_SIZE:
             try:
                 callback, args = self._ui_callback_queue.get_nowait()
@@ -2265,6 +2347,8 @@ class SlashCoMonitorCN:
             except Exception as exc:
                 self.log(f"主线程回调执行失败: {exc}")
             processed += 1
+            if time.perf_counter() - started >= UI_WORK_BUDGET_SECONDS:
+                break
 
         if self._is_shutting_down:
             return
@@ -3312,17 +3396,17 @@ class SlashCoMonitorCN:
             status = "等待进入目标 BackroomsVR 世界"
         else:
             status = "OSC 已启用，每秒完整重发" if snapshot["enabled"] else "已识别 BackroomsVR，OSC 未启用"
-        self.backrooms_status_var.set(status)
+        set_var_if_changed(self.backrooms_status_var, status)
         usable = snapshot["in_world"] and not snapshot["recovering"] and not snapshot["error"]
         for kind, label, variable in (
             ("breaker", "电闸", self.backrooms_breaker_var),
             ("resonance", "锚点区域", self.backrooms_resonance_var),
         ):
-            variable.set(f"{label}：已完成 {snapshot[kind + '_done']}"
-                         if usable and snapshot[kind + "_ready"] else f"{label}：未知，等待有效快照")
+            set_var_if_changed(variable, f"{label}：已完成 {snapshot[kind + '_done']}"
+                               if usable and snapshot[kind + "_ready"] else f"{label}：未知，等待有效快照")
         done_breakers = ", ".join(str(i) for i in range(32) if snapshot["breaker_mask"] & (1 << i))
         done_areas = ", ".join(str(i) for i in range(5) if snapshot["resonance_mask"] & (1 << i))
-        self.backrooms_details_var.set(
+        set_var_if_changed(self.backrooms_details_var,
             f"世界：{snapshot['world_id'] or '-'}\n实例：{snapshot['instance_id'] or '-'}\n\n"
             f"电闸 epoch：{snapshot['breaker_epoch']}\n已完成内部索引："
             f"{(done_breakers or '无') if usable and snapshot['breaker_ready'] else '未知'}\n\n"
@@ -3360,6 +3444,8 @@ class SlashCoMonitorCN:
         self.current_game_mode = selected
         if not hasattr(self, "slashco_left_frame"):
             return
+        if getattr(self, "_shown_game_panel", None) == selected:
+            return
 
         self.slashco_left_frame.pack_forget()
         self.ecliptica_left_frame.pack_forget()
@@ -3386,6 +3472,7 @@ class SlashCoMonitorCN:
 
         self._update_slasher_info_visibility()
         self._refresh_left_scrollregion()
+        self._shown_game_panel = selected
         if selected != "ecliptica" and self.ecliptica_hud:
             self.ecliptica_hud.hide(force=True)
 
@@ -3415,6 +3502,10 @@ class SlashCoMonitorCN:
         )
 
     def _update_ecliptica_ui(self):
+        if getattr(self, "_defer_ecliptica_ui", False):
+            self._ecliptica_ui_dirty = True
+            return
+        self._ecliptica_ui_dirty = False
         snapshot = self.ecliptica_state.snapshot()
         self._update_ecliptica_auto_jump_context(snapshot)
         if not hasattr(self, "ecliptica_vars"):
@@ -3424,20 +3515,20 @@ class SlashCoMonitorCN:
         stage_text = snapshot.get("stage", "-")
         if stage_progress is not None:
             stage_text = f"{stage_text} · 进度 {stage_progress}"
-        self.ecliptica_vars["session"].set(snapshot.get("session_id", "-"))
-        self.ecliptica_vars["class"].set(snapshot.get("class_name", "-"))
-        self.ecliptica_vars["stage"].set(stage_text)
-        self.ecliptica_vars["boss"].set(snapshot.get("current_boss", "-"))
-        self.ecliptica_vars["phase"].set(str(phase) if phase is not None else "-")
-        self.ecliptica_vars["boss_damage"].set(
-            format_ecliptica_number(snapshot.get("live_current_boss_damage", 0))
-        )
-        self.ecliptica_vars["total_damage"].set(
-            format_ecliptica_number(snapshot.get("live_session_total_damage", 0))
-        )
-        self.ecliptica_vars["dps"].set(f"{snapshot.get('last_settlement_dps', 0.0):.1f}")
-        self.ecliptica_vars["damage_taken"].set(format_ecliptica_number(snapshot.get("session_damage_taken", 0)))
-        self.ecliptica_vars["defeated"].set(str(snapshot.get("defeated_count", 0)))
+        values = {
+            "session": snapshot.get("session_id", "-"),
+            "class": snapshot.get("class_name", "-"),
+            "stage": stage_text,
+            "boss": snapshot.get("current_boss", "-"),
+            "phase": str(phase) if phase is not None else "-",
+            "boss_damage": format_ecliptica_number(snapshot.get("live_current_boss_damage", 0)),
+            "total_damage": format_ecliptica_number(snapshot.get("live_session_total_damage", 0)),
+            "dps": f"{snapshot.get('last_settlement_dps', 0.0):.1f}",
+            "damage_taken": format_ecliptica_number(snapshot.get("session_damage_taken", 0)),
+            "defeated": str(snapshot.get("defeated_count", 0)),
+        }
+        for key, value in values.items():
+            set_var_if_changed(self.ecliptica_vars[key], value)
 
         aggro = snapshot.get("aggro", {})
         target = aggro.get("target", "-")
@@ -3446,26 +3537,33 @@ class SlashCoMonitorCN:
             aggro_text += f" · {aggro['locked_secs']} 秒"
         if aggro.get("stale") and aggro.get("state") not in ("inactive", None):
             aggro_text += " · 状态可能已过时"
-        self.ecliptica_vars["aggro"].set(aggro_text)
-        self.lbl_ecliptica_aggro.configure(foreground="#c0392b" if aggro.get("is_local") else "#6c4cff")
+        set_var_if_changed(self.ecliptica_vars["aggro"], aggro_text)
+        aggro_color = "#c0392b" if aggro.get("is_local") else "#6c4cff"
+        if aggro_color != getattr(self, "_ecliptica_aggro_color", None):
+            self.lbl_ecliptica_aggro.configure(foreground=aggro_color)
+            self._ecliptica_aggro_color = aggro_color
         self._publish_ecliptica_osc(snapshot)
 
-        for item in self.ecliptica_settlement_tree.get_children():
-            self.ecliptica_settlement_tree.delete(item)
-        for settlement in self.ecliptica_state.settlements:
-            self.ecliptica_settlement_tree.insert(
-                "",
-                END,
-                values=(
-                    settlement["boss"],
-                    settlement["phase"],
-                    format_ecliptica_number(settlement["strike"]),
-                    format_ecliptica_number(settlement["non_strike"]),
-                    format_ecliptica_number(settlement["total"]),
-                    format_ecliptica_duration(settlement.get("duration", 0)),
-                    f"{settlement['dps']:.1f}",
-                ),
+        rows = tuple(
+            (
+                settlement["boss"],
+                settlement["phase"],
+                format_ecliptica_number(settlement["strike"]),
+                format_ecliptica_number(settlement["non_strike"]),
+                format_ecliptica_number(settlement["total"]),
+                format_ecliptica_duration(settlement.get("duration", 0)),
+                f"{settlement['dps']:.1f}",
             )
+            for settlement in self.ecliptica_state.settlements
+        )
+        if rows != getattr(self, "_ecliptica_settlement_rows", None):
+            tree = self.ecliptica_settlement_tree
+            children = tree.get_children()
+            if children:
+                tree.delete(*children)
+            for row in rows:
+                tree.insert("", END, values=row)
+            self._ecliptica_settlement_rows = rows
 
     def _load_ecliptica_config(self):
         self.backrooms_osc_enabled = BooleanVar(value=False)
@@ -3682,7 +3780,7 @@ class SlashCoMonitorCN:
             self.ecliptica_sync.start()
             self.ecliptica_sync.update_local_state(self._ecliptica_sync_local_state())
             sync_snapshot = self.ecliptica_sync.snapshot()
-            self.ecliptica_sync_status_var.set(sync_snapshot["status"])
+            set_var_if_changed(self.ecliptica_sync_status_var, sync_snapshot["status"])
             self._update_ecliptica_sync_connect_button(sync_snapshot)
             self._refresh_ecliptica_sync_players(sync_snapshot)
             if (
@@ -5752,10 +5850,9 @@ class SlashCoMonitorCN:
         if self._is_shutting_down:
             return
         for line in lines:
-            try:
-                self.process_line(line)
-            except Exception as e:
-                self.log(f"日志解析异常，已跳过该行: {e}")
+            self._pending_log_lines.put(line)
+        if self._log_lines_after_id is None:
+            self._log_lines_after_id = self.root.after(0, self._process_pending_log_lines)
 
     def _enqueue_live_log_lines(self, lines):
         if self._is_shutting_down or not lines:
@@ -5785,18 +5882,24 @@ class SlashCoMonitorCN:
 
         processed = 0
         start = time.perf_counter()
-        while processed < LOG_PROCESS_BATCH_SIZE:
-            try:
-                line = self._pending_log_lines.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                self.process_line(line)
-            except Exception as e:
-                self.log(f"日志解析异常，已跳过该行: {e}")
-            processed += 1
-            if time.perf_counter() - start > 0.01:
-                break
+        self._defer_ecliptica_ui = True
+        try:
+            while processed < LOG_PROCESS_BATCH_SIZE:
+                try:
+                    line = self._pending_log_lines.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self.process_line(line)
+                except Exception as e:
+                    self.log(f"日志解析异常，已跳过该行: {e}")
+                processed += 1
+                if time.perf_counter() - start >= UI_WORK_BUDGET_SECONDS:
+                    break
+        finally:
+            self._defer_ecliptica_ui = False
+            if getattr(self, "_ecliptica_ui_dirty", False):
+                self._update_ecliptica_ui()
 
         if self._is_shutting_down:
             self._log_lines_after_id = None

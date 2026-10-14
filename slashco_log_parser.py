@@ -62,6 +62,12 @@ PATTERNS = {
 }
 
 ROUND_START_KEYS = ("map_landing", "game_setup", "map_spawns")
+EVENT_MARKERS = (
+    "sc_", "scitem", "slashco", "fuel", "sealed", "landing", "logging",
+    "spawnpoints", "map flags", "battery", "items will spawn", "pickup object",
+    "drop object", "holstering", "hibernating", "returning to lobby", "match ended",
+    "all players extracted", "all players died", "for a game",
+)
 
 
 @dataclass(frozen=True)
@@ -100,12 +106,18 @@ def is_round_end_line(line: str) -> bool:
 
 
 def line_might_affect_state(line: str) -> bool:
+    lowered = line.lower()
+    if not any(marker in lowered for marker in EVENT_MARKERS):
+        return False
     return any(pattern.search(line) for pattern in PATTERNS.values())
 
 
 def parse_log_line(line: str):
     line = line.strip()
     if not line:
+        return None
+    lowered = line.lower()
+    if not any(marker in lowered for marker in EVENT_MARKERS):
         return None
 
     ordered_patterns = (
