@@ -37,6 +37,7 @@ from slashco import (  # noqa: E402
     normalize_hud_damage_fields,
     normalize_hud_field_order,
     normalize_hud_layout,
+    normalize_hud_color,
     normalize_hud_opacity,
     normalize_hud_transparency,
     pending_hud_default_preset,
@@ -1174,6 +1175,12 @@ class HudLayoutTests(unittest.TestCase):
         self.assertEqual(normalize_hud_opacity(0.05), 0.05)
         self.assertEqual(normalize_hud_opacity(1.5), 1.0)
         self.assertEqual(normalize_hud_opacity("bad"), 0.9)
+
+    def test_hud_color_normalizes_hex_values_and_rejects_invalid_values(self):
+        self.assertEqual(normalize_hud_color("#12AbEf"), "#12abef")
+        self.assertEqual(normalize_hud_color("bad"), "#ffffff")
+        self.assertEqual(normalize_hud_color("#12345"), "#ffffff")
+        self.assertEqual(normalize_hud_color(None, "#000000"), "#000000")
 
     def test_hud_transparency_supports_fully_transparent_background(self):
         self.assertEqual(normalize_hud_transparency(100), 100.0)

@@ -20,7 +20,7 @@ import random
 import socket
 from datetime import datetime
 from tkinter import *
-from tkinter import ttk, scrolledtext, Menu, messagebox
+from tkinter import ttk, scrolledtext, Menu, messagebox, colorchooser
 from tkinter import font as tkfont
 
 
@@ -413,6 +413,14 @@ def normalize_hud_opacity(value):
     return min(1.0, max(0.0, opacity))
 
 
+def normalize_hud_color(value, default="#ffffff"):
+    """Return a Tk/Pillow-compatible RGB hex color, falling back on invalid input."""
+    candidate = str(value or "").strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", candidate):
+        return candidate.lower()
+    return default
+
+
 def normalize_hud_transparency(value):
     try:
         transparency = float(value)
@@ -747,10 +755,12 @@ class EclipticaDesktopHud:
     ACCENT = "#aaa0ff"
     BORDER = "#343b4d"
 
-    def __init__(self, root, layout=None, opacity=0.9):
+    def __init__(self, root, layout=None, opacity=0.9, font_color="#ffffff"):
         self.root = root
         self.layout = normalize_hud_layout(layout)
         self.opacity = normalize_hud_opacity(opacity)
+        self.font_color = normalize_hud_color(font_color)
+        self.FG = self.font_color
         self.editing = False
         self.display_panels = HUD_DISPLAY_PANEL_KEYS
         self.damage_background_window = None
@@ -934,7 +944,7 @@ class EclipticaDesktopHud:
         else:
             canvas.create_text(
                 self._scaled(14, scale), self._scaled(12, scale),
-                text="伤害统计", fill=self.ACCENT,
+                text="伤害统计", fill=self.font_color,
                 font=("Microsoft YaHei UI", self._scaled(12, scale), "bold"), anchor=NW,
             )
             canvas.create_text(
@@ -960,7 +970,7 @@ class EclipticaDesktopHud:
                 )
             total_y = self._scaled(70 + len(preview_rows) * 20, scale)
             canvas.create_text(
-                self._scaled(14, scale), total_y, text="总伤害", fill=self.ACCENT,
+                self._scaled(14, scale), total_y, text="总伤害", fill=self.font_color,
                 font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NW,
             )
             canvas.create_text(
@@ -968,7 +978,7 @@ class EclipticaDesktopHud:
                 text=format_ecliptica_number(
                     self.party_total_damage if self.party_rows else 22100
                 ),
-                fill=self.ACCENT,
+                fill=self.font_color,
                 font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NE,
             )
         for inset in (7, 12, 17):
@@ -1098,7 +1108,7 @@ class EclipticaDesktopHud:
             left,
             self._scaled(12, scale),
             "伤害统计",
-            self.ACCENT,
+            self.font_color,
             _load_hud_font(self._scaled(15, scale), bold=True),
         )
         header_font = _load_hud_font(self._scaled(10, scale), bold=True)
@@ -1129,13 +1139,13 @@ class EclipticaDesktopHud:
         line_y = max(self._scaled(56, scale), total_y - self._scaled(8, scale))
         draw.line((left, line_y, right, line_y), fill=(170, 160, 255, 150), width=1)
         total_font = _load_hud_font(self._scaled(12, scale), bold=True)
-        self._draw_text(draw, left, total_y, "总伤害", self.ACCENT, total_font)
+        self._draw_text(draw, left, total_y, "总伤害", self.font_color, total_font)
         self._draw_text(
             draw,
             right,
             total_y,
             format_ecliptica_number(self.party_total_damage),
-            self.ACCENT,
+            self.font_color,
             total_font,
             "ra",
         )
@@ -1458,6 +1468,22 @@ class EclipticaDesktopHud:
                 background.attributes("-alpha", visible_opacity)
                 if content and content.winfo_exists():
                     content.lift(background)
+
+    def set_font_color(self, color):
+        self.font_color = normalize_hud_color(color)
+        self.FG = self.font_color
+        for grip in self.resize_grips.values():
+            try:
+                grip.configure(fg=self.font_color)
+            except Exception:
+                pass
+        self._render_damage_text()
+        self._render_lock_text()
+        self._render_party_text()
+        if getattr(self, "editing", False):
+            self._render_edit_preview("damage")
+            self._render_edit_preview("boss_lock")
+            self._render_edit_preview("party_damage")
 
     def reset_layout(self):
         self._ensure_windows()
@@ -2131,6 +2157,7 @@ class SlashCoMonitorCN:
             self.root,
             self.ecliptica_hud_layout,
             self._ecliptica_hud_opacity(),
+            self.ecliptica_hud_font_color,
         )
         if self._ecliptica_hud_preset_save_pending:
             self._save_ecliptica_config()
@@ -2850,6 +2877,24 @@ class SlashCoMonitorCN:
             command=self._restore_default_ecliptica_hud,
         ).pack(side=RIGHT)
 
+        hud_color_row = ttk.Frame(hud_frame)
+        hud_color_row.pack(fill=X, pady=(7, 0))
+        ttk.Label(hud_color_row, text="字体颜色：").pack(side=LEFT)
+        self.ecliptica_hud_color_button = Button(
+            hud_color_row,
+            text="    ",
+            width=4,
+            relief=GROOVE,
+            command=self._choose_ecliptica_hud_font_color,
+        )
+        self.ecliptica_hud_color_button.pack(side=LEFT, padx=(4, 6))
+        ttk.Label(
+            hud_color_row,
+            textvariable=self.ecliptica_hud_font_color_var,
+            width=9,
+        ).pack(side=LEFT)
+        self._update_ecliptica_hud_color_button()
+
         self.ecliptica_hud_fields_panel = ttk.LabelFrame(
             hud_frame,
             text="伤害 HUD 显示字段",
@@ -3308,6 +3353,8 @@ class SlashCoMonitorCN:
         }
         self.ecliptica_hud_opacity_var = DoubleVar(value=10.0)
         self.ecliptica_hud_opacity_text_var = StringVar(value="10%")
+        self.ecliptica_hud_font_color_var = StringVar(value="#ffffff")
+        self.ecliptica_hud_font_color = "#ffffff"
         self.ecliptica_hud_field_vars = {
             key: BooleanVar(value=True) for key in HUD_DAMAGE_FIELD_KEYS
         }
@@ -3357,6 +3404,10 @@ class SlashCoMonitorCN:
                     hud_transparency = (1.0 - legacy_opacity) * 100.0
                 self.ecliptica_hud_opacity_var.set(hud_transparency)
                 self.ecliptica_hud_opacity_text_var.set(f"{round(hud_transparency)}%")
+                self.ecliptica_hud_font_color = normalize_hud_color(
+                    config.get("hud_font_color"),
+                )
+                self.ecliptica_hud_font_color_var.set(self.ecliptica_hud_font_color)
                 self.ecliptica_hud_layout = normalize_hud_layout(config.get("hud_layout", {}))
                 selected_fields = normalize_hud_damage_fields(config.get("hud_fields"))
                 self.ecliptica_hud_field_order = normalize_hud_field_order(
@@ -3416,6 +3467,7 @@ class SlashCoMonitorCN:
                         "hud_display_panels": list(self._ecliptica_hud_display_panels()),
                         "hud_transparency": self._ecliptica_hud_transparency(),
                         "hud_opacity": self._ecliptica_hud_opacity(),
+                        "hud_font_color": normalize_hud_color(self.ecliptica_hud_font_color),
                         "hud_layout": self.ecliptica_hud_layout,
                         "hud_fields": self._ecliptica_hud_fields(),
                         "hud_field_order": self.ecliptica_hud_field_order,
@@ -4069,6 +4121,42 @@ class SlashCoMonitorCN:
     def _on_ecliptica_hud_opacity_saved(self, _event=None):
         self._save_ecliptica_config()
 
+    def _update_ecliptica_hud_color_button(self):
+        color = normalize_hud_color(self.ecliptica_hud_font_color)
+        button = getattr(self, "ecliptica_hud_color_button", None)
+        if button is not None:
+            try:
+                button.configure(
+                    background=color,
+                    activebackground=color,
+                    highlightbackground=color,
+                )
+            except Exception:
+                pass
+        if hasattr(self, "ecliptica_hud_font_color_var"):
+            self.ecliptica_hud_font_color_var.set(color)
+
+    def _choose_ecliptica_hud_font_color(self):
+        try:
+            _rgb, selected = colorchooser.askcolor(
+                color=self.ecliptica_hud_font_color,
+                title="选择 HUD 字体颜色",
+                parent=self.root,
+            )
+        except Exception as exc:
+            self.log(f"打开 HUD 字体颜色选择器失败: {exc}")
+            return
+        if not selected:
+            return
+        self.ecliptica_hud_font_color = normalize_hud_color(
+            selected,
+            self.ecliptica_hud_font_color,
+        )
+        self._update_ecliptica_hud_color_button()
+        if self.ecliptica_hud:
+            self.ecliptica_hud.set_font_color(self.ecliptica_hud_font_color)
+        self._save_ecliptica_config()
+
     def _restore_default_ecliptica_hud(self):
         for variable in self.ecliptica_hud_display_vars.values():
             variable.set(True)
@@ -4077,6 +4165,8 @@ class SlashCoMonitorCN:
         self.ecliptica_hud_opacity_text_var.set(
             f"{round(HUD_DEFAULT_PRESET_TRANSPARENCY)}%"
         )
+        self.ecliptica_hud_font_color = "#ffffff"
+        self._update_ecliptica_hud_color_button()
         self.ecliptica_hud_field_order = list(HUD_DEFAULT_PRESET_ORDER)
         for variable in self.ecliptica_hud_field_vars.values():
             variable.set(False)
@@ -4085,6 +4175,7 @@ class SlashCoMonitorCN:
         self._refresh_ecliptica_hud_field_list(0)
         if self.ecliptica_hud:
             self.ecliptica_hud.set_opacity(0.9)
+            self.ecliptica_hud.set_font_color(self.ecliptica_hud_font_color)
             self.ecliptica_hud_layout = self.ecliptica_hud.reset_layout()
             if self._should_show_ecliptica_hud() or self.ecliptica_hud_editing:
                 self.ecliptica_hud.update(
