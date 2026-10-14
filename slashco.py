@@ -3359,12 +3359,17 @@ class SlashCoMonitorCN:
         ttk.Label(details, textvariable=self.backrooms_details_var, wraplength=650, justify=LEFT).pack(anchor=W)
         ttk.Label(
             details, wraplength=650, justify=LEFT,
-            text="在 VRChat 中启用 OSC，并在模型菜单开启“显示位置”和“只显示未激活（OSC）”。\n\n"
+            text="在 VRChat 中启用 OSC，在模型的“后室位置”菜单开启对应类别的位置显示"
+                 "和“仅未激活（OSC）”。过滤开关不会自动开启位置显示。\n\n"
+                 "默认只有自己可见；需要让其他 PC 玩家看到时，另行开启“所有人可见”。"
+                 "对方需允许显示你的模型及相应效果。菜单开关默认关闭、不保存；"
+                 "软件只发送完成状态，不控制这些开关。\n\n"
                  "位置由模型射线检测本局实际启用的点。这里的完成数量不是生成数量，"
                  "32 个电闸候选点和 5 个锚点区域不代表本局需要全部完成。\n\n"
                  "无快照时保持未知；有效快照仅提供完成集合。退出世界、换局、日志读取失败"
                  "会撤销 Ready。每秒完整重发并翻转心跳；停止软件后模型恢复位置显示。\n\n"
-                 "邪教雕像仅使用模型射线定位，无完成状态 OSC 接口。",
+                 "邪教雕像仅使用模型射线定位，无完成状态 OSC 接口。Quest 独立运行"
+                 "不支持这些图标。",
         ).pack(anchor=W, pady=20)
 
     def _apply_backrooms_settings(self):
