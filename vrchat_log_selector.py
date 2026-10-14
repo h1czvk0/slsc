@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 
 from ecliptica_log_parser import is_ecliptica_room, parse_ecliptica_line
+from backrooms_bridge import DEFAULT_BACKROOMS_WORLD_ID, JOIN_ROOM
 
 
 LOG_FILENAME_PATTERN = re.compile(
@@ -39,6 +40,7 @@ class VrchatLogCandidate:
     session_id: str = ""
     last_ecliptica_at: float = 0.0
     ecliptica_activity: bool = False
+    world_id: str = ""
 
     @property
     def in_ecliptica(self):
@@ -196,6 +198,7 @@ class VrchatLogSelector:
         foreground_pid_provider=foreground_process_id,
     ):
         self.log_dir = str(log_dir)
+        self.backrooms_world_id = DEFAULT_BACKROOMS_WORLD_ID
         self.process_provider = process_provider
         self.foreground_pid_provider = foreground_pid_provider
         self._cache: dict[str, VrchatLogCandidate] = {}
@@ -234,20 +237,24 @@ class VrchatLogSelector:
 
         normalized_current = os.path.abspath(current_path) if current_path else ""
         current = by_path.get(normalized_current)
-        if current is not None and current.pid is not None and current.in_ecliptica:
+
+        def supported(candidate):
+            return candidate.in_ecliptica or candidate.world_id == self.backrooms_world_id
+
+        if current is not None and current.pid is not None and supported(current):
             return self._finish_selection(current, False)
 
         foreground = next(
             (candidate for candidate in live if candidate.pid == foreground_pid),
             None,
         )
-        if foreground is not None and foreground.in_ecliptica:
+        if foreground is not None and supported(foreground):
             return self._finish_selection(foreground, False)
 
-        ecliptica_candidates = [candidate for candidate in live if candidate.in_ecliptica]
-        if len(ecliptica_candidates) == 1:
-            return self._finish_selection(ecliptica_candidates[0], False)
-        if len(ecliptica_candidates) > 1:
+        supported_candidates = [candidate for candidate in live if supported(candidate)]
+        if len(supported_candidates) == 1:
+            return self._finish_selection(supported_candidates[0], False)
+        if len(supported_candidates) > 1:
             return self._finish_selection(None, True)
 
         if current is not None and current.pid is not None:
@@ -353,6 +360,12 @@ class VrchatLogSelector:
     def _apply_text(candidate, text):
         updated = candidate
         for line in str(text or "").splitlines():
+            joined = JOIN_ROOM.search(line)
+            if joined:
+                updated = replace(updated, world_id=joined.group(1).lower())
+            elif ("[Behaviour] Entering Room:" in line or "[Behaviour] OnLeftRoom" in line
+                  or "[Behaviour] OnDisconnected:" in line):
+                updated = replace(updated, world_id="", ecliptica_activity=False)
             event = parse_ecliptica_line(line)
             if event is None:
                 continue

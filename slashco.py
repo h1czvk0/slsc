@@ -68,6 +68,7 @@ from osc_output import (
 )
 from auto_jump import AutoJumpService
 from vrchat_log_selector import VrchatLogSelector, foreground_process_id
+from backrooms_bridge import BackroomsBridge, DEFAULT_BACKROOMS_WORLD_ID, normalize_world_id
 
 try:
     import requests
@@ -1829,6 +1830,7 @@ PANEL_MODE_LABELS = {
     "auto": "自动",
     "slashco": "SlashCo",
     "ecliptica": "Ecliptica",
+    "backrooms": "BackroomsVR",
 }
 PANEL_MODE_KEYS = {label: key for key, label in PANEL_MODE_LABELS.items()}
 
@@ -2131,6 +2133,12 @@ class SlashCoMonitorCN:
         # 加载赞助者配置（UI 需要这些变量）
         self._load_sponsor_config()
         self._load_ecliptica_config()
+        self.backrooms_bridge = BackroomsBridge(lambda: self._current_log_path)
+        self.backrooms_bridge.configure(
+            self.backrooms_osc_enabled.get(), self.backrooms_world_id_var.get(),
+            self.backrooms_osc_host_var.get(), self.backrooms_osc_port_var.get(),
+        )
+        self.vrchat_log_selector.backrooms_world_id = self.backrooms_world_id_var.get()
         self.ecliptica_osc = BossLockOscOutput(
             self.ecliptica_osc_host_var.get(),
             self.ecliptica_osc_port_var.get(),
@@ -2153,6 +2161,8 @@ class SlashCoMonitorCN:
         self.ecliptica_sync.start()
 
         self.setup_ui()
+        self.backrooms_bridge.start()
+        self._backrooms_after_id = self.root.after(500, self._backrooms_tick)
         self.ecliptica_hud = EclipticaDesktopHud(
             self.root,
             self.ecliptica_hud_layout,
@@ -2503,12 +2513,14 @@ class SlashCoMonitorCN:
         self.mode_left_container.pack(fill=X)
         self.slashco_left_frame = ttk.Frame(self.mode_left_container)
         self.ecliptica_left_frame = ttk.Frame(self.mode_left_container)
+        self.backrooms_left_frame = ttk.Frame(self.mode_left_container)
         self.slashco_left_frame.pack(fill=X)
 
         self.mode_right_container = ttk.Frame(self.right_p)
         self.mode_right_container.pack(fill=BOTH, expand=True)
         self.slashco_right_frame = ttk.Frame(self.mode_right_container)
         self.ecliptica_right_frame = ttk.Frame(self.mode_right_container)
+        self.backrooms_right_frame = ttk.Frame(self.mode_right_container)
         self.slashco_right_frame.pack(fill=BOTH, expand=True)
 
         fuel_frame = ttk.LabelFrame(self.slashco_left_frame, text="燃油进度", padding=5)
@@ -2750,6 +2762,7 @@ class SlashCoMonitorCN:
         self.tree.pack(side=LEFT, fill=BOTH, expand=True)
         sc.pack(side=RIGHT, fill=Y)
         self._build_ecliptica_right_panel()
+        self._build_backrooms_panel()
         self._bind_left_mousewheel(self.left_content)
         self._refresh_left_scrollregion()
         self._set_active_game_mode("slashco", log_change=False)
@@ -3228,6 +3241,109 @@ class SlashCoMonitorCN:
         self.ecliptica_sync_tree.configure(yscrollcommand=sync_scrollbar.set)
 
 
+    def _build_backrooms_panel(self):
+        frame = ttk.LabelFrame(self.backrooms_left_frame, text="BackroomsVR 模型位置过滤", padding=8)
+        frame.pack(fill=X, padx=5, pady=5)
+        ttk.Checkbutton(
+            frame, text="启用电闸 / 谐振锚点 OSC 状态输出",
+            variable=self.backrooms_osc_enabled, command=self._apply_backrooms_settings,
+        ).pack(anchor=W)
+        row = ttk.Frame(frame)
+        row.pack(fill=X, pady=(8, 0))
+        ttk.Label(row, text="主机").pack(side=LEFT)
+        ttk.Entry(row, textvariable=self.backrooms_osc_host_var, width=16).pack(side=LEFT, padx=5)
+        ttk.Label(row, text="端口").pack(side=LEFT)
+        ttk.Entry(row, textvariable=self.backrooms_osc_port_var, width=7).pack(side=LEFT, padx=5)
+        ttk.Label(frame, text="目标世界 ID：").pack(anchor=W, pady=(8, 0))
+        ttk.Entry(frame, textvariable=self.backrooms_world_id_var).pack(fill=X)
+        ttk.Button(frame, text="保存并应用", command=self._apply_backrooms_settings).pack(anchor=E, pady=6)
+        ttk.Label(frame, textvariable=self.backrooms_status_var, wraplength=450).pack(anchor=W)
+        ttk.Label(frame, textvariable=self.backrooms_breaker_var).pack(anchor=W, pady=(8, 0))
+        ttk.Label(frame, textvariable=self.backrooms_resonance_var).pack(anchor=W, pady=(4, 0))
+        clients = ttk.LabelFrame(self.backrooms_left_frame, text="VRChat 日志实例", padding=8)
+        clients.pack(fill=X, padx=5, pady=5)
+        self.backrooms_log_instance_combo = ttk.Combobox(
+            clients, textvariable=self.ecliptica_log_choice_var,
+            values=("自动选择",), state="readonly",
+        )
+        self.backrooms_log_instance_combo.pack(fill=X)
+        self.backrooms_log_instance_combo.bind("<<ComboboxSelected>>", self._on_ecliptica_log_instance_selected)
+        ttk.Label(clients, textvariable=self.ecliptica_log_status_var, wraplength=450).pack(anchor=W, pady=6)
+        details = ttk.LabelFrame(self.backrooms_right_frame, text="本局已接受的完成状态", padding=12)
+        details.pack(fill=BOTH, expand=True, padx=5, pady=5)
+        self.backrooms_details_var = StringVar(value="等待本局有效日志快照")
+        ttk.Label(details, textvariable=self.backrooms_details_var, wraplength=650, justify=LEFT).pack(anchor=W)
+        ttk.Label(
+            details, wraplength=650, justify=LEFT,
+            text="在 VRChat 中启用 OSC，并在模型菜单开启“显示位置”和“只显示未激活（OSC）”。\n\n"
+                 "位置由模型射线检测本局实际启用的点。这里的完成数量不是生成数量，"
+                 "32 个电闸候选点和 5 个锚点区域不代表本局需要全部完成。\n\n"
+                 "无快照时保持未知；有效快照仅提供完成集合。退出世界、换局、日志读取失败"
+                 "会撤销 Ready。每秒完整重发并翻转心跳；停止软件后模型恢复位置显示。\n\n"
+                 "邪教雕像仅使用模型射线定位，无完成状态 OSC 接口。",
+        ).pack(anchor=W, pady=20)
+
+    def _apply_backrooms_settings(self):
+        try:
+            world = normalize_world_id(self.backrooms_world_id_var.get())
+            port = int(self.backrooms_osc_port_var.get())
+            if not 1 <= port <= 65535:
+                raise ValueError("端口必须在 1 至 65535 之间")
+            host = normalize_osc_host(self.backrooms_osc_host_var.get())
+            self.backrooms_bridge.configure(self.backrooms_osc_enabled.get(), world, host, port)
+        except (ValueError, OSError) as exc:
+            self.backrooms_osc_enabled.set(self.backrooms_bridge.enabled)
+            messagebox.showerror("BackroomsVR OSC 设置", str(exc), parent=self.root)
+            return
+        self.backrooms_world_id_var.set(world)
+        self.vrchat_log_selector.backrooms_world_id = world
+        self.backrooms_osc_host_var.set(host)
+        self.backrooms_osc_port_var.set(str(port))
+        self._save_ecliptica_config()
+        self._refresh_backrooms_ui()
+
+    def _refresh_backrooms_ui(self):
+        snapshot = self.backrooms_bridge.snapshot()
+        if snapshot["error"]:
+            status = f"日志 / OSC 异常：{snapshot['error']}"
+        elif snapshot["recovering"]:
+            status = "正在恢复当前客户端日志，暂不输出有效状态"
+        elif not snapshot["in_world"]:
+            status = "等待进入目标 BackroomsVR 世界"
+        else:
+            status = "OSC 已启用，每秒完整重发" if snapshot["enabled"] else "已识别 BackroomsVR，OSC 未启用"
+        self.backrooms_status_var.set(status)
+        usable = snapshot["in_world"] and not snapshot["recovering"] and not snapshot["error"]
+        for kind, label, variable in (
+            ("breaker", "电闸", self.backrooms_breaker_var),
+            ("resonance", "锚点区域", self.backrooms_resonance_var),
+        ):
+            variable.set(f"{label}：已完成 {snapshot[kind + '_done']}"
+                         if usable and snapshot[kind + "_ready"] else f"{label}：未知，等待有效快照")
+        done_breakers = ", ".join(str(i) for i in range(32) if snapshot["breaker_mask"] & (1 << i))
+        done_areas = ", ".join(str(i) for i in range(5) if snapshot["resonance_mask"] & (1 << i))
+        self.backrooms_details_var.set(
+            f"世界：{snapshot['world_id'] or '-'}\n实例：{snapshot['instance_id'] or '-'}\n\n"
+            f"电闸 epoch：{snapshot['breaker_epoch']}\n已完成内部索引："
+            f"{(done_breakers or '无') if usable and snapshot['breaker_ready'] else '未知'}\n\n"
+            f"锚点 epoch：{snapshot['resonance_epoch']}\n已完成区域："
+            f"{(done_areas or '无') if usable and snapshot['resonance_ready'] else '未知'}"
+        )
+        if usable:
+            if self.detected_game_mode != "backrooms":
+                self._set_active_game_mode("backrooms", reason="已确认目标世界 ID")
+        elif not snapshot["recovering"] and self.detected_game_mode == "backrooms":
+            self._set_active_game_mode("slashco", log_change=False)
+
+    def _backrooms_tick(self):
+        self._backrooms_after_id = None
+        if self._is_shutting_down:
+            return
+        try:
+            self._refresh_backrooms_ui()
+        finally:
+            self._backrooms_after_id = self.root.after(500, self._backrooms_tick)
+
     def _panel_mode_preference(self):
         label = self.panel_mode_var.get() if hasattr(self, "panel_mode_var") else PANEL_MODE_LABELS["auto"]
         return PANEL_MODE_KEYS.get(label, "auto")
@@ -3239,7 +3355,7 @@ class SlashCoMonitorCN:
         return preference
 
     def _show_game_panel(self, mode, reason="", log_change=True, automatic=False):
-        selected = "ecliptica" if mode == "ecliptica" else "slashco"
+        selected = mode if mode in ("ecliptica", "backrooms") else "slashco"
         changed = selected != getattr(self, "current_game_mode", "slashco")
         self.current_game_mode = selected
         if not hasattr(self, "slashco_left_frame"):
@@ -3249,11 +3365,19 @@ class SlashCoMonitorCN:
         self.ecliptica_left_frame.pack_forget()
         self.slashco_right_frame.pack_forget()
         self.ecliptica_right_frame.pack_forget()
+        if hasattr(self, "backrooms_left_frame"):
+            self.backrooms_left_frame.pack_forget()
+            self.backrooms_right_frame.pack_forget()
         if selected == "ecliptica":
             self.ecliptica_left_frame.pack(fill=X)
             self.ecliptica_right_frame.pack(fill=BOTH, expand=True)
             self.mode_status_var.set("当前：Ecliptica")
             self.lbl_mode_status.configure(foreground="#6c4cff")
+        elif selected == "backrooms":
+            self.backrooms_left_frame.pack(fill=X)
+            self.backrooms_right_frame.pack(fill=BOTH, expand=True)
+            self.mode_status_var.set("当前：BackroomsVR")
+            self.lbl_mode_status.configure(foreground="#947126")
         else:
             self.slashco_left_frame.pack(fill=X)
             self.slashco_right_frame.pack(fill=BOTH, expand=True)
@@ -3271,7 +3395,7 @@ class SlashCoMonitorCN:
             self.log(f"数据面板已{action}为 {self.mode_status_var.get().replace('当前：', '')}{suffix}")
 
     def _set_active_game_mode(self, mode, reason="", log_change=True):
-        self.detected_game_mode = "ecliptica" if mode == "ecliptica" else "slashco"
+        self.detected_game_mode = mode if mode in ("ecliptica", "backrooms") else "slashco"
         automatic = self._panel_mode_preference() == "auto"
         self._show_game_panel(
             self._resolved_panel_mode(),
@@ -3344,6 +3468,13 @@ class SlashCoMonitorCN:
             )
 
     def _load_ecliptica_config(self):
+        self.backrooms_osc_enabled = BooleanVar(value=False)
+        self.backrooms_world_id_var = StringVar(value=DEFAULT_BACKROOMS_WORLD_ID)
+        self.backrooms_osc_host_var = StringVar(value=DEFAULT_OSC_HOST)
+        self.backrooms_osc_port_var = StringVar(value=str(DEFAULT_OSC_PORT))
+        self.backrooms_status_var = StringVar(value="等待 BackroomsVR 日志")
+        self.backrooms_breaker_var = StringVar(value="电闸：未知，等待有效快照")
+        self.backrooms_resonance_var = StringVar(value="锚点：未知，等待有效快照")
         self.ecliptica_hud_enabled = BooleanVar(value=False)
         self.ecliptica_hud_foreground_only = BooleanVar(value=True)
         self.panel_mode_var = StringVar(value=PANEL_MODE_LABELS["auto"])
@@ -3385,6 +3516,14 @@ class SlashCoMonitorCN:
             if os.path.exists(ECLIPTICA_CONFIG_FILENAME):
                 with open(ECLIPTICA_CONFIG_FILENAME, "r", encoding="utf-8") as config_file:
                     config = json.load(config_file)
+                self.backrooms_osc_enabled.set(bool(config.get("backrooms_osc_enabled", False)))
+                try:
+                    self.backrooms_world_id_var.set(normalize_world_id(
+                        config.get("backrooms_world_id", DEFAULT_BACKROOMS_WORLD_ID)))
+                except ValueError:
+                    pass
+                self.backrooms_osc_host_var.set(normalize_osc_host(config.get("backrooms_osc_host")))
+                self.backrooms_osc_port_var.set(str(normalize_osc_port(config.get("backrooms_osc_port"))))
                 self.ecliptica_hud_enabled.set(bool(config.get("hud_enabled", False)))
                 self.ecliptica_hud_foreground_only.set(
                     bool(config.get("hud_foreground_only", True))
@@ -3461,6 +3600,10 @@ class SlashCoMonitorCN:
             with open(ECLIPTICA_CONFIG_FILENAME, "w", encoding="utf-8") as config_file:
                 json.dump(
                     {
+                        "backrooms_osc_enabled": bool(self.backrooms_osc_enabled.get()),
+                        "backrooms_world_id": self.backrooms_world_id_var.get(),
+                        "backrooms_osc_host": self.backrooms_osc_host_var.get(),
+                        "backrooms_osc_port": normalize_osc_port(self.backrooms_osc_port_var.get()),
                         "hud_enabled": bool(self.ecliptica_hud_enabled.get()),
                         "hud_foreground_only": bool(self.ecliptica_hud_foreground_only.get()),
                         "panel_mode": self._panel_mode_preference(),
@@ -3584,6 +3727,8 @@ class SlashCoMonitorCN:
             path_labels[candidate.path] = label
         self._ecliptica_log_choice_paths = choice_paths
         combo.configure(values=tuple(values))
+        if hasattr(self, "backrooms_log_instance_combo"):
+            self.backrooms_log_instance_combo.configure(values=tuple(values))
 
         manual_path = selector_snapshot.get("manual_path") or ""
         if manual_path and manual_path in path_labels:
@@ -6162,6 +6307,9 @@ class SlashCoMonitorCN:
         # 停止监控循环
         self.is_monitoring = False
 
+        if getattr(self, "backrooms_bridge", None):
+            self.backrooms_bridge.stop()
+
         try:
             if getattr(self, "ecliptica_auto_jump", None):
                 self.ecliptica_auto_jump.stop()
@@ -6195,6 +6343,7 @@ class SlashCoMonitorCN:
             "_ecliptica_sync_after_id",
             "_ecliptica_osc_test_after_id",
             "_ecliptica_auto_jump_after_id",
+            "_backrooms_after_id",
         ):
             after_id = getattr(self, attr, None)
             if after_id:
