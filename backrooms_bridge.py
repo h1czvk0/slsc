@@ -70,6 +70,8 @@ class BackroomsState:
     def clear(self):
         self.world_id = ""
         self.instance_id = ""
+        # None: no match context yet; 0: confirmed outside a running Level 0 round.
+        self.match_epoch = None
         self.breaker = ObjectiveSnapshot(32)
         self.resonance = ObjectiveSnapshot(5)
         self.revision = getattr(self, "revision", 0) + 1
@@ -82,11 +84,26 @@ class BackroomsState:
     def signature(self):
         return (self.world_id, self.instance_id, self.breaker.epoch,
                 self.breaker.completed_mask, self.breaker.ready, self.resonance.epoch,
-                self.resonance.completed_mask, self.resonance.ready)
+                self.resonance.completed_mask, self.resonance.ready, self.match_epoch)
+
+    def _set_match_epoch(self, epoch):
+        if epoch == self.match_epoch:
+            return
+        if epoch and any(epoch in objective.retired_epochs
+                         for objective in (self.breaker, self.resonance)):
+            return
+        self.match_epoch = epoch
+        for objective in (self.breaker, self.resonance):
+            if epoch and objective.epoch == epoch:
+                objective.confirmed_epoch = True
+            else:
+                objective.reset(epoch, confirmed=True)
+        self.revocation += 1
 
     def apply_line(self, line):
         if not any(marker in line for marker in (
-            "[Behaviour]", "[MEGBreaker]", "[ObjectiveState]",
+            "[Behaviour]", "[MEGBreaker]", "[ObjectiveState]", "[MM]",
+            "[LevelActivator:Lvl 0]",
         )):
             return
         before = self.signature()
@@ -105,25 +122,43 @@ class BackroomsState:
             return
         fields = dict(FIELDS.findall(line))
         try:
-            if "[MEGBreaker] generated " in line:
-                self.breaker.reset()
+            if "[MM] @@@ OnDeserialization ON " in line:
+                state, level, seed = (int(fields[key]) for key in ("state", "level", "seed"))
+                self._set_match_epoch(seed if state == 1 and level == 0 else 0)
+            elif "[LevelActivator:Lvl 0] Activate seed=" in line:
+                self._set_match_epoch(int(fields["seed"]))
+            elif self.match_epoch == 0:
+                # Late snapshots/terminal events cannot restore a finished round.
+                return
+            elif "[MEGBreaker] generated " in line:
+                self.breaker.reset(self.match_epoch or 0, confirmed=bool(self.match_epoch))
                 self.revocation += 1
             elif "[MEGBreaker]" in line and (
                 "[MEGBreaker] epoch-reset " in line or fields.get("action") == "epoch-reset"
             ):
                 epoch = int(fields["epoch"])
-                if epoch not in self.breaker.retired_epochs:
+                if (epoch not in self.breaker.retired_epochs
+                        and (not epoch or not self.match_epoch or epoch == self.match_epoch)):
                     self.breaker.reset(epoch, confirmed=True)
                     self.revocation += 1
             elif "[MEGBreaker] recv " in line:
                 self.breaker.accept(int(fields["acceptedEpoch"]), int(fields["acceptedMask"]))
             elif "[MEGBreaker] accept " in line:
                 self.breaker.accept(int(fields["epoch"]), int(fields["new"]))
+            elif "[MEGBreaker] allFlipped " in line and self.match_epoch:
+                # This terminal event has no epoch. Only bind it to an explicitly
+                # confirmed running round, and validate its hexadecimal bitset.
+                mask_text = fields["mask"]
+                mask = int(mask_text, 16) if mask_text.lower().startswith("0x") else 0
+                active = int(fields["active"])
+                if 0 < mask <= 0xFFFFFFFF and mask.bit_count() == active:
+                    self.breaker.accept(self.match_epoch, mask)
             elif "[ObjectiveState]" in line and fields.get("region") == "area.a_l0_chaos.name":
                 action = fields.get("action")
                 epoch = int(fields["epoch"])
                 if action == "epoch-reset":
-                    if epoch not in self.resonance.retired_epochs:
+                    if (epoch not in self.resonance.retired_epochs
+                            and (not epoch or not self.match_epoch or epoch == self.match_epoch)):
                         self.resonance.reset(epoch, confirmed=True)
                         self.revocation += 1
                 elif action in ("deserialize", "owner-apply"):

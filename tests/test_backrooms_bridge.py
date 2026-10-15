@@ -28,6 +28,11 @@ def anchor(epoch, mask, action="deserialize", region="area.a_l0_chaos.name"):
     return f"[ObjectiveState] region={region} action={action} epoch={epoch} mask={mask}"
 
 
+def match(epoch, state=1, level=0):
+    return (f"[MM] @@@ OnDeserialization ON player(id=31)  →  state={state}  "
+            f"level={level}  participants=[10,31] count=2  seed={epoch} difficulty=2")
+
+
 def read_string(data, offset):
     end = data.index(b"\x00", offset)
     return data[offset:end].decode("utf-8"), (end + 4) & ~3
@@ -137,6 +142,99 @@ class BackroomsStateTests(unittest.TestCase):
         self.assertEqual(normalize_world_id(DEFAULT_BACKROOMS_WORLD_ID.upper()), DEFAULT_BACKROOMS_WORLD_ID)
         with self.assertRaises(ValueError):
             normalize_world_id("The BackroomsVR")
+
+    def test_october_16_sparse_breaker_log_and_round_reset(self):
+        # Observed sequence: no intermediate breaker recv/accept events in either
+        # round, but both have an allFlipped event and complete anchor snapshots.
+        self.state.apply_line(match(1602746815))
+        self.state.apply_line(recv(1602746815, 0))
+        self.state.apply_line("[LevelActivator:Lvl 0] Activate seed=1602746815")
+        self.assertTrue(self.state.breaker.ready)
+        self.state.apply_line(anchor(1602746815, 18))
+        self.state.apply_line("[MEGBreaker] allFlipped 触发 mask=0x200A0402 active=5 target=<未接线> event=''")
+        self.assertEqual(self.state.breaker.completed_mask, 0x200A0402)
+        self.assertEqual(self.state.resonance.completed_mask, 18)
+        self.state.apply_line(match(1602746815, state=2))
+        self.assertFalse(self.state.breaker.ready)
+        self.assertFalse(self.state.resonance.ready)
+        self.state.apply_line(anchor(0, 0))
+        self.state.apply_line(match(1602746815, state=0, level=-1))
+        self.state.apply_line(match(918123783))
+        self.state.apply_line("[LevelActivator:Lvl 0] Activate seed=918123783")
+        self.assertFalse(self.state.breaker.ready)
+        self.assertEqual(self.state.breaker.completed_mask, 0)
+        self.state.apply_line(anchor(918123783, 0))
+        self.state.apply_line("[MEGBreaker] allFlipped 触发 mask=0x48C0011 active=6 target=<未接线> event=''")
+        self.assertTrue(self.state.breaker.ready)
+        self.assertEqual(self.state.breaker.epoch, 918123783)
+        self.assertEqual(self.state.breaker.completed_mask, 0x48C0011)
+        self.state.apply_line(anchor(918123783, 31))
+        self.assertEqual(self.state.resonance.completed_mask, 31)
+
+    def test_new_match_revokes_both_snapshots_before_new_objective_logs(self):
+        self.state.apply_line(recv(900, 7))
+        self.state.apply_line(anchor(900, 3))
+        old_revocation = self.state.revocation
+        self.state.apply_line(match(2))
+        self.assertGreater(self.state.revocation, old_revocation)
+        self.assertFalse(self.state.breaker.ready)
+        self.assertFalse(self.state.resonance.ready)
+        self.assertEqual(self.state.breaker.epoch, 2)
+        self.state.apply_line(recv(900, 31))
+        self.state.apply_line(anchor(900, 31))
+        self.state.apply_line(recv(8, 31))
+        self.state.apply_line("[MEGBreaker] epoch-reset epoch=8")
+        self.state.apply_line(anchor(8, 0, action="epoch-reset"))
+        self.assertFalse(self.state.breaker.ready)
+        self.assertFalse(self.state.resonance.ready)
+        self.assertEqual(self.state.breaker.epoch, 2)
+        self.assertEqual(self.state.resonance.epoch, 2)
+        self.state.apply_line(recv(2, 1))
+        self.assertEqual(self.state.breaker.completed_mask, 1)
+        self.state.apply_line(match(2))
+        self.assertTrue(self.state.breaker.ready)
+
+    def test_terminal_event_requires_a_running_match_and_valid_mask(self):
+        terminal = "[MEGBreaker] allFlipped 触发 mask=0x80001000 active=2"
+        self.state.apply_line(recv(7, 0))
+        self.state.apply_line(terminal)
+        self.assertEqual(self.state.breaker.completed_mask, 0)
+        self.state.apply_line(match(7))
+        for invalid in (
+            terminal.replace("active=2", "active=3"),
+            terminal.replace("0x80001000", "0x100000000"),
+            terminal.replace("0x80001000", "0x0"),
+            terminal.replace("0x80001000", "0xZZ"),
+            terminal.replace("0x80001000", "80001000"),
+        ):
+            with self.subTest(line=invalid):
+                self.state.apply_line(invalid)
+                self.assertEqual(self.state.breaker.completed_mask, 0)
+        self.state.apply_line(terminal)
+        self.assertEqual(self.state.breaker.completed_mask, (1 << 31) | (1 << 12))
+
+    def test_finished_round_ignores_late_snapshots_and_terminal_events(self):
+        self.state.apply_line(match(7))
+        self.state.apply_line(recv(7, 1))
+        self.state.apply_line(anchor(7, 1))
+        self.state.apply_line(match(7, state=2))
+        for late in (recv(7, 3), anchor(7, 31),
+                     "[MEGBreaker] allFlipped 触发 mask=0x3 active=2"):
+            self.state.apply_line(late)
+        self.assertFalse(self.state.breaker.ready)
+        self.assertFalse(self.state.resonance.ready)
+        self.state.apply_line(match(8))
+        self.state.apply_line(match(7))
+        self.assertEqual(self.state.breaker.epoch, 8)
+
+    def test_level_activation_can_confirm_round_without_mm_log(self):
+        self.state.apply_line("[LevelActivator:Lvl 0] Activate seed=918123783")
+        self.assertFalse(self.state.breaker.ready)
+        self.state.apply_line("[MEGBreaker] allFlipped 触发 mask=0x48C0011 active=6")
+        self.assertEqual(self.state.breaker.completed_mask, 0x48C0011)
+        self.state.apply_line(JOIN.replace(":123", ":456"))
+        self.state.apply_line("[MEGBreaker] allFlipped 触发 mask=0x48C0011 active=6")
+        self.assertFalse(self.state.breaker.ready)
 
 
 class BackroomsReaderTests(unittest.TestCase):

@@ -3407,7 +3407,7 @@ class SlashCoMonitorCN:
             ("breaker", "电闸", self.backrooms_breaker_var),
             ("resonance", "锚点区域", self.backrooms_resonance_var),
         ):
-            set_var_if_changed(variable, f"{label}：已完成 {snapshot[kind + '_done']}"
+            set_var_if_changed(variable, f"{label}：已知完成 {snapshot[kind + '_done']}"
                                if usable and snapshot[kind + "_ready"] else f"{label}：未知，等待有效快照")
         done_breakers = ", ".join(str(i) for i in range(32) if snapshot["breaker_mask"] & (1 << i))
         done_areas = ", ".join(str(i) for i in range(5) if snapshot["resonance_mask"] & (1 << i))
