@@ -549,6 +549,43 @@ class EclipticaMonitorIntegrationTests(unittest.TestCase):
 
         self.assertEqual(event.groups, ("Current User", "usr_current"))
 
+    def test_post_login_identity_restores_sync_on_manual_connect(self):
+        monitor = self.make_monitor()
+        monitor._pending_log_lines = queue.Queue()
+        monitor._recovering_log_state = True
+        monitor._log_recovery_started_at = time.monotonic()
+        monitor.ecliptica_sync = FakeSyncClient()
+        monitor.ecliptica_sync_status_var = FakeVar("")
+        monitor.log = lambda _message: None
+        login_line = (
+            "[Authentication - ÎÎÍÏÎÏÌÎ] Preforming post login checks for "
+            "测试玩家 (usr_local)"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "output_log_test.txt"
+            path.write_text(
+                "User Authenticated: Old User (usr_old)\n"
+                f"{login_line}\n"
+                "[Behaviour] OnPlayerJoined Other Player (usr_other)\n",
+                encoding="utf-8",
+            )
+            monitor._current_log_path = str(path)
+
+            identity = monitor._read_vrc_identity_event(str(path))
+            self.assertEqual(identity.groups, ("测试玩家", "usr_local"))
+            self.assertTrue(monitor._line_might_affect_state(login_line))
+            monitor.process_line(login_line)
+            self.assertEqual(monitor.ecliptica_state.local_player_name, "测试玩家")
+            monitor.ecliptica_state = EclipticaState()
+
+            monitor._manual_ecliptica_sync_connect()
+
+        self.assertEqual(monitor.ecliptica_state.local_player_name, "测试玩家")
+        self.assertEqual(monitor.ecliptica_sync.states[-1]["local_player_id"], "usr_local")
+        self.assertEqual(monitor.ecliptica_sync.states[-1]["local_player_name"], "测试玩家")
+        self.assertFalse(monitor._recovering_log_state)
+        self.assertEqual(monitor.ecliptica_sync.reconnect_calls, 1)
+
     def test_manual_connect_reloads_identity_and_releases_finished_recovery(self):
         monitor = self.make_monitor()
         monitor._pending_log_lines = queue.Queue()

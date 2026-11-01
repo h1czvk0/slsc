@@ -89,6 +89,32 @@ class EclipticaParserTests(unittest.TestCase):
         self.assertEqual(ownership.kind, "ownership")
         self.assertEqual(ownership.groups, ("Obisidus", "测试玩家"))
 
+    def test_parses_post_login_identity_and_selects_it_for_live_reading(self):
+        for verb in ("Preforming", "Performing"):
+            with self.subTest(verb=verb):
+                line = (
+                    "2026.11.01 16:28:50 Debug - [Authentication - ÎÎÍÏÎÏÌÎ] "
+                    f"{verb} post login checks for 测试玩家 (Local) ღ (usr_local)"
+                )
+                self.assertTrue(line_might_affect_ecliptica_state(line))
+                event = parse_ecliptica_line(line)
+                self.assertIsNotNone(event)
+                self.assertEqual(event.kind, "authenticated")
+                self.assertEqual(event.groups, ("测试玩家 (Local) ღ", "usr_local"))
+                self.assertIsNotNone(event.timestamp)
+
+    def test_other_players_and_unrelated_login_messages_are_not_identity(self):
+        for line in (
+            "[Behaviour] OnPlayerJoined Other Player (usr_other)",
+            "[Behaviour] Initialized PlayerAPI \"Other Player\" is remote",
+            "[Authentication] Beginning authentication. Provider: VRChat",
+            "[Behaviour] Authenticated via vrchat",
+            "[Behaviour] Preforming post login checks for Other Player (usr_other)",
+        ):
+            with self.subTest(line=line):
+                self.assertIsNone(parse_ecliptica_line(line))
+                self.assertFalse(line_might_affect_ecliptica_state(line))
+
 
 class EclipticaStateTests(unittest.TestCase):
     def make_event(self, kind, *groups, timestamp=0.0):

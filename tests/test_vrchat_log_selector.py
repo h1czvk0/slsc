@@ -113,6 +113,37 @@ class VrchatLogSelectorTests(unittest.TestCase):
 
         self.assertEqual(selected.path, str(first))
 
+    def test_post_login_identity_labels_the_selected_instance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "output_log_2026-11-01_16-07-46.txt"
+            path.write_text(
+                "[Authentication - ÎÎÍÏÎÏÌÎ] Preforming post login checks for "
+                "测试玩家 (usr_local)\n"
+                "[Behaviour] Entering Room: Ecliptica - Demo Playtest\n"
+                "[Behaviour] OnPlayerJoined Other Player (usr_other)\n",
+                encoding="utf-8",
+            )
+            selector = VrchatLogSelector(
+                str(path.parent),
+                process_provider=lambda: [self.make_process(path, 101)],
+                foreground_pid_provider=lambda: 101,
+            )
+
+            selected = selector.select()
+            self.assertEqual(selected.vrc_username, "测试玩家")
+            self.assertEqual(selected.vrc_user_id, "usr_local")
+            self.assertEqual(selected.label, "测试玩家｜Ecliptica - Demo Playtest｜PID 101")
+
+            with path.open("a", encoding="utf-8") as log_file:
+                log_file.write(
+                    "[Authentication - NewState] Preforming post login checks for "
+                    "Second Player (usr_second)\n"
+                    "[Behaviour] OnPlayerJoined Other Player (usr_other)\n"
+                )
+            updated = selector.select(str(path))
+            self.assertEqual(updated.vrc_username, "Second Player")
+            self.assertEqual(updated.vrc_user_id, "usr_second")
+
     def test_multiple_ecliptica_instances_require_foreground_or_manual_choice(self):
         with tempfile.TemporaryDirectory() as directory:
             log_dir = pathlib.Path(directory)

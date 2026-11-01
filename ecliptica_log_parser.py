@@ -8,7 +8,14 @@ from functools import lru_cache
 
 ROOM_PATTERN = re.compile(r"\[Behaviour\]\s+Entering Room:\s+(.+?)\s*$", re.IGNORECASE)
 PATTERNS = {
-    "authenticated": re.compile(r"User Authenticated:\s*(.+?)\s*\((usr_[^)]+)\)\s*$", re.IGNORECASE),
+    "authenticated": re.compile(
+        r"(?:User Authenticated:\s*|"
+        r"\[Authentication(?:\s+-[^\]]+)?\]\s+"
+        # VRChat's newer authentication log spells this "Preforming".
+        r"(?:Preforming|Performing)\s+post\s+login\s+checks\s+for\s+)"
+        r"(.+?)\s*\((usr_[^)]+)\)\s*$",
+        re.IGNORECASE,
+    ),
     "ownership": re.compile(r"ownership of\s+(.+?)\s+transferred to\s+(.+?)\s*$", re.IGNORECASE),
     "session": re.compile(
         r"ECLIPTICA\s+(?:(?:loaded|saving)\s+SESSION ID\s+|MASTER\s+Setting\s+SESSION ID\s+to\s+)(\d+)",
@@ -41,7 +48,7 @@ PATTERNS = {
 
 TIMESTAMP_PATTERN = re.compile(r"(\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}:\d{2})")
 EVENT_MARKERS = (
-    "ecliptica", "entering room:", "user authenticated:", "ownership of",
+    "ecliptica", "entering room:", "user authenticated:", "post login checks for", "ownership of",
     "boss", "dealing", "strike dmg:", "damage has been taken:",
     "advancing stage progress to:",
 )
