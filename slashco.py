@@ -12,6 +12,7 @@ import threading
 import ctypes
 from ctypes import wintypes
 import json
+import logging
 import concurrent.futures
 import subprocess
 import queue
@@ -2099,12 +2100,14 @@ def load_translations():
         if target_path:
             with open(target_path, 'r', encoding='utf-8') as f:
                 LOCATION_TRANSLATION = json.load(f)
-            print(f"成功加载 locations.json ({source_type}): {len(LOCATION_TRANSLATION)} 条翻译")
+            logging.getLogger(__name__).info(
+                "Loaded locations.json (%s): %d translations", source_type, len(LOCATION_TRANSLATION),
+            )
         else:
-            print("警告: 未找到任何 locations.json，位置翻译将不可用")
+            logging.getLogger(__name__).warning("locations.json not found; location translations are unavailable")
             
     except Exception as e:
-        print(f"加载 locations.json 失败: {e}")
+        logging.getLogger(__name__).warning("Failed to load locations.json: %s", e)
 
 load_translations()
 

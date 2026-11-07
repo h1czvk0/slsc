@@ -49,10 +49,13 @@ python -m venv .venv
 ## 测试
 
 ```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-test.txt
 .\.venv\Scripts\python.exe -m unittest discover -s tests
 .\.venv\Scripts\python.exe tools\check_repository.py
 .\.venv\Scripts\python.exe -m pip check
 ```
+
+`requirements-test.txt` 额外安装 mitmproxy，用于实际执行生成的代理 addon 集成测试；该 Python 包不属于主程序运行依赖，也不打入主 EXE。
 
 普通推送和 Pull Request 会运行 `.github/workflows/ci.yml`，检查测试、源码语法、资源完整性、版本一致性和误提交的运行文件。
 

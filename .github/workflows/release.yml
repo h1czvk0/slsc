@@ -20,6 +20,8 @@ jobs:
     name: 测试、打包并发布
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
 
     steps:
       - name: 验证人工发布确认
@@ -42,6 +44,7 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-build.txt
+            requirements-test.txt
 
       - name: 读取并校验版本信息
         id: version
@@ -83,7 +86,7 @@ jobs:
         run: |
           python -m venv .venv
           .venv\Scripts\python.exe -m pip install --upgrade pip
-          .venv\Scripts\python.exe -m pip install -r requirements-build.txt
+          .venv\Scripts\python.exe -m pip install -r requirements-build.txt -r requirements-test.txt
 
       - name: 运行完整测试和依赖检查
         shell: pwsh

@@ -1,0 +1,3 @@
+-r requirements.txt
+# Integration tests execute generated addons against the actual mitmproxy HTTP API.
+mitmproxy==12.2.3

@@ -14,6 +14,7 @@
 
 - Python 3.12；所有 Python 命令使用项目 `.venv`。
 - `requirements.txt` 固定已验证的直接运行依赖版本；`requirements-build.txt` 增加 PyInstaller。传递依赖仍由 pip 解析。
+- `requirements-test.txt` 增加 mitmproxy，供生成的 addon 集成测试使用；CI 和发布测试显式安装它，主程序和打包产物仍不依赖该 Python 包。
 - `tools/mitmdump.exe` 和 `tools/caddy/caddy.exe` 是运行必需的独立程序；主 EXE 不再重复收集 mitmproxy Python 包。
 - `tools/check_repository.py` 验证 Git 文件清单、Python 和 spec 语法、版本、打包资源、图片映射。
 - CI 只执行检查；Release 工作流继续使用手动确认。发布必须遵循根目录 `AGENTS.md` 的升版和跟踪流程。
@@ -31,6 +32,7 @@ Git 历史保留，删除文件通过普通提交记录。历史版本中的大�
 ## 验证与性能测量
 
 ```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt -r requirements-test.txt
 .\.venv\Scripts\python.exe -m unittest discover -s tests
 .\.venv\Scripts\python.exe tools\check_repository.py
 .\.venv\Scripts\python.exe -m pip check

@@ -2,6 +2,7 @@ import os
 import importlib.util
 import json
 import socket
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,16 @@ SE_SAMPLE = '{"data":{"ExampleMega":2,"ExampleSupport":1,"ExampleFree":0},"signa
 
 
 class RuntimePathTests(unittest.TestCase):
+    def test_import_succeeds_with_legacy_console_encoding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = dict(os.environ, PYTHONIOENCODING="cp1252:strict", PYTHONUTF8="0", LOCALAPPDATA=directory)
+            result = subprocess.run(
+                [sys.executable, "-c", "import slashco; assert slashco.LOCATION_TRANSLATION; print('ok')"],
+                cwd=ROOT_DIR, env=environment, capture_output=True, timeout=15,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr.decode("ascii", errors="replace"))
+        self.assertEqual(result.stdout.strip(), b"ok")
+
     def test_slashco_writable_paths_use_local_data_dir(self):
         self.assertEqual(os.path.basename(slashco.DATA_DIR), "SlashCoMonitor")
         self.assertEqual(
