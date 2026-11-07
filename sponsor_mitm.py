@@ -2,7 +2,7 @@
 """
 sponsor_mitm.py — 游戏名单覆盖 (mitmproxy / Caddy 方案)
 
-使用本地代理拦截 VRChat 的指定名单请求，支持 SlashCo 与 Demo Lobby 配置。
+使用本地代理拦截 VRChat 的指定名单请求，支持 SlashCo、Demo Lobby 与 S E 配置。
 优势:
   - 无需修改 DNS / hosts 文件
   - 不需要端口 53
@@ -27,7 +27,9 @@ import shutil
 import socket
 import json
 import random
+import struct
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 # ==================== 路径管理 (OneFile 支持) ====================
 DATA_DIR_ENV = "SLASHCO_SPONSOR_DATA_DIR"
@@ -144,8 +146,13 @@ DEMO_LOBBY_FALLBACK_URL = (
     "0195cfe7-f085-75f4-ac19-9d5e08b21c05"
 )
 DEMO_LOBBY_ROLE_NAME = "⭐ Mega Patreon"
+SE_GIST_URL = (
+    "https://gist.githubusercontent.com/DISTROYER190/8f78b0adc79793d4ae18bf1bda4663cb/raw?w"
+)
+SE_GIST = urlsplit(SE_GIST_URL)
 OVERRIDE_PROFILE_SLASHCO = "slashco"
 OVERRIDE_PROFILE_DEMO_LOBBY = "demo_lobby"
+OVERRIDE_PROFILE_SE = "se"
 OVERRIDE_TARGETS = {
     OVERRIDE_PROFILE_SLASHCO: (
         ("pastebin.com", "/raw/2WVJpW1N"),
@@ -158,12 +165,14 @@ OVERRIDE_TARGETS = {
             "/v2data/worlds/0195cfe7-f085-75f4-ac19-9d5e08b21c05",
         ),
     ),
+    OVERRIDE_PROFILE_SE: ((SE_GIST.hostname, SE_GIST.path),),
 }
 OVERRIDE_ALLOWED_HOSTS = {
     OVERRIDE_PROFILE_SLASHCO: r"^(?:www\.)?pastebin\.com(?::\d+)?$",
     OVERRIDE_PROFILE_DEMO_LOBBY: (
         r"^(?:data\.vrclinking\.com|linkingbotvrchat\.github\.io)(?::\d+)?$"
     ),
+    OVERRIDE_PROFILE_SE: r"^gist\.githubusercontent\.com(?::\d+)?$",
 }
 SEPARATOR = "\u2674"  # ♴  (正确分隔符)
 WRONG_SEPARATORS = ["\u2634", "\u2734"]  # 旧代码使用的错误分隔符
@@ -171,6 +180,7 @@ WRONG_SEPARATORS = ["\u2634", "\u2734"]  # 旧代码使用的错误分隔符
 # 配置文件和临时文件放在数据目录 (可写)
 MODIFIED_CONTENT_FILE = os.path.join(_get_data_dir(), "sponsors.dat")
 DEMO_LOBBY_CONTENT_FILE = os.path.join(_get_data_dir(), "demo_lobby_mega_patreon.json")
+SE_CONTENT_FILE = os.path.join(_get_data_dir(), "se_mega_supporter.json")
 ADDON_SCRIPT_FILE = os.path.join(_get_data_dir(), "tools", "mitm_addon.py")
 HIT_LOG_FILE = os.path.join(_get_data_dir(), "tools", "sponsor_override_hits.log")
 CA_INSTALLED_FLAG = os.path.join(_get_data_dir(), "tools", ".mitm_ca_trusted")
@@ -553,6 +563,41 @@ def build_demo_lobby_content(display_name, last_updated=None):
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
+def _se_signature(data_text):
+    salt = "fOt0gIGIUX"
+    signature = 5381
+    # Udon hashes .NET chars, so supplementary characters count as two units.
+    for (code_unit,) in struct.iter_unpack("<H", (salt + data_text + salt).encode("utf-16-le")):
+        signature = (signature * 33 + code_unit) & 0xFFFFFFFF
+    return signature
+
+
+def build_se_content(original, display_name):
+    """保留 S E 原名单，将指定名称加入 Mega Supporters 并重签。"""
+    name = str(display_name or "").strip()
+    if not name:
+        raise ValueError("display_name 不能为空")
+
+    payload = json.loads(original)
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+        raise ValueError("S E 原名单缺少 data 对象")
+    signature = payload.get("signature")
+    prefix = '{"data":'
+    suffix = f',"signature":{signature}}}'
+    if (
+        type(signature) is not int
+        or not original.startswith(prefix)
+        or not original.endswith(suffix)
+        or _se_signature(original[len(prefix):-len(suffix)]) != signature
+    ):
+        raise ValueError("S E 原名单签名校验失败")
+
+    data = payload["data"]
+    data[name] = 2
+    data_text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    return f'{{"data":{data_text},"signature":{_se_signature(data_text)}}}'
+
+
 # ==================== mitmproxy Addon 生成 ====================
 def _generate_addon_script(
     content_file_path,
@@ -567,9 +612,9 @@ def _generate_addon_script(
     safe_log_path = (hit_log_file or HIT_LOG_FILE).replace("\\", "/")
     targets = repr(OVERRIDE_TARGETS[profile])
     content_type = (
-        "application/json; charset=utf-8"
-        if profile == OVERRIDE_PROFILE_DEMO_LOBBY
-        else "text/plain; charset=utf-8"
+        "text/plain; charset=utf-8"
+        if profile == OVERRIDE_PROFILE_SLASHCO
+        else "application/json; charset=utf-8"
     )
 
     addon_code = f'''# -*- coding: utf-8 -*-
@@ -619,6 +664,7 @@ class SponsorOverrideAddon:
                 modified.encode("utf-8"),
                 {{
                     "Content-Type": CONTENT_TYPE,
+                    "X-SlashCo-Override": PROFILE,
                     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
                     "Pragma": "no-cache",
                     "Expires": "0",
@@ -1040,6 +1086,29 @@ def _self_test_demo_lobby_override(proxy_port, expected_name, log_func=None):
 
     _log("Demo Lobby 代理自检通过 (主地址和备用地址)", log_func)
     return True
+
+
+def _self_test_se_override(proxy_port, log_func=None):
+    """核对 S E 原始地址通过代理返回的名单和签名。"""
+    import ssl
+    import urllib.request
+
+    proxy = f"http://127.0.0.1:{int(proxy_port)}"
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"https": proxy}),
+        urllib.request.HTTPSHandler(context=ssl._create_unverified_context()),
+    )
+    try:
+        with open(SE_CONTENT_FILE, "rb") as f:
+            expected = f.read()
+        with opener.open(SE_GIST_URL, timeout=10) as resp:
+            if resp.headers.get("X-SlashCo-Override") == OVERRIDE_PROFILE_SE and resp.read() == expected:
+                _log("S E 代理自检通过", log_func)
+                return True
+        _log("S E 代理自检名单或签名不匹配", log_func)
+    except Exception as e:
+        _log(f"S E 代理自检请求失败: {e}", log_func)
+    return False
 
 
 def _restore_proxy(log_func=None):
@@ -1727,6 +1796,24 @@ def _prepare_demo_lobby_content(display_name, log_func=None):
     return True, ""
 
 
+def _prepare_se_content(display_name, log_func=None):
+    import urllib.request
+
+    _log("步骤 1/5: 下载 S E 原名单并追加 Mega Supporters...", log_func)
+    try:
+        request = urllib.request.Request(SE_GIST_URL, headers={"Cache-Control": "no-cache"})
+        with urllib.request.urlopen(request, timeout=15) as response:
+            original = response.read().decode("utf-8")
+        content = build_se_content(original, display_name)
+        os.makedirs(os.path.dirname(SE_CONTENT_FILE), exist_ok=True)
+        with open(SE_CONTENT_FILE, "w", encoding="utf-8") as f:
+            f.write(content)
+    except (OSError, ValueError) as e:
+        return False, f"无法下载或更新 S E 名单: {e}"
+    _log(f"S E 名单已保存 ({len(content)} 字符)", log_func)
+    return True, ""
+
+
 def start_sponsor_override(name, log_func=None, mode=SPONSOR_MODE_MITM):
     selected_mode = normalize_sponsor_mode(mode)
     if selected_mode == SPONSOR_MODE_CADDY:
@@ -1741,6 +1828,11 @@ def start_demo_lobby_override(name, log_func=None):
         log_func=log_func,
         profile=OVERRIDE_PROFILE_DEMO_LOBBY,
     )
+
+
+def start_se_override(name, log_func=None):
+    """启动 S E Mega Supporters 覆盖。"""
+    return _start_mitm_override(name, log_func=log_func, profile=OVERRIDE_PROFILE_SE)
 
 
 def _start_sponsor_override_mitm(name, log_func=None):
@@ -1768,18 +1860,22 @@ def _start_mitm_override(name, log_func=None, profile=OVERRIDE_PROFILE_SLASHCO):
     if not name:
         return False, "请先输入显示名称"
 
-    if profile == OVERRIDE_PROFILE_DEMO_LOBBY:
-        display_name = str(name).strip()
-        name_list = [display_name] if display_name else []
-    else:
+    if profile == OVERRIDE_PROFILE_SLASHCO:
         name_list = _parse_sponsor_names(name)
         display_name = name_list[0] if name_list else ""
+    else:
+        display_name = str(name).strip()
+        name_list = [display_name] if display_name else []
     if not name_list:
         return False, "请先输入显示名称"
 
     # log 显示
     name_display = ", ".join(name_list)
-    profile_label = "Demo Lobby Mega Patreon" if profile == OVERRIDE_PROFILE_DEMO_LOBBY else "赞助者名单"
+    profile_label = {
+        OVERRIDE_PROFILE_SLASHCO: "赞助者名单",
+        OVERRIDE_PROFILE_DEMO_LOBBY: "Demo Lobby Mega Patreon",
+        OVERRIDE_PROFILE_SE: "S E",
+    }[profile]
     _log(f"启动{profile_label}覆盖: {name_display}", log_func)
 
     startup_proxy_settings = _get_proxy_settings()
@@ -1806,6 +1902,9 @@ def _start_mitm_override(name, log_func=None, profile=OVERRIDE_PROFILE_SLASHCO):
     if profile == OVERRIDE_PROFILE_DEMO_LOBBY:
         ok, message = _prepare_demo_lobby_content(display_name, log_func)
         content_file = DEMO_LOBBY_CONTENT_FILE
+    elif profile == OVERRIDE_PROFILE_SE:
+        ok, message = _prepare_se_content(display_name, log_func)
+        content_file = SE_CONTENT_FILE
     else:
         ok, message = _prepare_modified_sponsor_content(name_list, log_func)
         content_file = MODIFIED_CONTENT_FILE
@@ -1888,6 +1987,7 @@ def _start_mitm_override(name, log_func=None, profile=OVERRIDE_PROFILE_SLASHCO):
 
     # 6. 设置全局代理
     if not _set_global_proxy(selected_port, log_func):
+        _restore_proxy(log_func)
         _stop_mitmdump(log_func)
         _active_proxy_port = None
         return False, "设置系统代理失败"
@@ -1900,6 +2000,8 @@ def _start_mitm_override(name, log_func=None, profile=OVERRIDE_PROFILE_SLASHCO):
     _log("步骤 5/5: 验证拦截链路...", log_func)
     if profile == OVERRIDE_PROFILE_DEMO_LOBBY:
         self_test_ok = _self_test_demo_lobby_override(selected_port, display_name, log_func)
+    elif profile == OVERRIDE_PROFILE_SE:
+        self_test_ok = _self_test_se_override(selected_port, log_func)
     else:
         self_test_ok = _self_test_override(selected_port, name_list, log_func)
     if not self_test_ok:

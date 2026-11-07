@@ -16,6 +16,9 @@ import slashco  # noqa: E402
 import sponsor_mitm  # noqa: E402
 
 
+SE_SAMPLE = '{"data":{"ExampleMega":2,"ExampleSupport":1,"ExampleFree":0},"signature":2521623851}'
+
+
 class RuntimePathTests(unittest.TestCase):
     def test_slashco_writable_paths_use_local_data_dir(self):
         self.assertEqual(os.path.basename(slashco.DATA_DIR), "SlashCoMonitor")
@@ -258,6 +261,49 @@ class RuntimePathTests(unittest.TestCase):
         finally:
             sponsor_mitm._running = old_running
             sponsor_mitm._active_profile = old_profile
+
+    def test_se_content_preserves_original_entries_and_signs_utf16(self):
+        content = sponsor_mitm.build_se_content(SE_SAMPLE, '  支持者🦉"  ')
+        self.assertEqual(
+            content,
+            '{"data":{"ExampleMega":2,"ExampleSupport":1,"ExampleFree":0,"支持者🦉\\\"":2},'
+            '"signature":3849184929}',
+        )
+
+    def test_se_content_updates_existing_name_and_rejects_invalid_signature(self):
+        content = sponsor_mitm.build_se_content(SE_SAMPLE, "ExampleSupport")
+        self.assertEqual(
+            content,
+            '{"data":{"ExampleMega":2,"ExampleSupport":2,"ExampleFree":0},"signature":417918092}',
+        )
+        with self.assertRaisesRegex(ValueError, "签名校验失败"):
+            sponsor_mitm.build_se_content(SE_SAMPLE.replace("2521623851", "2521623850"), "ExampleSupport")
+
+    def test_se_addon_only_replaces_target_gist(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            content_file = os.path.join(tmp_dir, "se.json")
+            addon_file = os.path.join(tmp_dir, "addon.py")
+            hit_log = os.path.join(tmp_dir, "hits.log")
+            content = sponsor_mitm.build_se_content(SE_SAMPLE, "ExampleNew")
+            with open(content_file, "w", encoding="utf-8") as f:
+                f.write(content)
+            with mock.patch.object(sponsor_mitm, "ADDON_SCRIPT_FILE", addon_file):
+                sponsor_mitm._generate_addon_script(content_file, hit_log, sponsor_mitm.OVERRIDE_PROFILE_SE)
+
+            spec = importlib.util.spec_from_file_location("se_test_addon", addon_file)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            flow = mock.Mock(response=None)
+            flow.request.host = "gist.githubusercontent.com"
+            flow.request.path = "/someone/another-gist/raw?w"
+            module.addons[0].request(flow)
+            self.assertIsNone(flow.response)
+
+            flow.request.path = "/DISTROYER190/8f78b0adc79793d4ae18bf1bda4663cb/raw?w"
+            module.addons[0].request(flow)
+            self.assertEqual(flow.response.status_code, 200)
+            self.assertEqual(flow.response.content, content.encode("utf-8"))
+            self.assertEqual(flow.response.headers["X-SlashCo-Override"], "se")
 
     def test_generate_caddyfile_uses_generated_cert_and_content_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
