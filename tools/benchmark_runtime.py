@@ -10,7 +10,6 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from slashco import EclipticaDesktopHud, SlashCoMonitorCN
 from ecliptica_log_parser import EclipticaState
-from backrooms_bridge import BackroomsState, BackroomsLogReader
 
 
 class Widget:
@@ -94,20 +93,9 @@ def run(log_path, repeats=3):
         return {"requests": 200, "insertions": monitor.ecliptica_settlement_tree.insertions,
                 "variable_writes": sum(var.writes for var in monitor.ecliptica_vars.values())}
 
-    def idle_log_poll():
-        reader = BackroomsLogReader(BackroomsState())
-        while True:
-            reader.poll(log_path)
-            if not reader.recovering:
-                break
-        started = time.perf_counter()
-        for _ in range(500):
-            reader.poll(log_path)
-        return {"polls": 500, "idle_ms": round((time.perf_counter() - started) * 1000, 3)}
-
     report = {}
     for name, scenario in (("log_filter", filtering), ("party_render", party_render),
-                           ("settlement_refresh", settlement_refresh), ("idle_log_poll", idle_log_poll)):
+                           ("settlement_refresh", settlement_refresh)):
         durations = []
         for _ in range(repeats):
             started = time.perf_counter()
