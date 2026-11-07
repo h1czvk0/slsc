@@ -5,11 +5,13 @@ import json
 import pathlib
 import statistics
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from slashco import EclipticaDesktopHud, SlashCoMonitorCN
 from ecliptica_log_parser import EclipticaState
+from vrchat_log_selector import VrchatLogSelector, VrchatProcess, log_boot_timestamp, match_processes_to_logs
 
 
 class Widget:
@@ -53,8 +55,39 @@ class Tree:
         self.insertions += 1
 
 
-def run(log_path, repeats=3):
-    lines = pathlib.Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
+def run(log_path=None, repeats=3):
+    if log_path:
+        lines = pathlib.Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    else:
+        lines = [
+            "User Authenticated: 测试玩家 (usr_benchmark)",
+            "[Behaviour] Entering Room: Ecliptica - Demo Playtest",
+            "ECLIPTICA saving SESSION ID 1234",
+        ] + [
+            "2026.11.07 12:00:00 Debug - Dealing 100 STRIKE damage"
+            if index % 10 == 0 else "2026.11.07 12:00:00 Debug - unrelated VRChat diagnostics"
+            for index in range(20000)
+        ]
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = pathlib.Path(directory) / "output_log_2026-11-07_12-00-00.txt"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return _measure(lines, path, repeats)
+
+
+def _measure(lines, log_path, repeats):
+    def selector_scan():
+        selector = VrchatLogSelector(str(log_path.parent))
+        candidate = selector._read_candidate(str(log_path))
+        return {"lines": len(lines), "bytes": candidate.size}
+
+    paths = [str(log_path.parent / f"output_log_2026-11-07_{hour:02d}-{minute:02d}-00.txt")
+             for hour in range(24) for minute in range(60)]
+    process = VrchatProcess(1, log_boot_timestamp(paths[-1]))
+
+    def process_matching():
+        assignments = match_processes_to_logs(paths, [process])
+        return {"log_files": len(paths), "matched": len(assignments)}
 
     def filtering():
         monitor = SlashCoMonitorCN.__new__(SlashCoMonitorCN)
@@ -95,7 +128,9 @@ def run(log_path, repeats=3):
 
     report = {}
     for name, scenario in (("log_filter", filtering), ("party_render", party_render),
-                           ("settlement_refresh", settlement_refresh)):
+                           ("settlement_refresh", settlement_refresh),
+                           ("selector_initial_scan", selector_scan),
+                           ("process_log_matching", process_matching)):
         durations = []
         for _ in range(repeats):
             started = time.perf_counter()
@@ -107,7 +142,7 @@ def run(log_path, repeats=3):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--log", required=True)
+    parser.add_argument("--log", help="Optional real log; defaults to deterministic synthetic data")
     parser.add_argument("--output")
     arguments = parser.parse_args()
     result = run(arguments.log)

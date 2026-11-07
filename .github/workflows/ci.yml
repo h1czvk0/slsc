@@ -1,0 +1,39 @@
+name: 项目检查
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: 创建环境并安装运行依赖
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python.exe -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .venv\Scripts\python.exe -m pip check
+      - name: 校验仓库、资源和版本
+        run: .venv\Scripts\python.exe tools/check_repository.py
+      - name: 运行测试
+        run: .venv\Scripts\python.exe -m unittest discover -s tests -v

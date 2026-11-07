@@ -1,0 +1,13 @@
+* text=auto
+*.py text=auto eol=lf
+*.spec text eol=lf
+*.md text=auto eol=lf
+*.yml text=auto eol=lf
+*.json text=auto eol=lf
+*.ps1 text=auto eol=crlf
+*.bat text=auto eol=crlf
+*.exe binary
+*.dll binary
+*.png binary
+*.webp binary
+*.ico binary

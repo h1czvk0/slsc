@@ -2,6 +2,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -201,6 +202,80 @@ class VrchatLogSelectorTests(unittest.TestCase):
                 log_file.write("[Behaviour] Entering Room: VRChat Home\n")
 
             self.assertFalse(selector.select(str(path)).in_ecliptica)
+
+    def test_initial_partial_identity_and_utf8_append_are_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "output_log_2026-08-29_04-13-56.txt"
+            identity = "User Authenticated: 测试玩家 (usr_test)\n".encode("utf-8")
+            cut = identity.index("测".encode("utf-8")) + 1
+            path.write_bytes(identity[:cut])
+            selector = VrchatLogSelector(directory)
+            self.assertEqual(selector._read_candidate(str(path)).vrc_username, "")
+            with path.open("ab") as file:
+                file.write(identity[cut:cut + 1])
+            self.assertEqual(selector._read_candidate(str(path)).vrc_username, "")
+            with path.open("ab") as file:
+                file.write(identity[cut + 1:])
+            self.assertEqual(selector._read_candidate(str(path)).vrc_username, "测试玩家")
+
+    def test_identity_straddling_initial_tail_boundary_is_not_lost(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "output_log_2026-08-29_04-13-56.txt"
+            write_log(path, "测试玩家", "usr_test", "Ecliptica")
+            selector = VrchatLogSelector(directory)
+            with patch("vrchat_log_selector.INITIAL_TAIL_SCAN_BYTES", path.stat().st_size - 10):
+                candidate = selector._read_candidate(str(path))
+            self.assertEqual(candidate.vrc_username, "测试玩家")
+            self.assertTrue(candidate.in_ecliptica)
+
+    def test_large_append_is_read_in_order_without_skipping_room_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "output_log_2026-08-29_04-13-56.txt"
+            write_log(path, "One", "usr_one", "Ecliptica")
+            selector = VrchatLogSelector(directory)
+            self.assertTrue(selector._read_candidate(str(path)).in_ecliptica)
+            with path.open("ab") as file:
+                file.write(b"[Behaviour] Entering Room: Home\n" + b"noise\n" * 100)
+            with patch("vrchat_log_selector.APPEND_SCAN_LIMIT_BYTES", 64):
+                candidate = selector._read_candidate(str(path))
+                self.assertFalse(candidate.in_ecliptica)
+                self.assertLess(candidate.size, path.stat().st_size)
+                while candidate.size < path.stat().st_size:
+                    candidate = selector._read_candidate(str(path))
+            self.assertEqual(candidate.room_name, "Home")
+
+    def test_leaving_room_clears_stale_world_and_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "output_log_2026-08-29_04-13-56.txt"
+            write_log(path, "One", "usr_one", "Ecliptica", "ECLIPTICA saving SESSION ID 12\n")
+            selector = VrchatLogSelector(directory)
+            candidate = selector._read_candidate(str(path))
+            self.assertTrue(candidate.in_ecliptica)
+            with path.open("ab") as file:
+                file.write(b"[Behaviour] OnLeftRoom\n")
+            candidate = selector._read_candidate(str(path))
+            self.assertFalse(candidate.in_ecliptica)
+            self.assertEqual(candidate.session_id, "")
+
+    def test_unreadable_log_does_not_block_another_instance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = pathlib.Path(directory) / "output_log_2026-08-29_04-13-56.txt"
+            second = pathlib.Path(directory) / "output_log_2026-08-29_04-15-10.txt"
+            for path in (first, second):
+                write_log(path, "One", "usr_one", "Ecliptica")
+            selector = VrchatLogSelector(
+                directory, process_provider=lambda: [self.make_process(first, 1), self.make_process(second, 2)],
+                foreground_pid_provider=lambda: 2,
+            )
+            read_candidate = selector._read_candidate
+
+            def read(path):
+                if path == str(first):
+                    raise PermissionError(path)
+                return read_candidate(path)
+
+            with patch.object(selector, "_read_candidate", side_effect=read):
+                self.assertEqual(selector.select().path, str(second))
 
 
 if __name__ == "__main__":

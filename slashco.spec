@@ -1,7 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-block_cipher = None
-
 a = Analysis(
     ['slashco.py'],
     pathex=[],
@@ -19,43 +17,22 @@ a = Analysis(
     ],
     hiddenimports=[
         'cryptography',
-        'PIL',
-        'Pillow',
         'PIL.ImageTk',
-        'PIL.Image',
-        'numpy',
-        'tkinter',
-        'http.server',
-        'ssl',
-        'json',
-        'threading',
         'websocket',
-        'concurrent.futures',
-        'mitmproxy',
-        'mitmproxy.tools.dump',
-        'mitmproxy.tools.main',
-        'brotli',
-        'zstandard',
-        'kaitaistruct',
-        'msgpack',
-        'pyserial',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
+    # mitmdump is a self-contained subprocess; do not package its Python stack twice.
+    excludes=['mitmproxy', 'numpy'],
     noarchive=False,
 )
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
-    a.zipfiles,
     a.datas,
     [],
     name='SlashCoSense',

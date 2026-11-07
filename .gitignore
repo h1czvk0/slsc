@@ -1,18 +1,38 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 .venv/
 venv/
 
 build/
 dist/
+*.egg-info/
 
 *.log
 admin_helper_debug.log
 
 sponsors.dat
 sponsors_original.txt
+sponsor_config.json
+ecliptica_config.json
+untranslated_locations.txt
+release-notes.md
+.env
+.env.*
+!.env.example
+*.pem
+*.key
 tools/mitm_addon.py
+tools/mitm_addon_gen.py
+tools/mitm_sponsors.txt
+tools/proxy.pac
+tools/.mitm_ca_trusted
+tools/mitmproxy.exe
+tools/mitmweb.exe
 tools/sponsor_override_hits.log
 
 tools/caddy/*.pid
@@ -20,3 +40,9 @@ tools/caddy/*.log
 tools/caddy/_dns_stop
 tools/caddy/_dns_original.json
 tools/caddy/real_ip.txt
+tools/caddy/.ca_trusted
+tools/caddy/Caddyfile
+tools/caddy/sponsors_modified.txt
+
+# Local benchmark reports
+benchmark-results*.json

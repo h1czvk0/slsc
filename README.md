@@ -39,27 +39,35 @@
 Windows PowerShell：
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python slashco.py
-```
-
-也可以不激活虚拟环境，直接使用：
-
-```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe slashco.py
 ```
+
+使用 Python 3.12。已有 `.venv` 时可以跳过创建步骤。`requirements.txt` 只包含运行依赖；项目自带独立 `mitmdump.exe`，运行主程序无需再安装整套 mitmproxy Python 依赖。
 
 ## 测试
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests
+.\.venv\Scripts\python.exe tools\check_repository.py
+.\.venv\Scripts\python.exe -m pip check
+```
+
+普通推送和 Pull Request 会运行 `.github/workflows/ci.yml`，检查测试、源码语法、资源完整性、版本一致性和误提交的运行文件。
+
+可重复的本地性能基准（默认使用合成日志，不访问网络、不打开窗口）：
+
+```powershell
+.\.venv\Scripts\python.exe tools\benchmark_runtime.py
+# 也可传入自己的日志：--log C:\path\output_log.txt
 ```
 
 ## 打包
 
 ```powershell
-.\.venv\Scripts\pyinstaller.exe --clean --noconfirm slashco.spec
+.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+.\.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm slashco.spec
 ```
 
 打包完成后主程序位于：
@@ -67,6 +75,14 @@ python slashco.py
 ```text
 dist
 ```
+
+## 仓库布局与维护
+
+- 根目录保存主程序、独立功能模块、构建配置及资源索引。
+- `tests/` 保存回归测试；`tools/` 保存检查、基准、网络恢复工具，以及运行必需的 `mitmdump.exe` 和 `caddy/caddy.exe`。
+- `img_assets/` 的图片由 `images.json` 引用；检查脚本会验证缺失文件和无引用文件。
+- `docs/` 保存[维护说明](docs/maintenance.md)和[Stillwoods Execution 实施计划](docs/plans/stillwoods-execution.md)。
+- 用户配置和运行数据位于 `%LOCALAPPDATA%\SlashCoMonitor`；本机配置、导出结果、证书、日志、虚拟环境和构建产物不纳入 Git。
 
 ## GitHub Releases 发布
 

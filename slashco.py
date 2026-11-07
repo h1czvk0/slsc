@@ -4,9 +4,8 @@ import sys
 # Admin task handler removed - handled by external tool
 
 
-import os
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, SCRIPT_DIR) # 优先加载同目录模块（如 sounddevice.py）
+sys.path.insert(0, SCRIPT_DIR)
 import time
 import re
 import threading
@@ -67,6 +66,8 @@ from osc_output import (
     normalize_osc_prefix,
 )
 from auto_jump import AutoJumpService
+from atomic_file import atomic_open
+from log_stream import read_log_tail, split_complete_lines
 from vrchat_log_selector import VrchatLogSelector, foreground_process_id
 
 try:
@@ -1893,7 +1894,10 @@ SPONSOR_WORLD_PANELS = {
 }
 COMMON_ACCELERATOR_PORTS = (7890, 7891, 9090, 1080, 10808, 10080)
 LOG_TAIL_SCAN_BYTES = 20 * 1024 * 1024
-LOG_TAIL_READ_BLOCK_BYTES = 1024 * 1024
+LOG_LIVE_READ_BYTES = 1024 * 1024
+LOG_PENDING_HIGH_WATER = 2000
+UI_LOG_MAX_LINES = 2000
+UI_LOG_BATCH_SIZE = 200
 LOG_IDENTITY_SCAN_BYTES = 2 * 1024 * 1024
 LOG_PROCESS_BATCH_SIZE = 200
 UI_WORK_BUDGET_SECONDS = 0.008
@@ -2163,6 +2167,7 @@ class SlashCoMonitorCN:
         self._current_log_pid = 0
         self._ecliptica_log_choice_paths = {}
         self.is_monitoring = True
+        self._monitor_stop_event = threading.Event()
         self.current_click_col = None
 
         self.gens = {
@@ -2481,7 +2486,7 @@ class SlashCoMonitorCN:
                     if not os.path.exists(DATA_DIR):
                         os.makedirs(DATA_DIR, exist_ok=True)
 
-                    with open(LOCAL_JSON_FILENAME, 'w', encoding='utf-8') as f:
+                    with atomic_open(LOCAL_JSON_FILENAME) as f:
                         json.dump(online_data, f, ensure_ascii=False, indent=2)
 
                     self._ui_after(self.log, "翻译库已在线更新")
@@ -3546,7 +3551,7 @@ class SlashCoMonitorCN:
             if self.ecliptica_hud and not self.ecliptica_hud.editing:
                 self.ecliptica_hud_layout = self.ecliptica_hud.get_layout()
             os.makedirs(os.path.dirname(ECLIPTICA_CONFIG_FILENAME), exist_ok=True)
-            with open(ECLIPTICA_CONFIG_FILENAME, "w", encoding="utf-8") as config_file:
+            with atomic_open(ECLIPTICA_CONFIG_FILENAME) as config_file:
                 json.dump(
                     {
                         "hud_enabled": bool(self.ecliptica_hud_enabled.get()),
@@ -3781,7 +3786,7 @@ class SlashCoMonitorCN:
         def worker():
             succeeded = self.ecliptica_auto_jump.test_jump()
             try:
-                self.root.after(0, lambda: self._finish_ecliptica_auto_jump_test(succeeded))
+                self._ui_after(self._finish_ecliptica_auto_jump_test, succeeded)
             except Exception:
                 pass
 
@@ -4574,7 +4579,7 @@ class SlashCoMonitorCN:
             cfg[f"{prefix}enabled"] = enabled.get()
             cfg[f"{prefix}name"] = self.sponsor_name[profile].get().strip()
         try:
-            with open(config_path, 'w', encoding='utf-8') as f:
+            with atomic_open(config_path) as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
             mode_label = "hosts + Caddy" if cfg["mode"] == "caddy" else "mitmdump"
             self.log(f"赞助者设置已保存 (名称: {cfg['name'] or '未设置'}, 模式: {mode_label})")
@@ -4804,28 +4809,25 @@ class SlashCoMonitorCN:
             return
         ts = datetime.now().strftime("%H:%M:%S")
         formatted = f"[{ts}] {msg}\n"
-        if threading.current_thread() is threading.main_thread():
-            try:
-                self.txt_log.insert(END, formatted)
-                self.txt_log.see(END)
-            except Exception:
-                pass
-        else:
-            # 从非主线程: 放入队列，由主线程轮询处理
-            self._log_queue.put(formatted)
+        self._log_queue.put(formatted)
 
     def _process_log_queue(self):
         """主线程定时轮询日志队列"""
         if self._is_shutting_down:
             self._log_queue_after_id = None
             return
+        messages = []
         try:
-            while True:
-                msg = self._log_queue.get_nowait()
-                self.txt_log.insert(END, msg)
-                self.txt_log.see(END)
+            for _ in range(UI_LOG_BATCH_SIZE):
+                messages.append(self._log_queue.get_nowait())
         except queue.Empty:
             pass
+        if messages:
+            self.txt_log.insert(END, "".join(messages))
+            line_count = int(self.txt_log.index("end-1c").split(".")[0]) - 1
+            if line_count > UI_LOG_MAX_LINES:
+                self.txt_log.delete("1.0", f"{line_count - UI_LOG_MAX_LINES + 1}.0")
+            self.txt_log.see(END)
         if self._is_shutting_down:
             self._log_queue_after_id = None
             return
@@ -5473,35 +5475,14 @@ class SlashCoMonitorCN:
 
     def _read_log_tail_text(self, path: str):
         try:
-            file_size = os.path.getsize(path)
-            if file_size <= 0:
-                return "", 0, file_size
-
-            read_size = min(file_size, LOG_TAIL_SCAN_BYTES)
-            start_offset = file_size - read_size
-            chunks = []
-            remaining = read_size
-            with open(path, "rb") as bf:
-                bf.seek(start_offset)
-                while remaining > 0:
-                    chunk = bf.read(min(LOG_TAIL_READ_BLOCK_BYTES, remaining))
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    remaining -= len(chunk)
-
-            data = b"".join(chunks)
-            if start_offset > 0:
-                first_newline = data.find(b"\n")
-                if first_newline >= 0:
-                    data = data[first_newline + 1:]
-            return data.decode("utf-8", errors="ignore"), start_offset, file_size
+            return read_log_tail(path, LOG_TAIL_SCAN_BYTES)
         except Exception as e:
             self.log(f"读取日志尾部失败: {e}")
             return "", 0, 0
 
     def _get_active_round_recovery_lines(self, path: str):
         text, start_offset, file_size = self._read_log_tail_text(path)
+        self._log_recovery_offset = file_size
         if not text:
             return []
 
@@ -5577,8 +5558,9 @@ class SlashCoMonitorCN:
             self.log(f"已从日志尾部定位当前回合，恢复 {len(lines)} 行")
         return lines
 
-    def _enqueue_log_lines(self, lines):
-        if self._is_shutting_down or not lines:
+    def _enqueue_log_lines(self, lines, generation=None):
+        if (self._is_shutting_down or not lines
+                or (generation is not None and generation != getattr(self, "_log_generation", 0))):
             return
         if not self._recovering_log_state:
             self._begin_log_recovery()
@@ -5587,8 +5569,9 @@ class SlashCoMonitorCN:
         if self._log_lines_after_id is None:
             self._log_lines_after_id = self._ui_after(self._process_pending_log_lines)
 
-    def _process_live_log_lines(self, lines):
-        if self._is_shutting_down:
+    def _process_live_log_lines(self, lines, generation=None):
+        if (self._is_shutting_down
+                or (generation is not None and generation != getattr(self, "_log_generation", 0))):
             return
         for line in lines:
             self._pending_log_lines.put(line)
@@ -5598,9 +5581,10 @@ class SlashCoMonitorCN:
     def _enqueue_live_log_lines(self, lines):
         if self._is_shutting_down or not lines:
             return
-        self._ui_after(self._process_live_log_lines, list(lines))
+        self._ui_after(self._process_live_log_lines, list(lines), getattr(self, "_log_generation", 0))
 
     def _clear_pending_log_lines(self):
+        self._log_generation = getattr(self, "_log_generation", 0) + 1
         try:
             while True:
                 self._pending_log_lines.get_nowait()
@@ -5659,7 +5643,7 @@ class SlashCoMonitorCN:
     def monitor_loop(self):
         current_file_path = None
         current_offset = 0
-        partial_line = ""
+        partial_line = b""
         last_file_check_time = 0.0
         self.log("正在扫描 VRChat 日志文件...")
         while self.is_monitoring:
@@ -5667,7 +5651,7 @@ class SlashCoMonitorCN:
                 latest = None
                 selected = None
                 selection_checked = False
-                now = time.time()
+                now = time.monotonic()
                 if current_file_path is None or now - last_file_check_time >= LOG_FILE_CHECK_INTERVAL_SECONDS:
                     selection_checked = True
                     selected = self.vrchat_log_selector.select(current_file_path)
@@ -5685,7 +5669,7 @@ class SlashCoMonitorCN:
                     previous_name = os.path.basename(current_file_path)
                     current_file_path = None
                     current_offset = 0
-                    partial_line = ""
+                    partial_line = b""
                     self._clear_pending_log_lines()
                     self._ui_after(self._reset_for_new_log)
                     self._ui_after(self._finish_log_recovery)
@@ -5694,7 +5678,7 @@ class SlashCoMonitorCN:
                     if os.path.exists(latest) and os.path.getsize(latest) > 0:
                         current_file_path = latest
                         current_offset = 0
-                        partial_line = ""
+                        partial_line = b""
                         self.log(f"锁定日志: {os.path.basename(current_file_path)}")
                         try:
                             self._begin_log_recovery()
@@ -5714,17 +5698,19 @@ class SlashCoMonitorCN:
                                         and event.kind == "authenticated"
                                     )
                                 ]
-                            current_offset = os.path.getsize(current_file_path)
+                            current_offset = self._log_recovery_offset
                             if recovery_lines:
-                                self._enqueue_log_lines(recovery_lines)
+                                self._ui_after(
+                                    self._enqueue_log_lines, recovery_lines, self._log_generation,
+                                )
                             else:
                                 self._ui_after(self._finish_log_recovery)
                         except Exception:
                             self._finish_log_recovery()
                             current_file_path = None
                             current_offset = 0
-                            partial_line = ""
-                            time.sleep(1)
+                            partial_line = b""
+                            self._monitor_stop_event.wait(1)
                             continue
                 if current_file_path:
                     if not os.path.exists(current_file_path):
@@ -5732,32 +5718,34 @@ class SlashCoMonitorCN:
                         self._current_log_pid = 0
                         current_file_path = None
                         current_offset = 0
-                        partial_line = ""
+                        partial_line = b""
                         self._clear_pending_log_lines()
                         self._ui_after(self._reset_for_new_log)
                         self._ui_after(self._finish_log_recovery)
-                        time.sleep(1)
+                        self._monitor_stop_event.wait(1)
                         continue
 
                     file_size = os.path.getsize(current_file_path)
                     if file_size < current_offset:
-                        current_offset = file_size
-                        partial_line = ""
+                        current_offset = 0
+                        partial_line = b""
+                        self._clear_pending_log_lines()
+                        self._ui_after(self._reset_for_new_log)
+
+                    # Let Tk catch up before reading more; unread events stay on disk.
+                    if (self._pending_log_lines.qsize() >= LOG_PENDING_HIGH_WATER
+                            or self._ui_callback_queue.qsize() >= 20):
+                        self._monitor_stop_event.wait(0.1)
+                        continue
 
                     pending_lines = []
                     complete_lines = []
                     if file_size > current_offset:
                         with open(current_file_path, "rb") as bf:
                             bf.seek(current_offset)
-                            data = bf.read(file_size - current_offset)
-                        current_offset = file_size
-                        text = partial_line + data.decode("utf-8", errors="ignore")
-                        raw_lines = text.splitlines(True)
-                        if raw_lines and not raw_lines[-1].endswith(("\n", "\r")):
-                            partial_line = raw_lines.pop()
-                        else:
-                            partial_line = ""
-                        complete_lines = raw_lines
+                            data = bf.read(min(LOG_LIVE_READ_BYTES, file_size - current_offset))
+                        current_offset += len(data)
+                        complete_lines, partial_line = split_complete_lines(data, partial_line)
 
                     for line in complete_lines:
                         line = line.rstrip("\r\n")
@@ -5767,12 +5755,12 @@ class SlashCoMonitorCN:
                                 self._enqueue_live_log_lines(pending_lines)
                                 pending_lines = []
                     self._enqueue_live_log_lines(pending_lines)
-                    time.sleep(0.1)
+                    self._monitor_stop_event.wait(0.1)
                 else:
-                    time.sleep(1)
+                    self._monitor_stop_event.wait(1)
             except Exception as e:
                 self.log(f"监控异常: {e}")
-                time.sleep(2)
+                self._monitor_stop_event.wait(2)
 
 
     # === 图片系统实现 ===
@@ -5844,7 +5832,7 @@ class SlashCoMonitorCN:
             self.img_mappings.update(remote_mappings)
             if isinstance(remote_notes, dict):
                 self.img_notes.update(remote_notes)
-            with open(self.img_json_path, 'w', encoding='utf-8') as f:
+            with atomic_open(self.img_json_path) as f:
                 json.dump({"mappings": self.img_mappings, "notes": self.img_notes}, f, ensure_ascii=False, indent=4)
             
             # 3. 计算差异 (支持 list 类型的值)
@@ -5900,7 +5888,7 @@ class SlashCoMonitorCN:
         try:
             content, _ = self._download_file_with_proxy(f"{IMG_DIR}/{fname}", best_proxy)
             if content:
-                with open(local_path, 'wb') as f:
+                with atomic_open(local_path, 'wb') as f:
                     f.write(content)
         except:
             pass
@@ -6150,6 +6138,7 @@ class SlashCoMonitorCN:
 
         # 停止监控循环
         self.is_monitoring = False
+        self._monitor_stop_event.set()
 
         try:
             if getattr(self, "ecliptica_auto_jump", None):

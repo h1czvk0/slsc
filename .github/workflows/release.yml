@@ -24,8 +24,10 @@ jobs:
     steps:
       - name: 验证人工发布确认
         shell: pwsh
+        env:
+          RELEASE_CONFIRM: ${{ inputs.confirm }}
         run: |
-          if ("${{ inputs.confirm }}" -cne "RELEASE") {
+          if ($env:RELEASE_CONFIRM -cne "RELEASE") {
             throw "必须输入 RELEASE 才能执行发布。"
           }
 
@@ -37,7 +39,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
 
       - name: 读取并校验版本信息
         id: version
@@ -79,13 +83,15 @@ jobs:
         run: |
           python -m venv .venv
           .venv\Scripts\python.exe -m pip install --upgrade pip
-          .venv\Scripts\python.exe -m pip install -r requirements.txt
+          .venv\Scripts\python.exe -m pip install -r requirements-build.txt
 
       - name: 运行完整测试和依赖检查
         shell: pwsh
         run: |
           .venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
-          .venv\Scripts\python.exe -m py_compile slashco.py sponsor_mitm.py auto_jump.py vrchat_log_selector.py ecliptica_sync.py ecliptica_log_parser.py slashco_updater.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .venv\Scripts\python.exe tools/check_repository.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .venv\Scripts\python.exe -m pip check
 
       - name: 使用 PyInstaller 构建 EXE

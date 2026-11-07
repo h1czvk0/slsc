@@ -6,8 +6,10 @@ import threading
 from ctypes import wintypes
 from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import lru_cache
 
 from ecliptica_log_parser import is_ecliptica_room, parse_ecliptica_line
+from log_stream import read_log_tail, split_complete_lines
 
 
 LOG_FILENAME_PATTERN = re.compile(
@@ -52,13 +54,21 @@ class VrchatLogCandidate:
         return f"{username}｜{room}｜PID {pid}"
 
 
-def log_boot_timestamp(path: str) -> float:
-    match = LOG_FILENAME_PATTERN.match(os.path.basename(str(path or "")))
+@lru_cache(maxsize=4096)
+def _filename_boot_timestamp(filename: str):
+    match = LOG_FILENAME_PATTERN.match(filename)
     if match:
         try:
             return datetime.strptime(match.group(1), "%Y-%m-%d_%H-%M-%S").timestamp()
         except ValueError:
             pass
+    return None
+
+
+def log_boot_timestamp(path: str) -> float:
+    timestamp = _filename_boot_timestamp(os.path.basename(str(path or "")))
+    if timestamp is not None:
+        return timestamp
     try:
         return os.path.getctime(path)
     except OSError:
@@ -199,7 +209,7 @@ class VrchatLogSelector:
         self.process_provider = process_provider
         self.foreground_pid_provider = foreground_pid_provider
         self._cache: dict[str, VrchatLogCandidate] = {}
-        self._partials: dict[str, str] = {}
+        self._partials: dict[str, bytes] = {}
         self._manual_path = ""
         self._candidates: tuple[VrchatLogCandidate, ...] = ()
         self._ambiguous = False
@@ -283,14 +293,16 @@ class VrchatLogSelector:
                 active_paths.add(self._manual_path)
         candidates = []
         for path in active_paths:
-            if not os.path.exists(path):
+            try:
+                candidate = self._read_candidate(path)
+            except OSError:
+                # One rotated or temporarily inaccessible log must not hide others.
                 continue
-            candidate = self._read_candidate(path)
             candidates.append(replace(candidate, pid=assignments.get(path)))
         candidates.sort(key=lambda item: item.booted_at, reverse=True)
         with self._lock:
             self._candidates = tuple(candidates)
-            stale_paths = set(self._cache) - set(paths)
+            stale_paths = set(self._cache) - active_paths
             for path in stale_paths:
                 self._cache.pop(path, None)
                 self._partials.pop(path, None)
@@ -299,7 +311,8 @@ class VrchatLogSelector:
     def _read_candidate(self, path: str):
         stat = os.stat(path)
         cached = self._cache.get(path)
-        if cached is None or stat.st_size < cached.size:
+        if (cached is None or stat.st_size < cached.size
+                or (stat.st_size == cached.size and stat.st_mtime != cached.modified_at)):
             candidate = self._initial_candidate(path, stat)
         elif stat.st_size > cached.size:
             candidate = self._append_candidate(path, stat, cached)
@@ -315,48 +328,39 @@ class VrchatLogSelector:
             modified_at=stat.st_mtime,
             size=stat.st_size,
         )
-        try:
+        tail, tail_start, end = read_log_tail(path, INITIAL_TAIL_SCAN_BYTES)
+        if tail_start:
             with open(path, "rb") as log_file:
+                # Head and tail may overlap; keep the whole identity scan so an
+                # authentication line straddling tail_start is not lost.
                 head = log_file.read(IDENTITY_SCAN_BYTES)
-                tail_start = max(0, stat.st_size - INITIAL_TAIL_SCAN_BYTES)
-                log_file.seek(tail_start)
-                tail = log_file.read()
-        except OSError:
-            return candidate
-        candidate = self._apply_text(candidate, head.decode("utf-8", errors="ignore"))
-        candidate = self._apply_text(candidate, tail.decode("utf-8", errors="ignore"))
-        self._partials[path] = ""
-        return replace(candidate, size=stat.st_size, modified_at=stat.st_mtime)
+            head_lines, _ = split_complete_lines(head)
+            candidate = self._apply_text(candidate, "\n".join(head_lines))
+        candidate = self._apply_text(candidate, tail)
+        self._partials[path] = b""
+        return replace(candidate, size=end, modified_at=stat.st_mtime)
 
     def _append_candidate(self, path, stat, cached):
         read_start = cached.size
-        if stat.st_size - read_start > APPEND_SCAN_LIMIT_BYTES:
-            read_start = stat.st_size - APPEND_SCAN_LIMIT_BYTES
-            partial = ""
-        else:
-            partial = self._partials.get(path, "")
-        try:
-            with open(path, "rb") as log_file:
-                log_file.seek(read_start)
-                data = log_file.read(stat.st_size - read_start)
-        except OSError:
-            return cached
-        text = partial + data.decode("utf-8", errors="ignore")
-        lines = text.splitlines(True)
-        if lines and not lines[-1].endswith(("\n", "\r")):
-            self._partials[path] = lines.pop()
-        else:
-            self._partials[path] = ""
-        candidate = self._apply_text(cached, "".join(lines))
-        return replace(candidate, size=stat.st_size, modified_at=stat.st_mtime)
+        with open(path, "rb") as log_file:
+            log_file.seek(read_start)
+            data = log_file.read(min(APPEND_SCAN_LIMIT_BYTES, stat.st_size - read_start))
+        lines, self._partials[path] = split_complete_lines(data, self._partials.get(path, b""))
+        candidate = self._apply_text(cached, "\n".join(lines))
+        return replace(candidate, size=read_start + len(data), modified_at=stat.st_mtime)
 
     @staticmethod
     def _apply_text(candidate, text):
         updated = candidate
         for line in str(text or "").splitlines():
-            if ("[Behaviour] Entering Room:" in line or "[Behaviour] OnLeftRoom" in line
-                    or "[Behaviour] OnDisconnected:" in line):
-                updated = replace(updated, ecliptica_activity=False)
+            lowered = line.lower()
+            if "[behaviour] onleftroom" in lowered or "[behaviour] ondisconnected:" in lowered:
+                updated = replace(updated, room_name="", session_id="", ecliptica_activity=False)
+                continue
+            if not any(marker in lowered for marker in (
+                "ecliptica", "entering room:", "user authenticated:", "post login checks for",
+            )):
+                continue
             event = parse_ecliptica_line(line)
             if event is None:
                 continue
@@ -370,6 +374,7 @@ class VrchatLogSelector:
                 updated = replace(
                     updated,
                     room_name=event.groups[0].strip(),
+                    session_id="",
                     ecliptica_activity=is_ecliptica_room(event.groups[0]),
                 )
             elif event.kind in ("session", "session_blank"):
