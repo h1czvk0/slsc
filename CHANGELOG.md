@@ -1,5 +1,10 @@
 # 更新日志
 
+## 3.9.34
+
+- 新增 Stillwoods Execution 的 `S E` 赞助者名单覆盖，保留原名单，将指定 VRChat 显示名加入 `Mega Supporters` 并重新计算签名。
+- `S E`、`JZU` 和 SlashCo 覆盖共用代理，同一时间只启用其中一项。
+
 ## 3.9.33
 
 - 兼容 VRChat 新版 `[Authentication] ... post login checks for` 身份日志，修复实例显示“未识别用户”和同局伤害同步无法获取用户名、用户 ID 的问题；保留旧版认证日志支持。
