@@ -2,7 +2,7 @@
 
 这是一个本地日志辅助工具。它通过读取本机日志，显示本局物品、位置、进度、房间统计，并提供中文翻译、图片参考和名单覆盖等功能。
 
-当前版本：`3.9.35`
+当前版本：`3.9.36`
 
 ## 主要功能
 
@@ -81,9 +81,14 @@ dist
 
 ## 仓库布局与维护
 
-- 根目录保存主程序、独立功能模块、构建配置及资源索引。
+- 根目录保存主程序、独立功能模块、构建配置及资源索引：
+  - `slashco.py`：主窗口、SlashCo 对局面板、日志监听与界面调度。
+  - `ecliptica_hud.py`：Ecliptica 桌面悬浮 HUD 的布局归一化、渲染和窗口管理。
+  - `slashco_log_parser.py`、`ecliptica_log_parser.py`、`log_stream.py`、`vrchat_log_selector.py`：日志解析、增量读取与 VRChat 实例选择。
+  - `ecliptica_sync.py`、`ecliptica_history.py`、`osc_output.py`、`auto_jump.py`：同局同步、历史对局、Chatbox OSC 与自动连跳。
+  - `sponsor_mitm.py`、`admin_helper.py`：名单覆盖及其提权辅助脚本；`slashco_updater.py`、`atomic_file.py`：自动更新与原子写入。
 - `tests/` 保存回归测试；`tools/` 保存检查、基准、网络恢复工具，以及运行必需的 `mitmdump.exe` 和 `caddy/caddy.exe`。
-- `img_assets/` 的图片由 `images.json` 引用；检查脚本会验证缺失文件和无引用文件。
+- `img_assets/` 的图片由 `images.json` 引用；检查脚本会验证缺失文件和无引用文件。新增位置图片使用独立的图片管理工具，它位于与本项目同级的 `slashco-image-tool` 目录，不随本仓库发布。
 - `docs/` 保存[维护说明](docs/maintenance.md)和[Stillwoods Execution 实施计划](docs/plans/stillwoods-execution.md)。
 - 用户配置和运行数据位于 `%LOCALAPPDATA%\SlashCoMonitor`；本机配置、导出结果、证书、日志、虚拟环境和构建产物不纳入 Git。
 

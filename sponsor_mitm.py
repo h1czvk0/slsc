@@ -42,13 +42,6 @@ def _get_resource_dir():
         return sys._MEIPASS
     return os.path.dirname(os.path.abspath(__file__))
 
-def _get_work_dir():
-    """获取工作目录 (Exe 所在目录 / 开发环境当前目录)"""
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
 def _get_default_data_dir():
     """获取默认数据目录，避免向单 exe 所在目录写入运行文件"""
     if os.name == "nt":
@@ -257,74 +250,6 @@ def _parse_port_from_endpoint(endpoint):
     if ":" not in text:
         return None
     return _parse_proxy_port(text.rsplit(":", 1)[1])
-
-
-def _extract_proxy_server_endpoints(proxy_server):
-    text = str(proxy_server or "").strip()
-    if not text:
-        return []
-
-    if "=" not in text:
-        return [text]
-
-    endpoints = []
-    for part in text.split(";"):
-        if "=" not in part:
-            continue
-        _, value = part.split("=", 1)
-        value = value.strip()
-        if value:
-            endpoints.append(value)
-    return endpoints
-
-
-def _is_local_proxy_endpoint(endpoint):
-    text = str(endpoint or "").strip()
-    if not text:
-        return False
-    if "://" in text:
-        text = text.split("://", 1)[1]
-    if "@" in text:
-        text = text.rsplit("@", 1)[-1]
-    if "/" in text:
-        text = text.split("/", 1)[0]
-    if text.startswith("[") and "]" in text:
-        return text[1:text.index("]")].lower() in ("::1", "0:0:0:0:0:0:0:1")
-    host = text.rsplit(":", 1)[0].strip().lower() if ":" in text else text.lower()
-    return host in ("127.0.0.1", "localhost", "::1")
-
-
-def _is_local_port_listening(port):
-    parsed = _parse_proxy_port(port)
-    if not parsed:
-        return False
-    try:
-        with socket.create_connection(("127.0.0.1", parsed), timeout=0.25):
-            return True
-    except OSError:
-        return False
-
-
-def _looks_like_stale_local_proxy(settings):
-    if not settings or settings.get("ProxyEnable") != 1:
-        return False
-
-    endpoints = _extract_proxy_server_endpoints(settings.get("ProxyServer"))
-    if not endpoints:
-        return False
-
-    ports = []
-    for endpoint in endpoints:
-        if not _is_local_proxy_endpoint(endpoint):
-            return False
-        port = _parse_port_from_endpoint(endpoint)
-        if not port:
-            return False
-        if port in COMMON_ACCELERATOR_PORTS:
-            return False
-        ports.append(port)
-
-    return bool(ports) and all(not _is_local_port_listening(port) for port in ports)
 
 
 def _normalize_upstream_proxy(endpoint):
@@ -2181,8 +2106,3 @@ def force_cleanup(log_func=None):
 def is_running():
     """检查是否正在运行"""
     return _running
-
-
-def get_active_profile():
-    """返回当前运行的覆盖配置。"""
-    return _active_profile if _running else None

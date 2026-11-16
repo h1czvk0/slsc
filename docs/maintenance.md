@@ -10,6 +10,14 @@
 
 `atomic_file.py` 为配置和下载资源提供同目录临时写入与原子替换。写入或替换失败时原文件保留，临时文件清理。
 
+## 代码结构
+
+`slashco.py` 只保留主窗口、SlashCo 面板和日志调度；悬浮 HUD（常量、布局归一化、逐像素 Alpha 渲染、`EclipticaDesktopHud`）位于 `ecliptica_hud.py`，测试和基准直接从该模块导入。主程序使用显式的 tkinter 导入，新增控件时需同步补充导入列表。
+
+物品位置更新按清洗后的位置名缓存翻译结果，翻译表更新时由 `compile_wildcard_patterns` 清空缓存；表格行以物品 ID 作为行 ID，位置变化直接更新对应单元格，不再遍历整棵树。
+
+`sponsor_mitm.py` 自行选择代理端口（跳过常见加速器端口和上游代理端口），界面层不再预选端口。`admin_helper.py` 只保留 `mitm_ca_trust`、`sponsor_hosts_add`、`sponsor_hosts_remove` 三种提权模式。
+
 ## 依赖与构建
 
 - Python 3.12；所有 Python 命令使用项目 `.venv`。
@@ -22,6 +30,10 @@
 ## 仓库清理原则
 
 2026-11-07 清理了未调用、未打包的 `mitmproxy.exe`、`mitmweb.exe` 和旧 `_sounddevice_data`，以及硬编码旧路径的生成 addon、Caddyfile、PAC、临时名单和信任标记。
+
+2026-11-16 移除了无调用的代码：旧画廊窗口、电池“安装中”状态机、界面层重复的代理端口预选、`admin_helper.py` 的 DNS 与旧 hosts 模式，以及主 EXE 中未被调用的 `tools/reset_network.py` 打包项（脚本本身保留，供 `tools/fix_network.bat` 手动恢复网络使用）。源码、文档和 JSON 的行尾统一为 LF。
+
+同日将两个独立程序移出本仓库：`sponsor_standalone.py`（独立版名单覆盖，已有单独的 `slashco-sponsor` 项目）直接删除；`ImageTool.py`（位置图片与翻译管理工具）迁到同级目录 `slashco-image-tool`，默认读写本项目的 `img_assets/`、`images.json` 和 `locations.json`，也可用命令行参数或环境变量 `SLASHCO_PROJECT_DIR` 指定项目目录。
 
 `sponsor_config.json`、`untranslated_locations.txt` 从 Git 跟踪中移除，本地副本保留。522 张图片全部被映射引用，完整保留。实施计划移入 `docs/plans/`。
 

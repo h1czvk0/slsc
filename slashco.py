@@ -1,40 +1,52 @@
-import os
-import sys
-
-# Admin task handler removed - handled by external tool
-
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, SCRIPT_DIR)
-import time
-import re
-import threading
+import concurrent.futures
 import ctypes
-from ctypes import wintypes
 import json
 import logging
-import concurrent.futures
-import subprocess
+import os
 import queue
-import random
-import socket
+import re
+import subprocess
+import sys
+import threading
+import time
 from datetime import datetime
-from tkinter import *
-from tkinter import ttk, scrolledtext, Menu, messagebox, colorchooser
+from tkinter import (
+    BOTH, BOTTOM, CENTER, E, END, GROOVE, HORIZONTAL, LEFT, NW, RAISED, RIGHT, SOLID, TOP,
+    VERTICAL, W, X, Y,
+    BooleanVar, Button, Canvas, DoubleVar, Frame, Label, Listbox, Menu, PanedWindow,
+    PhotoImage, StringVar, Tk, Toplevel,
+    colorchooser, messagebox, scrolledtext, ttk,
+)
 from tkinter import font as tkfont
 
+import requests
+from PIL import Image, ImageTk
 
-
-from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageTk
-HAS_PIL = True
-
-from slashco_log_parser import (
-    is_round_end_line,
-    is_round_start_line,
-    item_numeric_id,
-    line_might_affect_state,
-    normalize_item_id,
-    parse_log_line,
+import sponsor_mitm
+from atomic_file import atomic_open
+from auto_jump import AutoJumpService, is_vrchat_foreground
+from ecliptica_history import EclipticaHistoryClient, EclipticaHistoryDialog
+from ecliptica_hud import (
+    HUD_DAMAGE_FIELD_KEYS,
+    HUD_DAMAGE_FIELD_LABELS,
+    HUD_DAMAGE_FIELDS,
+    HUD_DEFAULT_PRESET_FIELDS,
+    HUD_DEFAULT_PRESET_ORDER,
+    HUD_DEFAULT_PRESET_TRANSPARENCY,
+    HUD_DEFAULT_PRESET_VERSION,
+    HUD_DISPLAY_LABELS,
+    HUD_DISPLAY_PANEL_KEYS,
+    EclipticaDesktopHud,
+    format_ecliptica_duration,
+    format_ecliptica_number,
+    normalize_hud_color,
+    normalize_hud_damage_fields,
+    normalize_hud_display_panels,
+    normalize_hud_field_order,
+    normalize_hud_layout,
+    normalize_hud_opacity,
+    normalize_hud_transparency,
+    pending_hud_default_preset,
 )
 from ecliptica_log_parser import (
     EclipticaState,
@@ -42,11 +54,24 @@ from ecliptica_log_parser import (
     line_might_affect_ecliptica_state,
     parse_ecliptica_line,
 )
-from ecliptica_history import EclipticaHistoryClient, EclipticaHistoryDialog
-from ecliptica_sync import (
-    DEFAULT_SYNC_URL,
-    EclipticaSyncClient,
-    is_boss_battle_active,
+from ecliptica_sync import DEFAULT_SYNC_URL, EclipticaSyncClient
+from log_stream import read_log_tail, split_complete_lines
+from osc_output import (
+    BossLockOscOutput,
+    DEFAULT_OSC_HOST,
+    DEFAULT_OSC_PORT,
+    DEFAULT_OSC_PREFIX,
+    normalize_osc_host,
+    normalize_osc_port,
+    normalize_osc_prefix,
+)
+from slashco_log_parser import (
+    is_round_end_line,
+    is_round_start_line,
+    item_numeric_id,
+    line_might_affect_state,
+    normalize_item_id,
+    parse_log_line,
 )
 from slashco_updater import (
     APP_VERSION,
@@ -57,38 +82,10 @@ from slashco_updater import (
     launch_updater_and_exit,
     parse_update_info,
 )
-from osc_output import (
-    BossLockOscOutput,
-    DEFAULT_OSC_HOST,
-    DEFAULT_OSC_PORT,
-    DEFAULT_OSC_PREFIX,
-    normalize_osc_host,
-    normalize_osc_port,
-    normalize_osc_prefix,
-)
-from auto_jump import AutoJumpService
-from atomic_file import atomic_open
-from log_stream import read_log_tail, split_complete_lines
 from vrchat_log_selector import VrchatLogSelector, foreground_process_id
 
-try:
-    import requests
-    HAS_REQUESTS = True
-except ImportError:
-    HAS_REQUESTS = False
 
-
-
-
-# 赞助者名单覆盖 (mitmproxy 方案)
-try:
-    import sponsor_mitm as sponsor_caddy  # 保持变量名兼容
-    HAS_SPONSOR_PROXY = True
-except ImportError:
-    HAS_SPONSOR_PROXY = False
-
-
-
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def resource_path(relative_path):
@@ -97,158 +94,6 @@ def resource_path(relative_path):
     return os.path.join(SCRIPT_DIR, relative_path)
 
 
-# =====================
-# 画廊窗口 (多图显示)
-# =====================
-class GalleryWindow:
-    """显示多张图片的画廊窗口"""
-    
-    def __init__(self, parent, title, image_paths, cn_name=""):
-        self.top = Toplevel(parent)
-        self.top.title(f"图片预览 - {cn_name or title}")
-        self.top.transient(parent)
-        self.top.grab_set()
-        
-        # 计算窗口大小和布局
-        num_images = len(image_paths)
-        if num_images == 1:
-            cols = 1
-        elif num_images <= 4:
-            cols = 2
-        else:
-            cols = 3
-        rows = (num_images + cols - 1) // cols
-        
-        # 窗口尺寸
-        cell_size = 350 # 每个图片单元格大小
-        win_width = min(cols * cell_size + 40, 1200)
-        win_height = min(rows * cell_size + 80, 800)
-        
-        # 居中显示
-        screen_w = parent.winfo_screenwidth()
-        screen_h = parent.winfo_screenheight()
-        x = (screen_w - win_width) // 2
-        y = (screen_h - win_height) // 2
-        self.top.geometry(f"{win_width}x{win_height}+{x}+{y}")
-        
-        # 顶部信息栏
-        top_bar = Frame(self.top)
-        top_bar.pack(fill=X, padx=10, pady=10)
-        Label(top_bar, text=f"📍 {cn_name or title}", font=("微软雅黑", 12, "bold")).pack(side=LEFT)
-        ttk.Button(top_bar, text="✖ 关闭", command=self.top.destroy).pack(side=RIGHT)
-        
-        # 滚动画布
-        canvas_frame = Frame(self.top)
-        canvas_frame.pack(fill=BOTH, expand=True, padx=10, pady=(0, 10))
-        
-        canvas = Canvas(canvas_frame, bg="#f0f0f0")
-        scrollbar = ttk.Scrollbar(canvas_frame, orient=VERTICAL, command=canvas.yview)
-        scrollbar.pack(side=RIGHT, fill=Y)
-        canvas.pack(side=LEFT, fill=BOTH, expand=True)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # 内部Frame放置图片
-        inner_frame = Frame(canvas, bg="#f0f0f0")
-        canvas.create_window((0, 0), window=inner_frame, anchor=NW)
-        
-        # 保持图片引用防止GC
-        self.photo_refs = []
-        
-        # 加载并显示图片
-        for i, path in enumerate(image_paths):
-            row = i // cols
-            col = i % cols
-            
-            try:
-                img = Image.open(path)
-                # 按比例缩放适应单元格
-                max_size = cell_size - 20
-                img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(img)
-                self.photo_refs.append(photo)
-                
-                cell = Frame(inner_frame, bd=1, relief=SOLID, bg="white")
-                cell.grid(row=row, column=col, padx=5, pady=5)
-                
-                lbl = Label(cell, image=photo, bg="white")
-                lbl.pack(padx=5, pady=5)
-                
-                # 显示文件名
-                fname = os.path.basename(path)
-                Label(cell, text=fname[:20], font=("Consolas", 8), fg="#666", bg="white").pack()
-            except Exception:
-                pass
-        
-        # 更新滚动区域
-        inner_frame.update_idletasks()
-        canvas.config(scrollregion=canvas.bbox("all"))
-        
-        # 绑定鼠标滚轮
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-1*(e.delta//120), "units"))
-        
-        # ESC 关闭
-        self.top.bind("<Escape>", lambda e: self.top.destroy())
-
-
-HUD_MIN_SIZES = {
-    "damage": (300, 210),
-    "boss_lock": (320, 90),
-    "party_damage": (320, 180),
-}
-HUD_DISPLAY_LABELS = {
-    "damage": "伤害数据",
-    "boss_lock": "Boss 锁定",
-    "party_damage": "伤害统计",
-}
-HUD_DISPLAY_PANEL_KEYS = tuple(HUD_DISPLAY_LABELS)
-HUD_LEGACY_DISPLAY_PANELS = {
-    "both": HUD_DISPLAY_PANEL_KEYS,
-    "damage": ("damage",),
-    "boss_lock": ("boss_lock",),
-    "party_damage": ("party_damage",),
-}
-HUD_DAMAGE_FIELDS = (
-    ("class_name", "当前职业"),
-    ("stage", "当前阶段"),
-    ("current_boss", "当前 BOSS"),
-    ("current_boss_phase", "BOSS 阶段"),
-    ("current_phase_damage", "本局 BOSS 总伤害"),
-    ("current_phase_damage_taken", "本局 BOSS 总受伤"),
-    ("recent_5s_dps", "近 3 秒 DPS"),
-    ("current_boss_elapsed", "当前 BOSS 耗时"),
-    ("total_elapsed", "总耗时"),
-)
-HUD_DAMAGE_FIELD_KEYS = tuple(key for key, _label in HUD_DAMAGE_FIELDS)
-HUD_DAMAGE_FIELD_LABELS = dict(HUD_DAMAGE_FIELDS)
-HUD_DEFAULT_PRESET_VERSION = 2
-HUD_DEFAULT_PRESET_DISPLAY_PANELS = HUD_DISPLAY_PANEL_KEYS
-HUD_DEFAULT_PRESET_TRANSPARENCY = 100.0
-HUD_DEFAULT_PRESET_FIELDS = (
-    "total_elapsed",
-    "current_boss",
-    "current_boss_phase",
-    "current_phase_damage",
-    "current_phase_damage_taken",
-    "recent_5s_dps",
-    "current_boss_elapsed",
-)
-HUD_DEFAULT_PRESET_ORDER = (
-    "total_elapsed",
-    "stage",
-    "current_boss",
-    "current_boss_phase",
-    "class_name",
-    "current_phase_damage",
-    "current_phase_damage_taken",
-    "recent_5s_dps",
-    "current_boss_elapsed",
-)
-HUD_DEFAULT_REFERENCE_SIZE = (2560, 1440)
-HUD_DEFAULT_REFERENCE_LAYOUT = {
-    "damage": {"x": -4, "y": 602, "width": 496, "height": 350},
-    "boss_lock": {"x": 1050, "y": 1217, "width": 476, "height": 141},
-    "party_damage": {"x": -1, "y": 110, "width": 516, "height": 379},
-}
 APP_USER_MODEL_ID = "SlashCoSense.Desktop"
 TK_BASE_SCALING = 96.0 / 72.0
 
@@ -293,1585 +138,16 @@ def main_window_geometry(screen_width, screen_height):
     return min(1300, available_width), min(900, available_height)
 
 
-def normalize_hud_display_mode(value):
-    mode = str(value or "both").lower()
-    return mode if mode in HUD_LEGACY_DISPLAY_PANELS else "both"
-
-
 def set_var_if_changed(variable, value):
     if variable.get() != value:
         variable.set(value)
 
-
-def normalize_hud_display_panels(value):
-    if value is None:
-        return HUD_DISPLAY_PANEL_KEYS
-    if isinstance(value, str):
-        return HUD_LEGACY_DISPLAY_PANELS[normalize_hud_display_mode(value)]
-    if not isinstance(value, (list, tuple, set)):
-        return HUD_DISPLAY_PANEL_KEYS
-    selected = set(value)
-    return tuple(key for key in HUD_DISPLAY_PANEL_KEYS if key in selected)
-
-
-def normalize_hud_damage_fields(value):
-    if value is None:
-        return list(HUD_DAMAGE_FIELD_KEYS)
-    if not isinstance(value, (list, tuple, set)):
-        return list(HUD_DAMAGE_FIELD_KEYS)
-    if isinstance(value, set):
-        value = [key for key in HUD_DAMAGE_FIELD_KEYS if key in value]
-    normalized = []
-    for key in value:
-        if key in HUD_DAMAGE_FIELD_LABELS and key not in normalized:
-            normalized.append(key)
-    return normalized
-
-
-def normalize_hud_field_order(value):
-    ordered = normalize_hud_damage_fields(value) if value is not None else []
-    ordered.extend(key for key in HUD_DAMAGE_FIELD_KEYS if key not in ordered)
-    return ordered
-
-
-def hud_default_preset_layout(screen_width, screen_height):
-    reference_width, reference_height = HUD_DEFAULT_REFERENCE_SIZE
-    width_scale = max(1, int(screen_width)) / reference_width
-    height_scale = max(1, int(screen_height)) / reference_height
-    scaled = {}
-    for key, geometry in HUD_DEFAULT_REFERENCE_LAYOUT.items():
-        scaled[key] = {
-            "x": round(geometry["x"] * width_scale),
-            "y": round(geometry["y"] * height_scale),
-            "width": round(geometry["width"] * width_scale),
-            "height": round(geometry["height"] * height_scale),
-        }
-    return normalize_hud_layout(scaled)
-
-
-def pending_hud_default_preset(config, screen_width, screen_height):
-    try:
-        preset_version = int(config.get("hud_default_preset_version", 0))
-    except (AttributeError, TypeError, ValueError):
-        preset_version = 0
-    if preset_version >= HUD_DEFAULT_PRESET_VERSION:
-        return None
-    return {
-        "version": HUD_DEFAULT_PRESET_VERSION,
-        "layout": hud_default_preset_layout(screen_width, screen_height),
-        "display_panels": list(HUD_DEFAULT_PRESET_DISPLAY_PANELS),
-        "transparency": HUD_DEFAULT_PRESET_TRANSPARENCY,
-        "fields": list(HUD_DEFAULT_PRESET_FIELDS),
-        "order": list(HUD_DEFAULT_PRESET_ORDER),
-    }
-
-
-def is_hud_foreground():
-    if os.name != "nt":
-        return False
-    process_handle = None
-    try:
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-        user32.GetForegroundWindow.restype = wintypes.HWND
-        user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
-        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.QueryFullProcessImageNameW.argtypes = (
-            wintypes.HANDLE,
-            wintypes.DWORD,
-            wintypes.LPWSTR,
-            ctypes.POINTER(wintypes.DWORD),
-        )
-        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-        hwnd = user32.GetForegroundWindow()
-        if not hwnd:
-            return False
-        process_id = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
-        if process_id.value == os.getpid():
-            return True
-        process_handle = kernel32.OpenProcess(0x1000, False, process_id.value)
-        if not process_handle:
-            return False
-        path_buffer = ctypes.create_unicode_buffer(32768)
-        path_length = wintypes.DWORD(len(path_buffer))
-        if not kernel32.QueryFullProcessImageNameW(
-            process_handle,
-            0,
-            path_buffer,
-            ctypes.byref(path_length),
-        ):
-            return False
-        return os.path.basename(path_buffer.value).casefold() == "vrchat.exe"
-    except Exception:
-        return False
-    finally:
-        if process_handle:
-            ctypes.windll.kernel32.CloseHandle(process_handle)
-
-
-def normalize_hud_opacity(value):
-    try:
-        opacity = float(value)
-    except (TypeError, ValueError):
-        return 0.9
-    return min(1.0, max(0.0, opacity))
-
-
-def normalize_hud_color(value, default="#ffffff"):
-    """Return a Tk/Pillow-compatible RGB hex color, falling back on invalid input."""
-    candidate = str(value or "").strip()
-    if re.fullmatch(r"#[0-9a-fA-F]{6}", candidate):
-        return candidate.lower()
-    return default
-
-
-def normalize_hud_transparency(value):
-    try:
-        transparency = float(value)
-    except (TypeError, ValueError):
-        return 10.0
-    return min(100.0, max(0.0, transparency))
-
-
-def normalize_hud_layout(layout):
-    normalized = {}
-    if not isinstance(layout, dict):
-        return normalized
-    for key, (min_width, min_height) in HUD_MIN_SIZES.items():
-        raw = layout.get(key)
-        if not isinstance(raw, dict):
-            continue
-        try:
-            normalized[key] = {
-                "x": int(raw["x"]),
-                "y": int(raw["y"]),
-                "width": max(min_width, int(raw["width"])),
-                "height": max(min_height, int(raw["height"])),
-            }
-        except (KeyError, TypeError, ValueError):
-            continue
-    return normalized
-
-
-class _LayeredPoint(ctypes.Structure):
-    _fields_ = (("x", wintypes.LONG), ("y", wintypes.LONG))
-
-
-class _LayeredSize(ctypes.Structure):
-    _fields_ = (("cx", wintypes.LONG), ("cy", wintypes.LONG))
-
-
-class _BlendFunction(ctypes.Structure):
-    _fields_ = (
-        ("BlendOp", ctypes.c_ubyte),
-        ("BlendFlags", ctypes.c_ubyte),
-        ("SourceConstantAlpha", ctypes.c_ubyte),
-        ("AlphaFormat", ctypes.c_ubyte),
-    )
-
-
-class _BitmapInfoHeader(ctypes.Structure):
-    _fields_ = (
-        ("biSize", wintypes.DWORD),
-        ("biWidth", wintypes.LONG),
-        ("biHeight", wintypes.LONG),
-        ("biPlanes", wintypes.WORD),
-        ("biBitCount", wintypes.WORD),
-        ("biCompression", wintypes.DWORD),
-        ("biSizeImage", wintypes.DWORD),
-        ("biXPelsPerMeter", wintypes.LONG),
-        ("biYPelsPerMeter", wintypes.LONG),
-        ("biClrUsed", wintypes.DWORD),
-        ("biClrImportant", wintypes.DWORD),
-    )
-
-
-class _BitmapInfo(ctypes.Structure):
-    _fields_ = (("bmiHeader", _BitmapInfoHeader), ("bmiColors", wintypes.DWORD * 3))
-
-
-_HUD_FONT_CACHE = {}
-_HUD_FALLBACK_FONT_CACHE = {}
-_HUD_GLYPH_SUPPORT_CACHE = {}
-
-
-def _load_hud_font(size, bold=False):
-    key = (int(size), bool(bold))
-    cached = _HUD_FONT_CACHE.get(key)
-    if cached:
-        return cached
-    font_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
-    names = ("msyhbd.ttc", "msyh.ttc") if bold else ("msyh.ttc", "segoeui.ttf")
-    for name in names:
-        try:
-            font = ImageFont.truetype(os.path.join(font_dir, name), key[0])
-            _HUD_FONT_CACHE[key] = font
-            return font
-        except OSError:
-            continue
-    font = ImageFont.load_default()
-    _HUD_FONT_CACHE[key] = font
-    return font
-
-
-def _load_hud_fallback_fonts(size, bold=False):
-    key = (int(size), bool(bold))
-    cached = _HUD_FALLBACK_FONT_CACHE.get(key)
-    if cached:
-        return cached
-    font_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
-    candidates = (
-        ("LeelaUIb.ttf" if bold else "LeelawUI.ttf", 0),
-        ("Nirmala.ttc", 1 if bold else 0),
-        ("seguisym.ttf", 0),
-        ("cambria.ttc", 1),
-        ("seguiemj.ttf", 0),
-    )
-    fonts = []
-    for name, index in candidates:
-        try:
-            fonts.append(ImageFont.truetype(os.path.join(font_dir, name), key[0], index=index))
-        except OSError:
-            continue
-    _HUD_FALLBACK_FONT_CACHE[key] = tuple(fonts)
-    return _HUD_FALLBACK_FONT_CACHE[key]
-
-
-def _hud_font_supports_character(font, character):
-    if character.isspace():
-        return True
-    cache_key = (id(font), character)
-    cached = _HUD_GLYPH_SUPPORT_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    try:
-        glyph = font.getmask(character, mode="L")
-        missing = font.getmask("\U0010ffff", mode="L")
-        supported = glyph.size != missing.size or bytes(glyph) != bytes(missing)
-    except (AttributeError, OSError, ValueError):
-        supported = True
-    _HUD_GLYPH_SUPPORT_CACHE[cache_key] = supported
-    return supported
-
-
-def _hud_text_runs(text, base_font):
-    value = str(text)
-    if not value:
-        return [(value, base_font)]
-    try:
-        size = int(base_font.size)
-        bold = "bold" in str(base_font.getname()[1]).casefold()
-    except (AttributeError, IndexError, TypeError):
-        return [(value, base_font)]
-    fonts = (base_font,) + _load_hud_fallback_fonts(size, bold)
-    runs = []
-    for character in value:
-        selected = next(
-            (font for font in fonts if _hud_font_supports_character(font, character)),
-            base_font,
-        )
-        if runs and runs[-1][1] is selected:
-            runs[-1] = (runs[-1][0] + character, selected)
-        else:
-            runs.append((character, selected))
-    return runs
-
-
-def _hud_text_width(draw, text, font):
-    return sum(
-        float(draw.textlength(run, font=run_font))
-        for run, run_font in _hud_text_runs(text, font)
-    )
-
-
-def _fit_hud_font_to_width(draw, text, maximum_width, preferred_size, minimum_size, bold=True):
-    preferred = max(1, int(preferred_size))
-    minimum = max(1, min(preferred, int(minimum_size)))
-    for size in range(preferred, minimum - 1, -1):
-        font = _load_hud_font(size, bold=bold)
-        if _hud_text_width(draw, text, font) <= maximum_width:
-            return font
-    return _load_hud_font(minimum, bold=bold)
-
-
-def _premultiplied_bgra(image):
-    red, green, blue, alpha = image.convert("RGBA").split()
-    return Image.merge(
-        "RGBA",
-        (
-            ImageChops.multiply(blue, alpha),
-            ImageChops.multiply(green, alpha),
-            ImageChops.multiply(red, alpha),
-            alpha,
-        ),
-    ).tobytes()
-
-
-def _native_toplevel_hwnd(window):
-    user32 = ctypes.windll.user32
-    user32.GetParent.argtypes = (wintypes.HWND,)
-    user32.GetParent.restype = wintypes.HWND
-    hwnd = wintypes.HWND(window.winfo_id())
-    parent_hwnd = user32.GetParent(hwnd)
-    return parent_hwnd or hwnd
-
-
-def _native_window_rect(window):
-    if os.name != "nt" or not hasattr(window, "winfo_id"):
-        return (
-            window.winfo_x(), window.winfo_y(),
-            window.winfo_width(), window.winfo_height(),
-        )
-    user32 = ctypes.windll.user32
-    user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
-    user32.GetWindowRect.restype = wintypes.BOOL
-    rect = wintypes.RECT()
-    if user32.GetWindowRect(_native_toplevel_hwnd(window), ctypes.byref(rect)):
-        return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
-    return window.winfo_x(), window.winfo_y(), window.winfo_width(), window.winfo_height()
-
-
-def _set_native_window_rect(window, x, y, width, height):
-    geometry = f"{width}x{height}+{x}+{y}"
-    window.geometry(geometry)
-    if os.name != "nt" or not hasattr(window, "winfo_id"):
-        return
-    user32 = ctypes.windll.user32
-    user32.SetWindowPos.argtypes = (
-        wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
-        ctypes.c_int, ctypes.c_int, wintypes.UINT,
-    )
-    user32.SetWindowPos.restype = wintypes.BOOL
-    user32.SetWindowPos(
-        _native_toplevel_hwnd(window), None,
-        int(x), int(y), int(width), int(height),
-        0x0004 | 0x0010 | 0x0200,
-    )
-
-
-def _update_layered_window(window, image):
-    if os.name != "nt":
-        return False
-    window.update_idletasks()
-    width, height = image.size
-    hwnd = _native_toplevel_hwnd(window)
-    user32 = ctypes.windll.user32
-    gdi32 = ctypes.windll.gdi32
-    user32.GetWindowLongW.argtypes = (wintypes.HWND, ctypes.c_int)
-    user32.GetWindowLongW.restype = wintypes.LONG
-    user32.SetWindowLongW.argtypes = (wintypes.HWND, ctypes.c_int, wintypes.LONG)
-    user32.SetWindowLongW.restype = wintypes.LONG
-    user32.GetDC.argtypes = (wintypes.HWND,)
-    user32.GetDC.restype = wintypes.HDC
-    user32.ReleaseDC.argtypes = (wintypes.HWND, wintypes.HDC)
-    user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
-    user32.GetWindowRect.restype = wintypes.BOOL
-    gdi32.CreateCompatibleDC.argtypes = (wintypes.HDC,)
-    gdi32.CreateCompatibleDC.restype = wintypes.HDC
-    gdi32.CreateDIBSection.argtypes = (
-        wintypes.HDC,
-        ctypes.POINTER(_BitmapInfo),
-        wintypes.UINT,
-        ctypes.POINTER(ctypes.c_void_p),
-        wintypes.HANDLE,
-        wintypes.DWORD,
-    )
-    gdi32.CreateDIBSection.restype = wintypes.HBITMAP
-    gdi32.SelectObject.argtypes = (wintypes.HDC, wintypes.HANDLE)
-    gdi32.SelectObject.restype = wintypes.HANDLE
-    gdi32.DeleteObject.argtypes = (wintypes.HANDLE,)
-    gdi32.DeleteDC.argtypes = (wintypes.HDC,)
-    user32.UpdateLayeredWindow.argtypes = (
-        wintypes.HWND,
-        wintypes.HDC,
-        ctypes.POINTER(_LayeredPoint),
-        ctypes.POINTER(_LayeredSize),
-        wintypes.HDC,
-        ctypes.POINTER(_LayeredPoint),
-        wintypes.COLORREF,
-        ctypes.POINTER(_BlendFunction),
-        wintypes.DWORD,
-    )
-    user32.UpdateLayeredWindow.restype = wintypes.BOOL
-    ex_style = user32.GetWindowLongW(hwnd, -20)
-    user32.SetWindowLongW(hwnd, -20, ex_style | 0x00080000 | 0x00000080)
-
-    screen_dc = user32.GetDC(0)
-    memory_dc = gdi32.CreateCompatibleDC(screen_dc)
-    bitmap = None
-    old_bitmap = None
-    try:
-        bitmap_info = _BitmapInfo()
-        bitmap_info.bmiHeader.biSize = ctypes.sizeof(_BitmapInfoHeader)
-        bitmap_info.bmiHeader.biWidth = width
-        bitmap_info.bmiHeader.biHeight = -height
-        bitmap_info.bmiHeader.biPlanes = 1
-        bitmap_info.bmiHeader.biBitCount = 32
-        bitmap_info.bmiHeader.biCompression = 0
-        bits = ctypes.c_void_p()
-        bitmap = gdi32.CreateDIBSection(
-            memory_dc,
-            ctypes.byref(bitmap_info),
-            0,
-            ctypes.byref(bits),
-            None,
-            0,
-        )
-        if not bitmap or not bits.value:
-            return False
-        old_bitmap = gdi32.SelectObject(memory_dc, bitmap)
-        pixel_data = _premultiplied_bgra(image)
-        ctypes.memmove(bits.value, bytes(pixel_data), len(pixel_data))
-        window_rect = wintypes.RECT()
-        if user32.GetWindowRect(hwnd, ctypes.byref(window_rect)):
-            destination = _LayeredPoint(window_rect.left, window_rect.top)
-        else:
-            destination = _LayeredPoint(window.winfo_x(), window.winfo_y())
-        source = _LayeredPoint(0, 0)
-        size = _LayeredSize(width, height)
-        blend = _BlendFunction(0, 0, 255, 1)
-        return bool(
-            user32.UpdateLayeredWindow(
-                hwnd,
-                screen_dc,
-                ctypes.byref(destination),
-                ctypes.byref(size),
-                memory_dc,
-                ctypes.byref(source),
-                0,
-                ctypes.byref(blend),
-                2,
-            )
-        )
-    finally:
-        if old_bitmap:
-            gdi32.SelectObject(memory_dc, old_bitmap)
-        if bitmap:
-            gdi32.DeleteObject(bitmap)
-        gdi32.DeleteDC(memory_dc)
-        user32.ReleaseDC(0, screen_dc)
-
-
-class EclipticaDesktopHud:
-    BG = "#090c14"
-    TRANSPARENT = "#010203"
-    FG = "#ffffff"
-    ACCENT = "#aaa0ff"
-    BORDER = "#343b4d"
-
-    def __init__(self, root, layout=None, opacity=0.9, font_color="#ffffff"):
-        self.root = root
-        self.layout = normalize_hud_layout(layout)
-        self.opacity = normalize_hud_opacity(opacity)
-        self.font_color = normalize_hud_color(font_color)
-        self.FG = self.font_color
-        self.editing = False
-        self.display_panels = HUD_DISPLAY_PANEL_KEYS
-        self.damage_background_window = None
-        self.lock_background_window = None
-        self.party_background_window = None
-        self.damage_window = None
-        self.lock_window = None
-        self.party_window = None
-        self.damage_canvas = None
-        self.lock_canvas = None
-        self.party_canvas = None
-        self.damage_preview_canvas = None
-        self.lock_preview_canvas = None
-        self.party_preview_canvas = None
-        self.damage_title_text = ""
-        self.damage_rows = []
-        self.party_rows = []
-        self.party_total_damage = 0
-        self.lock_text = "Boss 当前锁定：-"
-        self.lock_target = "-"
-        self.boss_battle_active = False
-        self.boss_lock_active = False
-        self.resize_grips = {}
-        self._pointer_operation = None
-        # Rendering the layered HUD images is relatively expensive.  Keep a
-        # small signature for each surface so timer/sync ticks that carry the
-        # same data do not recreate identical PIL images.
-        self._damage_render_signature = None
-        self._lock_render_signature = None
-        self._party_render_signature = None
-        self._window_placement_signature = None
-        self._visibility_signature = None
-
-    def _render_geometry(self, key, window):
-        geometry = self.layout.get(key, {})
-        width = max(1, int(geometry.get("width", window.winfo_width())))
-        height = max(1, int(geometry.get("height", window.winfo_height())))
-        return width, height
-
-    def _placement_signature(self):
-        return (
-            tuple(
-                (key, tuple(sorted(self.layout.get(key, {}).items())))
-                for key in ("damage", "boss_lock", "party_damage")
-            ),
-            len(getattr(self, "party_rows", ())),
-            bool(self.editing),
-        )
-
-    def _set_click_through(self, window, enabled):
-        if os.name != "nt":
-            return
-        try:
-            window.update_idletasks()
-            hwnd = window.winfo_id()
-            parent_hwnd = ctypes.windll.user32.GetParent(hwnd)
-            if parent_hwnd:
-                hwnd = parent_hwnd
-            get_style = ctypes.windll.user32.GetWindowLongW
-            set_style = ctypes.windll.user32.SetWindowLongW
-            ex_style = get_style(hwnd, -20)
-            ex_style |= 0x00000080
-            if enabled:
-                ex_style |= 0x00000020
-            else:
-                ex_style &= ~0x00000020
-            set_style(hwnd, -20, ex_style)
-            ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0033)
-        except Exception:
-            pass
-
-    def _create_background_window(self):
-        window = Toplevel(self.root)
-        window.withdraw()
-        window.overrideredirect(True)
-        window.attributes("-topmost", True)
-        window.attributes("-alpha", self.opacity)
-        window.configure(bg=self.BG, highlightbackground=self.BORDER, highlightthickness=1)
-        return window
-
-    def _configure_content_window(self, window):
-        window.withdraw()
-        window.overrideredirect(True)
-        window.attributes("-topmost", True)
-        window.configure(bg=self.TRANSPARENT, highlightthickness=0)
-
-    def _background_window(self, key):
-        if key == "damage":
-            return self.damage_background_window
-        if key == "boss_lock":
-            return self.lock_background_window
-        return self.party_background_window
-
-    def _set_window_pair_geometry(self, key, content_window, x, y, width, height):
-        background = self._background_window(key)
-        if background and background.winfo_exists():
-            _set_native_window_rect(background, x, y, width, height)
-        _set_native_window_rect(content_window, x, y, width, height)
-        if background and background.winfo_exists():
-            content_window.lift(background)
-        self.layout[key] = {
-            "x": int(x),
-            "y": int(y),
-            "width": int(width),
-            "height": int(height),
-        }
-
-    def _bind_drag(self, widget, key, window):
-        widget.bind(
-            "<ButtonPress-1>",
-            lambda event: self._start_drag(event, key, window),
-        )
-        widget.bind("<B1-Motion>", self._drag_window)
-        widget.configure(cursor="fleur")
-
-    def _bind_edit_surface(self, widget, key):
-        widget.bind(
-            "<ButtonPress-1>",
-            lambda event: self._start_edit_surface_action(event, key),
-        )
-        widget.bind("<B1-Motion>", self._continue_pointer_operation)
-        widget.configure(cursor="fleur")
-
-    def _start_edit_surface_action(self, event, key):
-        if not self.editing:
-            return
-        window = self._background_window(key)
-        if event.x >= event.widget.winfo_width() - 28 and event.y >= event.widget.winfo_height() - 28:
-            self._start_resize(event, key, window, preview=True)
-        else:
-            self._start_drag(event, key, window, preview=True)
-
-    def _continue_pointer_operation(self, event):
-        operation = self._pointer_operation
-        if operation and operation.get("kind") == "resize":
-            self._resize_window(event)
-        else:
-            self._drag_window(event)
-
-    def _draw_text(self, draw, x, y, text, fill, font, anchor="la"):
-        runs = _hud_text_runs(text, font)
-        if len(runs) == 1:
-            draw.text((x, y), text, fill=fill, font=runs[0][1], anchor=anchor)
-            return
-        widths = [draw.textlength(run, font=run_font) for run, run_font in runs]
-        horizontal_anchor = anchor[0] if anchor else "l"
-        if horizontal_anchor == "m":
-            cursor_x = x - sum(widths) / 2
-        elif horizontal_anchor == "r":
-            cursor_x = x - sum(widths)
-        else:
-            cursor_x = x
-        vertical_anchor = anchor[1] if len(anchor) > 1 else "a"
-        for (run, run_font), width in zip(runs, widths):
-            draw.text((cursor_x, y), run, fill=fill, font=run_font, anchor=f"l{vertical_anchor}")
-            cursor_x += width
-
-    def _preview_canvas(self, key):
-        if key == "damage":
-            return self.damage_preview_canvas
-        if key == "boss_lock":
-            return self.lock_preview_canvas
-        return self.party_preview_canvas
-
-    def _hud_scale(self, key, width, height):
-        base_width, base_height = HUD_MIN_SIZES[key]
-        return max(1.0, min(float(width) / base_width, float(height) / base_height))
-
-    def _scaled(self, value, scale):
-        return max(1, int(round(value * scale)))
-
-    def _render_edit_preview(self, key):
-        canvas = self._preview_canvas(key)
-        if not canvas or not canvas.winfo_exists():
-            return
-        canvas.delete("all")
-        if not self.editing:
-            return
-        width = max(1, canvas.winfo_width())
-        height = max(1, canvas.winfo_height())
-        layout = self.layout.get(key, {})
-        scale = self._hud_scale(
-            key,
-            layout.get("width", width),
-            layout.get("height", height),
-        )
-        if key == "damage":
-            for index, (label, value) in enumerate(self.damage_rows):
-                y = self._scaled(12 + index * 19, scale)
-                canvas.create_text(
-                    self._scaled(14, scale), y, text=label, fill=self.FG,
-                    font=("Microsoft YaHei UI", self._scaled(9, scale)), anchor=NW,
-                )
-                canvas.create_text(
-                    self._scaled(160, scale), y - self._scaled(1, scale),
-                    text=value, fill=self.FG,
-                    font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NW,
-                )
-        elif key == "boss_lock":
-            canvas.create_text(
-                width // 2, height // 2, text=self.lock_text, fill=self.FG,
-                font=("Segoe UI", self._scaled(15, scale), "bold"), anchor=CENTER,
-                width=max(1, width - self._scaled(20, scale)), justify=CENTER,
-            )
-        else:
-            canvas.create_text(
-                self._scaled(14, scale), self._scaled(12, scale),
-                text="伤害统计", fill=self.font_color,
-                font=("Microsoft YaHei UI", self._scaled(12, scale), "bold"), anchor=NW,
-            )
-            canvas.create_text(
-                self._scaled(14, scale), self._scaled(38, scale),
-                text="用户名", fill=self.FG,
-                font=("Microsoft YaHei UI", self._scaled(9, scale), "bold"), anchor=NW,
-            )
-            canvas.create_text(
-                width - self._scaled(14, scale), self._scaled(38, scale),
-                text="本局 BOSS 伤害", fill=self.FG,
-                font=("Microsoft YaHei UI", self._scaled(9, scale), "bold"), anchor=NE,
-            )
-            preview_rows = self.party_rows or [("玩家1", "12.3K"), ("玩家2", "9.8K")]
-            for index, (username, damage) in enumerate(preview_rows):
-                y = self._scaled(62 + index * 20, scale)
-                canvas.create_text(
-                    self._scaled(14, scale), y, text=username, fill=self.FG,
-                    font=("Microsoft YaHei UI", self._scaled(9, scale)), anchor=NW,
-                )
-                canvas.create_text(
-                    width - self._scaled(14, scale), y, text=damage, fill=self.FG,
-                    font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NE,
-                )
-            total_y = self._scaled(70 + len(preview_rows) * 20, scale)
-            canvas.create_text(
-                self._scaled(14, scale), total_y, text="总伤害", fill=self.font_color,
-                font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NW,
-            )
-            canvas.create_text(
-                width - self._scaled(14, scale), total_y,
-                text=format_ecliptica_number(
-                    self.party_total_damage if self.party_rows else 22100
-                ),
-                fill=self.font_color,
-                font=("Microsoft YaHei UI", self._scaled(10, scale), "bold"), anchor=NE,
-            )
-        for inset in (7, 12, 17):
-            canvas.create_line(
-                width - inset, height - 3, width - 3, height - inset,
-                fill=self.ACCENT, width=2,
-            )
-
-    def _render_layered_image(self, window, image):
-        if _update_layered_window(window, image):
-            return
-        window.configure(bg=self.BG)
-
-    def _draw_edit_grip(self, draw, width, height):
-        if not self.editing:
-            return
-        draw.rectangle((width - 28, height - 28, width, height), fill=(0, 0, 0, 1))
-        color = (170, 160, 255, 255)
-        for inset in (7, 12, 17):
-            draw.line(
-                (width - inset, height - 3, width - 3, height - inset),
-                fill=color,
-                width=2,
-            )
-
-    def _render_damage_text(self, _event=None):
-        if not self.damage_canvas or not self.damage_canvas.winfo_exists():
-            return
-        width, height = self._render_geometry("damage", self.damage_window)
-        signature = (
-            width, height, self.damage_title_text, tuple(self.damage_rows),
-            self.font_color, bool(self.editing),
-        )
-        if signature == getattr(self, "_damage_render_signature", None):
-            return
-        scale = self._hud_scale("damage", width, height)
-        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        if self.damage_title_text:
-            self._draw_text(
-                draw,
-                self._scaled(14, scale),
-                self._scaled(12, scale),
-                self.damage_title_text,
-                self.FG,
-                _load_hud_font(self._scaled(14, scale), bold=True),
-            )
-        for index, (label, value) in enumerate(self.damage_rows):
-            y = self._scaled(12 + index * 19, scale)
-            self._draw_text(
-                draw,
-                self._scaled(14, scale),
-                y,
-                label,
-                self.FG,
-                _load_hud_font(self._scaled(13, scale)),
-            )
-            self._draw_text(
-                draw,
-                self._scaled(160, scale),
-                y - self._scaled(1, scale),
-                value,
-                self.FG,
-                _load_hud_font(self._scaled(14, scale), bold=True),
-            )
-        self._draw_edit_grip(draw, width, height)
-        self._render_layered_image(self.damage_window, image)
-        self._damage_render_signature = signature
-
-    def _render_lock_text(self, _event=None):
-        if not self.lock_canvas or not self.lock_canvas.winfo_exists():
-            return
-        width, height = self._render_geometry("boss_lock", self.lock_window)
-        signature = (
-            width, height, self.lock_text, self.font_color, bool(self.editing),
-        )
-        if signature == getattr(self, "_lock_render_signature", None):
-            return
-        scale = self._hud_scale("boss_lock", width, height)
-        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        center_x = width // 2
-        maximum_width = max(1, width - self._scaled(24, scale))
-        preferred_size = self._scaled(21, scale)
-        single_line_minimum = self._scaled(11, scale)
-        lock_font = _fit_hud_font_to_width(
-            draw,
-            self.lock_text,
-            maximum_width,
-            preferred_size,
-            single_line_minimum,
-        )
-        if _hud_text_width(draw, self.lock_text, lock_font) <= maximum_width:
-            self._draw_text(
-                draw, center_x, height // 2, self.lock_text,
-                self.FG, lock_font, "mm",
-            )
-        else:
-            prefix = "Boss 当前锁定："
-            target = getattr(self, "lock_target", "-")
-            prefix_font = _fit_hud_font_to_width(
-                draw, prefix, maximum_width,
-                self._scaled(15, scale), self._scaled(9, scale),
-            )
-            target_font = _fit_hud_font_to_width(
-                draw, target, maximum_width,
-                preferred_size, self._scaled(6, scale),
-            )
-            line_gap = self._scaled(6, scale)
-            prefix_height = prefix_font.getbbox(prefix)[3] - prefix_font.getbbox(prefix)[1]
-            target_height = target_font.getbbox(target)[3] - target_font.getbbox(target)[1]
-            total_height = prefix_height + line_gap + target_height
-            first_y = (height - total_height) // 2 + prefix_height // 2
-            second_y = first_y + prefix_height // 2 + line_gap + target_height // 2
-            self._draw_text(draw, center_x, first_y, prefix, self.FG, prefix_font, "mm")
-            self._draw_text(draw, center_x, second_y, target, self.FG, target_font, "mm")
-        self._draw_edit_grip(draw, width, height)
-        self._render_layered_image(self.lock_window, image)
-        self._lock_render_signature = signature
-
-    def _render_party_text(self, _event=None):
-        canvas = getattr(self, "party_canvas", None)
-        window = getattr(self, "party_window", None)
-        if not canvas or not canvas.winfo_exists() or not window:
-            return
-        width, height = self._render_geometry("party_damage", window)
-        signature = (
-            width, height, tuple(self.party_rows), self.party_total_damage,
-            self.font_color, bool(self.editing),
-        )
-        if signature == getattr(self, "_party_render_signature", None):
-            return
-        scale = self._hud_scale("party_damage", width, height)
-        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        left = self._scaled(14, scale)
-        right = width - self._scaled(14, scale)
-        self._draw_text(
-            draw,
-            left,
-            self._scaled(12, scale),
-            "伤害统计",
-            self.font_color,
-            _load_hud_font(self._scaled(15, scale), bold=True),
-        )
-        header_font = _load_hud_font(self._scaled(10, scale), bold=True)
-        self._draw_text(draw, left, self._scaled(40, scale), "用户名", self.FG, header_font)
-        self._draw_text(
-            draw,
-            right,
-            self._scaled(40, scale),
-            "本局 BOSS 伤害",
-            self.FG,
-            header_font,
-            "ra",
-        )
-        damage_font = _load_hud_font(self._scaled(12, scale), bold=True)
-        rows = self.party_rows
-        for index, (username, damage) in enumerate(rows):
-            y = self._scaled(65 + index * 22, scale)
-            username_font = _fit_hud_font_to_width(
-                draw,
-                username,
-                max(1, width - self._scaled(160, scale)),
-                self._scaled(11, scale),
-                self._scaled(7, scale),
-            )
-            self._draw_text(draw, left, y, username, self.FG, username_font)
-            self._draw_text(draw, right, y, damage, self.FG, damage_font, "ra")
-        total_y = self._scaled(76 + len(rows) * 22, scale)
-        line_y = max(self._scaled(56, scale), total_y - self._scaled(8, scale))
-        draw.line((left, line_y, right, line_y), fill=(170, 160, 255, 150), width=1)
-        total_font = _load_hud_font(self._scaled(12, scale), bold=True)
-        self._draw_text(draw, left, total_y, "总伤害", self.font_color, total_font)
-        self._draw_text(
-            draw,
-            right,
-            total_y,
-            format_ecliptica_number(self.party_total_damage),
-            self.font_color,
-            total_font,
-            "ra",
-        )
-        self._draw_edit_grip(draw, width, height)
-        self._render_layered_image(window, image)
-        self._party_render_signature = signature
-
-    def _create_resize_grip(self, window, key):
-        grip = Label(
-            window,
-            text="//",
-            bg=self.TRANSPARENT,
-            fg=self.FG,
-            font=("Consolas", 11, "bold"),
-            cursor="size_nw_se",
-            padx=3,
-            pady=1,
-        )
-        grip.bind(
-            "<ButtonPress-1>",
-            lambda event: self._start_resize(event, key, window),
-        )
-        grip.bind("<B1-Motion>", self._resize_window)
-        self.resize_grips[key] = grip
-
-    def _start_drag(self, event, key, window, preview=False):
-        if not self.editing:
-            return
-        current = self.layout.get(key, {})
-        self._pointer_operation = {
-            "kind": "drag",
-            "key": key,
-            "window": window,
-            "pointer_x": event.x_root,
-            "pointer_y": event.y_root,
-            "x": int(current.get("x", window.winfo_x())),
-            "y": int(current.get("y", window.winfo_y())),
-            "width": int(current.get("width", window.winfo_width())),
-            "height": int(current.get("height", window.winfo_height())),
-            "preview": bool(preview),
-        }
-
-    def _drag_window(self, event):
-        operation = self._pointer_operation
-        if not self.editing or not operation or operation.get("kind") != "drag":
-            return
-        window = operation["window"]
-        x = operation["x"] + event.x_root - operation["pointer_x"]
-        y = operation["y"] + event.y_root - operation["pointer_y"]
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
-        x = min(max(-operation["width"] + 80, x), screen_w - 80)
-        y = min(max(0, y), screen_h - 40)
-        if operation.get("preview"):
-            self._set_preview_geometry(
-                operation["key"], x, y, operation["width"], operation["height"]
-            )
-        else:
-            self._set_window_pair_geometry(
-                operation["key"], window, x, y, operation["width"], operation["height"]
-            )
-
-    def _start_resize(self, event, key, window, preview=False):
-        if not self.editing:
-            return
-        self._pointer_operation = {
-            "kind": "resize",
-            "key": key,
-            "window": window,
-            "pointer_x": event.x_root,
-            "pointer_y": event.y_root,
-            "width": window.winfo_width(),
-            "height": window.winfo_height(),
-            "preview": bool(preview),
-        }
-
-    def _resize_window(self, event):
-        operation = self._pointer_operation
-        if not self.editing or not operation or operation.get("kind") != "resize":
-            return
-        key = operation["key"]
-        window = operation["window"]
-        min_width, min_height = HUD_MIN_SIZES[key]
-        width = max(min_width, operation["width"] + event.x_root - operation["pointer_x"])
-        height = max(min_height, operation["height"] + event.y_root - operation["pointer_y"])
-        width = min(width, self.root.winfo_screenwidth())
-        height = min(height, self.root.winfo_screenheight())
-        x = self.layout.get(key, {}).get("x", window.winfo_x())
-        y = self.layout.get(key, {}).get("y", window.winfo_y())
-        if operation.get("preview"):
-            self._set_preview_geometry(key, x, y, width, height)
-        else:
-            self._set_window_pair_geometry(key, window, x, y, width, height)
-            if key == "damage":
-                self._render_damage_text()
-            elif key == "boss_lock":
-                self._render_lock_text()
-            else:
-                self._render_party_text()
-
-    def _set_preview_geometry(self, key, x, y, width, height):
-        window = self._background_window(key)
-        _set_native_window_rect(window, x, y, width, height)
-        self.layout[key] = {
-            "x": int(x), "y": int(y), "width": int(width), "height": int(height),
-        }
-        window.update_idletasks()
-        self._render_edit_preview(key)
-
-    def _create_damage_window(self):
-        self._damage_render_signature = None
-        self._window_placement_signature = None
-        self._visibility_signature = None
-        background = self._create_background_window()
-        window = Toplevel(self.root)
-        self._configure_content_window(window)
-        self.damage_canvas = Canvas(
-            window,
-            bg=self.TRANSPARENT,
-            width=HUD_MIN_SIZES["damage"][0],
-            height=HUD_MIN_SIZES["damage"][1],
-            highlightthickness=0,
-        )
-        self.damage_canvas.pack(fill=BOTH, expand=True)
-        self.damage_canvas.bind("<Configure>", self._render_damage_text)
-        self.damage_background_window = background
-        self.damage_window = window
-        self.damage_preview_canvas = Canvas(background, bg=self.BG, highlightthickness=0)
-        self.damage_preview_canvas.pack(fill=BOTH, expand=True)
-        self.damage_preview_canvas.bind(
-            "<Configure>", lambda _event: self._render_edit_preview("damage")
-        )
-        self._bind_edit_surface(background, "damage")
-        self._bind_edit_surface(self.damage_preview_canvas, "damage")
-        self._bind_drag(window, "damage", window)
-        self._bind_drag(self.damage_canvas, "damage", window)
-        self._create_resize_grip(window, "damage")
-        self._render_damage_text()
-        self._set_click_through(background, True)
-        self._set_click_through(window, True)
-
-    def _create_lock_window(self):
-        self._lock_render_signature = None
-        self._window_placement_signature = None
-        self._visibility_signature = None
-        background = self._create_background_window()
-        window = Toplevel(self.root)
-        self._configure_content_window(window)
-        self.lock_canvas = Canvas(
-            window,
-            bg=self.TRANSPARENT,
-            width=HUD_MIN_SIZES["boss_lock"][0],
-            height=HUD_MIN_SIZES["boss_lock"][1],
-            highlightthickness=0,
-        )
-        self.lock_canvas.pack(fill=BOTH, expand=True)
-        self.lock_canvas.bind("<Configure>", self._render_lock_text)
-        self.lock_background_window = background
-        self.lock_window = window
-        self.lock_preview_canvas = Canvas(background, bg=self.BG, highlightthickness=0)
-        self.lock_preview_canvas.pack(fill=BOTH, expand=True)
-        self.lock_preview_canvas.bind(
-            "<Configure>", lambda _event: self._render_edit_preview("boss_lock")
-        )
-        self._bind_edit_surface(background, "boss_lock")
-        self._bind_edit_surface(self.lock_preview_canvas, "boss_lock")
-        self._bind_drag(window, "boss_lock", window)
-        self._bind_drag(self.lock_canvas, "boss_lock", window)
-        self._create_resize_grip(window, "boss_lock")
-        self._render_lock_text()
-        self._set_click_through(background, True)
-        self._set_click_through(window, True)
-
-    def _create_party_window(self):
-        self._party_render_signature = None
-        self._window_placement_signature = None
-        self._visibility_signature = None
-        background = self._create_background_window()
-        window = Toplevel(self.root)
-        self._configure_content_window(window)
-        self.party_canvas = Canvas(
-            window,
-            bg=self.TRANSPARENT,
-            width=HUD_MIN_SIZES["party_damage"][0],
-            height=HUD_MIN_SIZES["party_damage"][1],
-            highlightthickness=0,
-        )
-        self.party_canvas.pack(fill=BOTH, expand=True)
-        self.party_canvas.bind("<Configure>", self._render_party_text)
-        self.party_background_window = background
-        self.party_window = window
-        self.party_preview_canvas = Canvas(background, bg=self.BG, highlightthickness=0)
-        self.party_preview_canvas.pack(fill=BOTH, expand=True)
-        self.party_preview_canvas.bind(
-            "<Configure>", lambda _event: self._render_edit_preview("party_damage")
-        )
-        self._bind_edit_surface(background, "party_damage")
-        self._bind_edit_surface(self.party_preview_canvas, "party_damage")
-        self._bind_drag(window, "party_damage", window)
-        self._bind_drag(self.party_canvas, "party_damage", window)
-        self._create_resize_grip(window, "party_damage")
-        self._render_party_text()
-        self._set_click_through(background, True)
-        self._set_click_through(window, True)
-
-    def _ensure_windows(self):
-        if not self.damage_window or not self.damage_window.winfo_exists():
-            self._create_damage_window()
-        if not self.lock_window or not self.lock_window.winfo_exists():
-            self._create_lock_window()
-        if not self.party_window or not self.party_window.winfo_exists():
-            self._create_party_window()
-
-    def _default_layout(self):
-        self.damage_window.update_idletasks()
-        self.lock_window.update_idletasks()
-        self.party_window.update_idletasks()
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
-        return hud_default_preset_layout(screen_w, screen_h)
-
-    def _capture_window_layout(self, key, window, use_background=False):
-        if use_background:
-            background = self._background_window(key)
-            if background and background.winfo_exists():
-                window = background
-        x, y, width, height = _native_window_rect(window)
-        self.layout[key] = {
-            "x": x,
-            "y": y,
-            "width": width,
-            "height": height,
-        }
-
-    def _apply_window_layout(self, key, window, defaults):
-        geometry = self.layout.get(key, defaults[key])
-        min_width, min_height = HUD_MIN_SIZES[key]
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
-        width = min(screen_w, max(min_width, int(geometry["width"])))
-        height = min(screen_h, max(min_height, int(geometry["height"])))
-        x = min(max(-width + 80, int(geometry["x"])), screen_w - 80)
-        y = min(max(0, int(geometry["y"])), screen_h - 40)
-        self._set_window_pair_geometry(key, window, x, y, width, height)
-
-    def _content_background_size(self, key, width, height):
-        """Return the opaque background size needed by the current text."""
-        width = max(1, int(width))
-        height = max(1, int(height))
-        if key not in ("damage", "party_damage"):
-            return width, height
-
-        scale = self._hud_scale(key, width, height)
-        if key == "party_damage":
-            rows = getattr(self, "party_rows", ())
-            total_y = self._scaled(76 + len(rows) * 22, scale)
-            fitted_height = total_y + self._scaled(28, scale)
-            # The right-hand column is aligned to the HUD's right edge, so the
-            # background must retain the full configured width.
-            return width, min(height, max(self._scaled(104, scale), fitted_height))
-
-        rows = getattr(self, "damage_rows", ())
-        if not rows:
-            return min(width, self._scaled(190, scale)), min(height, self._scaled(40, scale))
-
-        image = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        label_font = _load_hud_font(self._scaled(13, scale))
-        value_font = _load_hud_font(self._scaled(14, scale), bold=True)
-        right_edge = self._scaled(14, scale)
-        value_x = self._scaled(160, scale)
-        for label, value in rows:
-            right_edge = max(
-                right_edge,
-                self._scaled(14, scale) + _hud_text_width(draw, label, label_font),
-                value_x + _hud_text_width(draw, value, value_font),
-            )
-        fitted_width = int(round(right_edge)) + self._scaled(14, scale)
-        last_y = self._scaled(12 + (len(rows) - 1) * 19, scale)
-        fitted_height = last_y + self._scaled(25, scale)
-        return (
-            min(width, max(self._scaled(190, scale), fitted_width)),
-            min(height, max(self._scaled(40, scale), fitted_height)),
-        )
-
-    def _fit_background_to_content(self, key, window):
-        if self.editing:
-            return
-        background = self._background_window(key)
-        if not background or not background.winfo_exists():
-            return
-        geometry = self.layout.get(key, {})
-        x = int(geometry.get("x", window.winfo_x()))
-        y = int(geometry.get("y", window.winfo_y()))
-        width = int(geometry.get("width", window.winfo_width()))
-        height = int(geometry.get("height", window.winfo_height()))
-        fitted_width, fitted_height = self._content_background_size(key, width, height)
-        _set_native_window_rect(background, x, y, fitted_width, fitted_height)
-        window.lift(background)
-
-    def _required_party_content_height(self, width):
-        width_scale = max(1.0, float(width) / HUD_MIN_SIZES["party_damage"][0])
-        natural_height = (104 + len(getattr(self, "party_rows", ())) * 22) * width_scale
-        return max(HUD_MIN_SIZES["party_damage"][1], int(natural_height + 0.999))
-
-    def _place_windows(self):
-        placement_signature = self._placement_signature()
-        if placement_signature == getattr(self, "_window_placement_signature", None):
-            return
-        defaults = self._default_layout()
-        party_geometry = dict(self.layout.get("party_damage", defaults["party_damage"]))
-        required_party_height = self._required_party_content_height(
-            party_geometry.get("width", HUD_MIN_SIZES["party_damage"][0])
-        )
-        if int(party_geometry.get("height", 0)) < required_party_height:
-            party_geometry["height"] = required_party_height
-            self.layout["party_damage"] = party_geometry
-        self._apply_window_layout("damage", self.damage_window, defaults)
-        self._apply_window_layout("boss_lock", self.lock_window, defaults)
-        self._apply_window_layout("party_damage", self.party_window, defaults)
-        self._fit_background_to_content("damage", self.damage_window)
-        self._fit_background_to_content("party_damage", self.party_window)
-        self._window_placement_signature = self._placement_signature()
-
-    def set_opacity(self, opacity):
-        self.opacity = normalize_hud_opacity(opacity)
-        visible_opacity = max(0.2, self.opacity) if getattr(self, "editing", False) else self.opacity
-        for background, content in (
-            (self.damage_background_window, self.damage_window),
-            (self.lock_background_window, self.lock_window),
-            (self.party_background_window, self.party_window),
-        ):
-            if background and background.winfo_exists():
-                background.attributes("-alpha", visible_opacity)
-                if content and content.winfo_exists():
-                    content.lift(background)
-
-    def set_font_color(self, color):
-        self.font_color = normalize_hud_color(color)
-        self.FG = self.font_color
-        for grip in self.resize_grips.values():
-            try:
-                grip.configure(fg=self.font_color)
-            except Exception:
-                pass
-        self._render_damage_text()
-        self._render_lock_text()
-        self._render_party_text()
-        if getattr(self, "editing", False):
-            self._render_edit_preview("damage")
-            self._render_edit_preview("boss_lock")
-            self._render_edit_preview("party_damage")
-
-    def reset_layout(self):
-        self._ensure_windows()
-        self._pointer_operation = None
-        defaults = self._default_layout()
-        self.layout = {key: dict(value) for key, value in defaults.items()}
-        self._apply_window_layout("damage", self.damage_window, defaults)
-        self._apply_window_layout("boss_lock", self.lock_window, defaults)
-        self._apply_window_layout("party_damage", self.party_window, defaults)
-        self.damage_window.update_idletasks()
-        self.lock_window.update_idletasks()
-        self.party_window.update_idletasks()
-        self._render_damage_text()
-        self._render_lock_text()
-        self._render_party_text()
-        if getattr(self, "editing", False):
-            self._render_edit_preview("damage")
-            self._render_edit_preview("boss_lock")
-            self._render_edit_preview("party_damage")
-        return {key: dict(value) for key, value in self.layout.items()}
-
-    def _apply_edit_visuals(self):
-        for key, window in (
-            ("damage", self.damage_window),
-            ("boss_lock", self.lock_window),
-            ("party_damage", self.party_window),
-        ):
-            background = self._background_window(key)
-            background.configure(highlightbackground=self.ACCENT, highlightthickness=2)
-            background.attributes("-alpha", max(0.2, self.opacity))
-            self._set_click_through(background, False)
-            window.withdraw()
-            self._render_edit_preview(key)
-
-    def _apply_display_visibility(self):
-        show_damage = "damage" in self.display_panels
-        show_boss_lock = (
-            "boss_lock" in self.display_panels
-            and (self.editing or self.boss_lock_active)
-        )
-        show_party_damage = (
-            "party_damage" in self.display_panels
-            and (
-                self.editing
-                or (
-                    self.boss_battle_active
-                    and len(getattr(self, "party_rows", ())) >= 2
-                )
-            )
-        )
-        visibility_signature = (
-            show_damage, show_boss_lock, show_party_damage, bool(self.editing),
-        )
-        if visibility_signature == getattr(self, "_visibility_signature", None):
-            return False
-        party_background = getattr(self, "party_background_window", None)
-        party_window = getattr(self, "party_window", None)
-        if show_damage:
-            self.damage_background_window.deiconify()
-            if self.editing:
-                self.damage_window.withdraw()
-            else:
-                self.damage_window.deiconify()
-                self.damage_window.lift(self.damage_background_window)
-        else:
-            self.damage_background_window.withdraw()
-            self.damage_window.withdraw()
-        if show_boss_lock:
-            self.lock_background_window.deiconify()
-            if self.editing:
-                self.lock_window.withdraw()
-            else:
-                self.lock_window.deiconify()
-                self.lock_window.lift(self.lock_background_window)
-        else:
-            self.lock_background_window.withdraw()
-            self.lock_window.withdraw()
-        if party_background and party_window and show_party_damage:
-            party_background.deiconify()
-            if self.editing:
-                party_window.withdraw()
-            else:
-                party_window.deiconify()
-                party_window.lift(party_background)
-        elif party_background and party_window:
-            party_background.withdraw()
-            party_window.withdraw()
-        self._visibility_signature = visibility_signature
-        return True
-
-    def begin_edit(self, snapshot, display_panels=None, selected_fields=None, party_players=None):
-        self.editing = True
-        self.update(snapshot, display_panels, selected_fields, party_players)
-        self._apply_edit_visuals()
-
-    def end_edit(self):
-        self._ensure_windows()
-        self._capture_window_layout("damage", self.damage_window, use_background=True)
-        self._capture_window_layout("boss_lock", self.lock_window, use_background=True)
-        self._capture_window_layout("party_damage", self.party_window, use_background=True)
-        self.editing = False
-        self._pointer_operation = None
-        for key, window in (
-            ("damage", self.damage_window),
-            ("boss_lock", self.lock_window),
-            ("party_damage", self.party_window),
-        ):
-            self.resize_grips[key].place_forget()
-            background = self._background_window(key)
-            background.configure(highlightbackground=self.BORDER, highlightthickness=1)
-            background.attributes("-alpha", self.opacity)
-            self._set_click_through(background, True)
-            self._set_click_through(window, True)
-            self._render_edit_preview(key)
-        defaults = self._default_layout()
-        self._apply_window_layout("damage", self.damage_window, defaults)
-        self._apply_window_layout("boss_lock", self.lock_window, defaults)
-        self._apply_window_layout("party_damage", self.party_window, defaults)
-        self._render_damage_text()
-        self._render_lock_text()
-        self._render_party_text()
-        self._fit_background_to_content("damage", self.damage_window)
-        self._fit_background_to_content("party_damage", self.party_window)
-        self._apply_display_visibility()
-        return self.get_layout()
-
-    def get_layout(self):
-        for key, window in (
-            ("damage", self.damage_window),
-            ("boss_lock", self.lock_window),
-            ("party_damage", self.party_window),
-        ):
-            if window and window.winfo_exists():
-                self._capture_window_layout(key, window)
-        return {key: dict(value) for key, value in self.layout.items()}
-
-    def _set_party_players(self, party_players):
-        party_rows = []
-        party_total = 0
-        seen_players = set()
-        for player in party_players if isinstance(party_players, list) else []:
-            if not isinstance(player, dict):
-                continue
-            player_id = str(player.get("vrc_user_id") or "").strip()
-            username = str(player.get("vrc_username") or "").strip()
-            identity = player_id or username.casefold()
-            if not username or not identity or identity in seen_players:
-                continue
-            seen_players.add(identity)
-            try:
-                damage = max(0, int(player.get("boss_damage") or 0))
-            except (TypeError, ValueError, OverflowError):
-                damage = 0
-            party_total += damage
-            party_rows.append((username, format_ecliptica_number(damage)))
-        changed = (
-            party_rows != getattr(self, "party_rows", None)
-            or party_total != getattr(self, "party_total_damage", None)
-        )
-        self.party_rows = party_rows
-        self.party_total_damage = party_total
-        return changed
-
-    def update_party(self, party_players):
-        self._ensure_windows()
-        party_changed = self._set_party_players(party_players)
-        if (
-            not party_changed
-            and getattr(self, "_party_render_signature", None) is not None
-            and getattr(self, "_visibility_signature", None) not in (None, "hidden")
-        ):
-            return
-        party_geometry = self.layout.get("party_damage")
-        required_height = self._required_party_content_height(
-            (party_geometry or {}).get("width", HUD_MIN_SIZES["party_damage"][0])
-        )
-        if not party_geometry or int(party_geometry.get("height", 0)) < required_height:
-            defaults = self._default_layout()
-            party_geometry = dict(party_geometry or defaults["party_damage"])
-            party_geometry["height"] = max(
-                int(party_geometry.get("height", 0)),
-                required_height,
-            )
-            self.layout["party_damage"] = party_geometry
-            self._apply_window_layout("party_damage", self.party_window, defaults)
-        self._fit_background_to_content("party_damage", self.party_window)
-        self._render_party_text()
-        visibility_changed = self._apply_display_visibility()
-        if visibility_changed and not self.editing and self.party_window.state() == "normal":
-            self._set_click_through(self.party_window, True)
-
-    def update(self, snapshot, display_panels=None, selected_fields=None, party_players=None):
-        self._ensure_windows()
-        if display_panels is not None:
-            self.display_panels = normalize_hud_display_panels(display_panels)
-        boss_phase = snapshot.get("current_boss_phase")
-        phase_text = str(boss_phase) if boss_phase is not None else "-"
-        rows = {
-            "class_name": ("当前职业", str(snapshot.get("class_name", "-"))),
-            "stage": ("当前阶段", str(snapshot.get("stage", "-"))),
-            "current_boss": ("当前 BOSS", str(snapshot.get("current_boss", "-"))),
-            "current_boss_phase": ("BOSS 阶段", phase_text),
-            "current_phase_damage": (
-                "本局 BOSS 总伤害",
-                format_ecliptica_number(snapshot.get("current_phase_damage", 0)),
-            ),
-            "current_phase_damage_taken": (
-                "本局 BOSS 总受伤",
-                format_ecliptica_number(snapshot.get("current_phase_damage_taken", 0)),
-            ),
-            "recent_5s_dps": (
-                "近 3 秒 DPS",
-                f"{snapshot.get('recent_3s_dps', snapshot.get('recent_5s_dps', 0.0)):.1f}",
-            ),
-            "current_boss_elapsed": (
-                "当前 BOSS 耗时",
-                format_ecliptica_clock(snapshot.get("current_phase_elapsed", 0)),
-            ),
-            "total_elapsed": ("总耗时", format_ecliptica_clock_hms(snapshot.get("total_elapsed", 0))),
-        }
-        field_keys = normalize_hud_damage_fields(selected_fields)
-        self.damage_rows = [rows[key] for key in field_keys]
-
-        self._set_party_players(party_players)
-
-        aggro = snapshot.get("aggro", {})
-        target = aggro.get("target", "-")
-        self.lock_target = str(target)
-        self.lock_text = f"Boss 当前锁定：{target}"
-        self.boss_battle_active = is_boss_battle_active(snapshot)
-        self.boss_lock_active = (
-            aggro.get("state") not in ("inactive", None)
-            and str(target).strip() not in ("", "-", "某玩家")
-        )
-        self._place_windows()
-        previous_damage_signature = getattr(self, "_damage_render_signature", None)
-        self._render_damage_text()
-        if getattr(self, "_damage_render_signature", None) != previous_damage_signature:
-            self._fit_background_to_content("damage", self.damage_window)
-        self._render_lock_text()
-        self._render_party_text()
-        visibility_changed = self._apply_display_visibility()
-        if self.editing:
-            self._apply_edit_visuals()
-        elif visibility_changed:
-            for window in (
-                self.damage_background_window,
-                self.damage_window,
-                self.lock_background_window,
-                self.lock_window,
-                getattr(self, "party_background_window", None),
-                getattr(self, "party_window", None),
-            ):
-                if window and window.state() == "normal":
-                    self._set_click_through(window, True)
-
-    def hide(self, force=False):
-        if self.editing and not force:
-            return
-        if getattr(self, "_visibility_signature", None) == "hidden":
-            return
-        for window in (
-            self.damage_background_window,
-            self.damage_window,
-            self.lock_background_window,
-            self.lock_window,
-            getattr(self, "party_background_window", None),
-            getattr(self, "party_window", None),
-        ):
-            if window and window.winfo_exists():
-                window.withdraw()
-        self._visibility_signature = "hidden"
-
-    def destroy(self):
-        for window in (
-            self.damage_background_window,
-            self.damage_window,
-            self.lock_background_window,
-            self.lock_window,
-            getattr(self, "party_background_window", None),
-            getattr(self, "party_window", None),
-        ):
-            if window and window.winfo_exists():
-                try:
-                    window.destroy()
-                except Exception:
-                    pass
-        self.damage_background_window = None
-        self.damage_window = None
-        self.lock_background_window = None
-        self.lock_window = None
-        self.party_background_window = None
-        self.party_window = None
-
-
-def format_ecliptica_number(value):
-    number = float(value or 0)
-    if abs(number) >= 1_000_000:
-        return f"{number / 1_000_000:.2f}M"
-    if abs(number) >= 1_000:
-        return f"{number / 1_000:.1f}K"
-    return str(int(round(number)))
-
-
-def format_ecliptica_duration(value):
-    total_seconds = max(0, int(round(float(value or 0))))
-    minutes, seconds = divmod(total_seconds, 60)
-    if minutes:
-        return f"{minutes}分{seconds:02d}秒"
-    return f"{seconds}秒"
-
-
-def format_ecliptica_clock(value):
-    total_seconds = max(0, int(float(value or 0)))
-    minutes, seconds = divmod(total_seconds, 60)
-    return f"{minutes:02d}:{seconds:02d}"
-
-
-def format_ecliptica_clock_hms(value):
-    total_seconds = max(0, int(float(value or 0)))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 # =====================
 # 配置
 # =====================
 PLAYER_ITEM_ID_THRESHOLD = 29
 IMAGE_FILENAME = resource_path("cover.png")
-ICON_FILENAME = resource_path("icon.ico")
 
 APP_NAME = "SlashCoMonitor"
 if os.name == 'nt': # Windows
@@ -1884,16 +160,12 @@ LOCAL_JSON_FILENAME = os.path.join(DATA_DIR, "locations.json")
 
 REMOTE_TRANSLATION_URL = "https://gitee.com/hiczvko/translated_locations/raw/master/locations.json"
 
-DEBUG_BATTERY_LOG = False
 BATTERY_DEBOUNCE_SECONDS = 0.5
-PENDING_TIMEOUT_SECONDS = 20.0
-PENDING_ASSOCIATE_WINDOW_SECONDS = 20.0
-DEFAULT_SPONSOR_PROXY_PORT = 8080
+GAME_END_DEBOUNCE_SECONDS = 2.0
 SPONSOR_WORLD_PANELS = {
     "demo_lobby": ("JZU", "Demo Lobby", "Mega Patreon"),
     "se": ("S E", "S E", "Mega Supporters"),
 }
-COMMON_ACCELERATOR_PORTS = (7890, 7891, 9090, 1080, 10808, 10080)
 LOG_TAIL_SCAN_BYTES = 20 * 1024 * 1024
 LOG_LIVE_READ_BYTES = 1024 * 1024
 LOG_PENDING_HIGH_WATER = 2000
@@ -1922,76 +194,6 @@ PANEL_MODE_LABELS = {
 }
 PANEL_MODE_KEYS = {label: key for key, label in PANEL_MODE_LABELS.items()}
 
-
-def _parse_port(value):
-    try:
-        port = int(str(value).strip())
-    except Exception:
-        return None
-    if 1 <= port <= 65535:
-        return port
-    return None
-
-
-def _parse_port_from_proxy_server(proxy_server):
-    text = str(proxy_server or "").strip()
-    if not text:
-        return None
-
-    if "=" in text:
-        for part in text.split(";"):
-            if "http=" in part or "https=" in part:
-                _, value = part.split("=", 1)
-                text = value.strip()
-                break
-
-    if "://" in text:
-        text = text.split("://", 1)[1]
-    if "@" in text:
-        text = text.rsplit("@", 1)[-1]
-    if "/" in text:
-        text = text.split("/", 1)[0]
-
-    if text.startswith("[") and "]" in text:
-        _, _, rest = text.partition("]")
-        if rest.startswith(":"):
-            return _parse_port(rest[1:])
-        return None
-
-    if ":" not in text:
-        return None
-    return _parse_port(text.rsplit(":", 1)[1])
-
-
-def _is_local_port_available(port):
-    parsed = _parse_port(port)
-    if not parsed:
-        return False
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind(("127.0.0.1", parsed))
-        return True
-    except OSError:
-        return False
-
-
-def _build_sponsor_proxy_port_candidates():
-    candidates = [DEFAULT_SPONSOR_PROXY_PORT, 18080, 28080, 38080, 48080, 58080]
-    candidates.extend(range(20000, 20120))
-
-    rng = random.Random((int(datetime.now().timestamp() * 1000) ^ os.getpid()) & 0xFFFFFFFF)
-    for _ in range(120):
-        candidates.append(rng.randint(20000, 60999))
-
-    ordered = []
-    seen = set()
-    for item in candidates:
-        port = _parse_port(item)
-        if not port or port in seen:
-            continue
-        seen.add(port)
-        ordered.append(port)
-    return ordered
 
 ITEM_TRANSLATION = {
     "Proxy-Locator": "便携式探测设备",
@@ -2072,48 +274,31 @@ CUSTOM_ITEM_COLORS = {
 
 
 LOCATION_TRANSLATION = {}
+_POSITION_INDEX_SUFFIX_RE = re.compile(r'\s*\(\d+\)$')
+_POSITION_COLLIDER_RE = re.compile(r'_?collider_?', re.IGNORECASE)
+_GENERATOR_POSITION_RE = re.compile(r"^SC_generator(\d+)$", re.IGNORECASE)
 
 def load_translations():
+    """优先加载用户数据目录中的在线更新缓存，否则使用随程序分发的翻译表。"""
     global LOCATION_TRANSLATION
-    try:
-        # 1. 尝试从用户数据目录加载在线更新缓存
-        external_json = LOCAL_JSON_FILENAME
-        
-        # 2. 尝试从 PyInstaller 临时目录加载 (内部默认)
-        internal_json = None
-        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-            internal_json = os.path.join(sys._MEIPASS, 'locations.json')
-        
-        target_path = None
-        source_type = ""
-
-        if os.path.exists(external_json):
-            target_path = external_json
-            source_type = "外部文件"
-        elif internal_json and os.path.exists(internal_json):
-            target_path = internal_json
-            source_type = "内置资源"
-        elif os.path.exists(os.path.join(SCRIPT_DIR, 'locations.json')): # 开发环境 fallback
-            target_path = os.path.join(SCRIPT_DIR, 'locations.json')
-            source_type = "开发文件"
-
-        if target_path:
-            with open(target_path, 'r', encoding='utf-8') as f:
+    logger = logging.getLogger(__name__)
+    for path in (LOCAL_JSON_FILENAME, resource_path("locations.json")):
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
                 LOCATION_TRANSLATION = json.load(f)
-            logging.getLogger(__name__).info(
-                "Loaded locations.json (%s): %d translations", source_type, len(LOCATION_TRANSLATION),
-            )
-        else:
-            logging.getLogger(__name__).warning("locations.json not found; location translations are unavailable")
-            
-    except Exception as e:
-        logging.getLogger(__name__).warning("Failed to load locations.json: %s", e)
+            logger.info("Loaded %s: %d translations", path, len(LOCATION_TRANSLATION))
+            return
+        except Exception as e:
+            logger.warning("Failed to load %s: %s", path, e)
+    logger.warning("locations.json not found; location translations are unavailable")
+
 
 load_translations()
 
 
 # === 图片系统配置 ===
-REMOTE_IMG_ROOT = ""  # 请在此填入 GitHub Raw 加速地址，例如 https://raw.gh.fake/User/Repo/main
 IMG_DIR = "img_assets"
 IMG_JSON = "images.json"
 
@@ -2138,7 +323,6 @@ class SlashCoMonitorCN:
         # 关闭流程状态
         self._is_shutting_down = False
         self._log_queue_after_id = None
-        self._pending_tick_after_id = None
         self._round_timer_after_id = None
         self._ecliptica_hud_after_id = None
         self._ecliptica_sync_after_id = None
@@ -2151,7 +335,6 @@ class SlashCoMonitorCN:
         self._ecliptica_osc_test_active = False
         self._sponsor_op_lock = threading.Lock()
         self._sponsor_request = 0
-
 
         # 设置窗口图标
         try:
@@ -2174,16 +357,14 @@ class SlashCoMonitorCN:
         self.current_click_col = None
 
         self.gens = {
-            "SC_generator1": {"battery": False, "battery_pending": False, "pending_since": 0.0},
-            "SC_generator2": {"battery": False, "battery_pending": False, "pending_since": 0.0},
+            "SC_generator1": {"battery": False},
+            "SC_generator2": {"battery": False},
         }
 
         self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": None}
         self.fuel_added_count = 0
         self.free_fuel_explicit = False
         self.item_records = {}
-        self.group_order = {"地图": [], "玩家": [], "未知": []}
-        self.groups = {"地图": {}, "玩家": {}, "未知": {}}
         self.ecliptica_state = EclipticaState()
         self.detected_game_mode = "slashco"
         self.current_game_mode = "slashco"
@@ -2193,22 +374,13 @@ class SlashCoMonitorCN:
 
         self.last_reset_time = 0.0
         self.last_battery_event = {"SC_generator1": 0.0, "SC_generator2": 0.0}
-        self.last_pending_gid = None
-        self.last_pending_time = 0.0
         self.last_game_end_time = 0.0
         self.round_active = False
         self.round_started_at = None
         self.round_timed_out = False
-        self.held_items = set()
         self.consumed_fuel_items = set()
         self.pending_fuel_after_ids = {}
-        self.GAME_END_DEBOUNCE_SECONDS = 2.0
 
-        # 房主检测和OCR触发标志
-        self.is_host = False
-        self.ocr_triggered_this_round = False
-
-        self.wildcard_patterns = []
         self.compile_wildcard_patterns()
         self.untranslated_locations = set()
 
@@ -2220,7 +392,6 @@ class SlashCoMonitorCN:
             self.current_row_height = 24
         self.drag_start_y = 0
         self.start_row_height_on_drag = 24
-
 
         # 加载赞助者配置（UI 需要这些变量）
         self._load_sponsor_config()
@@ -2286,7 +457,6 @@ class SlashCoMonitorCN:
         # 启动更新检查线程
         threading.Thread(target=self.check_and_update_translations, daemon=True).start()
 
-        self._pending_tick_after_id = self.root.after(1000, self.pending_timeout_tick)
         self.monitor_thread = threading.Thread(target=self.monitor_loop, daemon=True)
         self.monitor_thread.start()
 
@@ -2299,19 +469,18 @@ class SlashCoMonitorCN:
         self.tooltip_label = None
         self.tooltip_img = None
         self.last_tooltip_row = None
-        
-        if not os.path.exists(self.img_dir):
-            try: os.makedirs(self.img_dir)
-            except: pass
+
+        try:
+            os.makedirs(self.img_dir, exist_ok=True)
+        except OSError:
+            pass
 
         self.setup_image_system()
         self.root.after(IMAGE_SYNC_START_DELAY_MS, self._start_image_sync_thread)
 
         # 启动赞助者覆盖 (延迟到 mainloop 启动后)
-        if HAS_SPONSOR_PROXY and any(var.get() for var in self.sponsor_enabled.values()):
+        if any(var.get() for var in self.sponsor_enabled.values()):
             self.root.after(500, self._deferred_start_sponsor)
-
-
 
     def _ui_after(self, callback, *args):
         """安全投递到主线程，避免工作线程直接调用 Tk。"""
@@ -2406,11 +575,6 @@ class SlashCoMonitorCN:
         self._ui_after(self._set_update_status, f"正在下载新版本... {pct:.0f}%", pct)
 
     def _check_app_update_worker(self):
-        if not HAS_REQUESTS:
-            self._ui_after(self._hide_update_frame)
-            self._ui_after(self.log, "未安装 requests 库，跳过软件更新检查")
-            return
-
         try:
             release_data = fetch_latest_release(requests.get)
             update_info = parse_update_info(release_data, APP_VERSION)
@@ -2465,57 +629,37 @@ class SlashCoMonitorCN:
             self.log(f"应用更新失败: {e}")
 
     def check_and_update_translations(self):
-
-        if os.path.exists(LOCAL_JSON_FILENAME):
-            try:
-                with open(LOCAL_JSON_FILENAME, 'r', encoding='utf-8') as f:
-                    local_data = json.load(f)
-                    LOCATION_TRANSLATION.update(local_data)
-                    self.compile_wildcard_patterns()
-                    self._ui_after(self.log, "已加载本地翻译缓存")
-            except Exception as e:
-                err_msg = str(e)
-                self._ui_after(self.log, f"本地翻译缓存加载失败: {err_msg}")
-
-        if HAS_REQUESTS and REMOTE_TRANSLATION_URL:
-            try:
-                self._ui_after(self.log, "正在检查在线翻译更新...")
-                resp = requests.get(REMOTE_TRANSLATION_URL, timeout=5)
-                if resp.status_code == 200:
-                    online_data = resp.json()
-                    LOCATION_TRANSLATION.update(online_data)
-                    self.compile_wildcard_patterns()
-
-                    if not os.path.exists(DATA_DIR):
-                        os.makedirs(DATA_DIR, exist_ok=True)
-
-                    with atomic_open(LOCAL_JSON_FILENAME) as f:
-                        json.dump(online_data, f, ensure_ascii=False, indent=2)
-
-                    self._ui_after(self.log, "翻译库已在线更新")
-                else:
-                    status = resp.status_code
-                    self._ui_after(self.log, f"在线更新失败: HTTP {status}")
-            except Exception as e:
-                err_msg = str(e)
-                self._ui_after(self.log, f"在线更新失败: {err_msg}")
-        elif not HAS_REQUESTS:
-            self._ui_after(self.log, "未安装 requests 库，跳过在线更新")
+        """后台拉取在线翻译表；本地缓存已在模块加载时读入。"""
+        try:
+            self._ui_after(self.log, "正在检查在线翻译更新...")
+            resp = requests.get(REMOTE_TRANSLATION_URL, timeout=5)
+            if resp.status_code != 200:
+                self._ui_after(self.log, f"在线更新失败: HTTP {resp.status_code}")
+                return
+            online_data = resp.json()
+            LOCATION_TRANSLATION.update(online_data)
+            self.compile_wildcard_patterns()
+            with atomic_open(LOCAL_JSON_FILENAME) as f:
+                json.dump(online_data, f, ensure_ascii=False, indent=2)
+            self._ui_after(self.log, "翻译库已在线更新")
+        except Exception as e:
+            self._ui_after(self.log, f"在线更新失败: {e}")
 
     def compile_wildcard_patterns(self):
-        self.wildcard_patterns = []
+        patterns = []
         for key, trans_value in LOCATION_TRANSLATION.items():
             if 'X' in key:
-                escaped_key = re.escape(key)
-                pattern_str = "^" + escaped_key.replace("X", r"([A-Z0-9]+)") + "$"
+                pattern_str = "^" + re.escape(key).replace("X", r"([A-Z0-9]+)") + "$"
                 try:
-                    pattern = re.compile(pattern_str, re.IGNORECASE)
-                    self.wildcard_patterns.append((pattern, trans_value, key))
+                    patterns.append((re.compile(pattern_str, re.IGNORECASE), trans_value, key))
                 except re.error:
                     pass
-        
+
         # 按键长度降序排序（确保更具体的规则如 "DeskX_WOOD" 优先于 "X_WOOD"）
-        self.wildcard_patterns.sort(key=lambda x: len(x[2]), reverse=True)
+        patterns.sort(key=lambda x: len(x[2]), reverse=True)
+        self.wildcard_patterns = patterns
+        # 翻译表变化后旧的位置翻译结果全部失效。
+        self._position_cache = {}
 
     def setup_ui(self):
         self.style = ttk.Style()
@@ -2533,7 +677,7 @@ class SlashCoMonitorCN:
         top_bar = Frame(self.left_p)
         top_bar.pack(fill=X, padx=5, pady=5)
         self.update_frame_after_widget = top_bar
-        
+
         ttk.Label(top_bar, text="数据面板：").pack(side=LEFT)
         self.panel_mode_combo = ttk.Combobox(
             top_bar,
@@ -2663,98 +807,7 @@ class SlashCoMonitorCN:
         self.lbl_stats_headstart.pack(anchor=W, pady=2)
 
         self._build_ecliptica_left_panel()
-
-
-
-
-        
-        # 赞助者名单覆盖设置
-        if HAS_SPONSOR_PROXY:
-            sponsor_frame = ttk.LabelFrame(self.left_content, text="赞助者名单覆盖", padding=5)
-            sponsor_frame.pack(fill=X, padx=5, pady=2, before=self.mode_left_container)
-            
-            row1 = ttk.Frame(sponsor_frame)
-            row1.pack(fill=X, pady=2)
-            self.chk_sponsor = ttk.Checkbutton(
-                row1, text="启用赞助者名单覆盖",
-                variable=self.sponsor_enabled["slashco"],
-                command=lambda: self._on_sponsor_toggle("slashco"),
-            )
-            self.chk_sponsor.pack(side=LEFT)
-            self.lbl_sponsor_status = ttk.Label(row1, text="", foreground="gray", font=("\u5fae\u8f6f\u96c5\u9ed1", 8))
-            self.lbl_sponsor_status.pack(side=RIGHT)
-            self._sponsor_status_labels = {"slashco": self.lbl_sponsor_status}
-            self._sponsor_panel_buttons = {}
-            self._sponsor_panels = {}
-            for profile in SPONSOR_WORLD_PANELS:
-                button = ttk.Button(
-                    row1,
-                    command=lambda profile=profile: self._toggle_sponsor_panel(profile),
-                    width=9,
-                )
-                button.pack(side=LEFT, padx=(8, 0))
-                self._sponsor_panel_buttons[profile] = button
-            
-            row2 = ttk.Frame(sponsor_frame)
-            row2.pack(fill=X, pady=2)
-            ttk.Label(row2, text="\u663e\u793a\u540d\u79f0\uff1a").pack(side=LEFT)
-            self.entry_sponsor_name = ttk.Entry(row2, textvariable=self.sponsor_name["slashco"], width=20)
-            self.entry_sponsor_name.pack(side=LEFT, padx=(0, 5), fill=X, expand=True)
-            ttk.Button(row2, text="\u4fdd\u5b58", command=self._save_sponsor_config, width=6).pack(side=RIGHT)
-
-            row3 = ttk.Frame(sponsor_frame)
-            row3.pack(fill=X, pady=2)
-            ttk.Label(row3, text="模式：").pack(side=LEFT)
-            ttk.Radiobutton(
-                row3,
-                text="mitmdump",
-                variable=self.sponsor_mode,
-                value="mitm",
-                command=self._save_sponsor_config,
-            ).pack(side=LEFT, padx=(0, 8))
-            ttk.Radiobutton(
-                row3,
-                text="hosts + Caddy",
-                variable=self.sponsor_mode,
-                value="caddy",
-                command=self._save_sponsor_config,
-            ).pack(side=LEFT)
-            ttk.Label(
-                sponsor_frame,
-                text="如果当前模式不生效，请停止后切换另一个模式再试。",
-                foreground="#c0392b",
-                font=("\u5fae\u8f6f\u96c5\u9ed1", 8),
-            ).pack(fill=X, pady=(2, 0))
-
-            for profile, (_, world, tier) in SPONSOR_WORLD_PANELS.items():
-                panel = ttk.LabelFrame(self.left_content, text=f"{world} {tier}", padding=5)
-                self._sponsor_panels[profile] = panel
-                controls = ttk.Frame(panel)
-                controls.pack(fill=X, pady=2)
-                ttk.Checkbutton(
-                    controls,
-                    text=f"启用 {world} 覆盖",
-                    variable=self.sponsor_enabled[profile],
-                    command=lambda profile=profile: self._on_sponsor_toggle(profile),
-                ).pack(side=LEFT)
-                status = ttk.Label(controls, foreground="gray", font=("微软雅黑", 8))
-                status.pack(side=RIGHT)
-                self._sponsor_status_labels[profile] = status
-
-                name_row = ttk.Frame(panel)
-                name_row.pack(fill=X, pady=2)
-                ttk.Label(name_row, text="VRChat 名称：").pack(side=LEFT)
-                ttk.Entry(name_row, textvariable=self.sponsor_name[profile], width=20).pack(
-                    side=LEFT, padx=(0, 5), fill=X, expand=True,
-                )
-                ttk.Button(name_row, text="保存", command=self._save_sponsor_config, width=6).pack(side=RIGHT)
-                ttk.Label(
-                    panel,
-                    text="启用后重新进入对应世界。每次只能启用一项赞助者覆盖。",
-                    foreground="#7f8c8d",
-                    font=("微软雅黑", 8),
-                ).pack(fill=X, pady=(2, 0))
-                self._refresh_sponsor_panel_button(profile)
+        self._build_sponsor_panel()
 
         # 参考图折叠区域
         self.img_visible = False
@@ -2800,7 +853,7 @@ class SlashCoMonitorCN:
         # 修改：移除选中时的背景色映射，仅保留前景色的变化（如果需要），或者完全移除映射以保持原色
         # 这里我们将 map 置空，这样选中时就不会改变背景色
         self.style.map('Treeview', background=[], foreground=[])
-        
+
         cols = ("ID", "NameCN", "Pos")
         self.tree = ttk.Treeview(item_frame, columns=cols, show="headings")
 
@@ -2823,7 +876,7 @@ class SlashCoMonitorCN:
 
         self.tree.tag_configure("section", background="#f0f0f0", foreground="black", font=("微软雅黑", 9, "bold"))
         self.tree.tag_configure("blank", background="#ffffff")
-        
+
         # 注册自定义颜色标签 (智能背景)
         self.register_custom_tags()
 
@@ -2835,6 +888,93 @@ class SlashCoMonitorCN:
         self._bind_left_mousewheel(self.left_content)
         self._refresh_left_scrollregion()
         self._set_active_game_mode("slashco", log_change=False)
+
+    def _build_sponsor_panel(self):
+        sponsor_frame = ttk.LabelFrame(self.left_content, text="赞助者名单覆盖", padding=5)
+        sponsor_frame.pack(fill=X, padx=5, pady=2, before=self.mode_left_container)
+
+        row1 = ttk.Frame(sponsor_frame)
+        row1.pack(fill=X, pady=2)
+        self.chk_sponsor = ttk.Checkbutton(
+            row1, text="启用赞助者名单覆盖",
+            variable=self.sponsor_enabled["slashco"],
+            command=lambda: self._on_sponsor_toggle("slashco"),
+        )
+        self.chk_sponsor.pack(side=LEFT)
+        self.lbl_sponsor_status = ttk.Label(row1, text="", foreground="gray", font=("\u5fae\u8f6f\u96c5\u9ed1", 8))
+        self.lbl_sponsor_status.pack(side=RIGHT)
+        self._sponsor_status_labels = {"slashco": self.lbl_sponsor_status}
+        self._sponsor_panel_buttons = {}
+        self._sponsor_panels = {}
+        for profile in SPONSOR_WORLD_PANELS:
+            button = ttk.Button(
+                row1,
+                command=lambda profile=profile: self._toggle_sponsor_panel(profile),
+                width=9,
+            )
+            button.pack(side=LEFT, padx=(8, 0))
+            self._sponsor_panel_buttons[profile] = button
+
+        row2 = ttk.Frame(sponsor_frame)
+        row2.pack(fill=X, pady=2)
+        ttk.Label(row2, text="\u663e\u793a\u540d\u79f0\uff1a").pack(side=LEFT)
+        self.entry_sponsor_name = ttk.Entry(row2, textvariable=self.sponsor_name["slashco"], width=20)
+        self.entry_sponsor_name.pack(side=LEFT, padx=(0, 5), fill=X, expand=True)
+        ttk.Button(row2, text="\u4fdd\u5b58", command=self._save_sponsor_config, width=6).pack(side=RIGHT)
+
+        row3 = ttk.Frame(sponsor_frame)
+        row3.pack(fill=X, pady=2)
+        ttk.Label(row3, text="模式：").pack(side=LEFT)
+        ttk.Radiobutton(
+            row3,
+            text="mitmdump",
+            variable=self.sponsor_mode,
+            value="mitm",
+            command=self._save_sponsor_config,
+        ).pack(side=LEFT, padx=(0, 8))
+        ttk.Radiobutton(
+            row3,
+            text="hosts + Caddy",
+            variable=self.sponsor_mode,
+            value="caddy",
+            command=self._save_sponsor_config,
+        ).pack(side=LEFT)
+        ttk.Label(
+            sponsor_frame,
+            text="如果当前模式不生效，请停止后切换另一个模式再试。",
+            foreground="#c0392b",
+            font=("\u5fae\u8f6f\u96c5\u9ed1", 8),
+        ).pack(fill=X, pady=(2, 0))
+
+        for profile, (_, world, tier) in SPONSOR_WORLD_PANELS.items():
+            panel = ttk.LabelFrame(self.left_content, text=f"{world} {tier}", padding=5)
+            self._sponsor_panels[profile] = panel
+            controls = ttk.Frame(panel)
+            controls.pack(fill=X, pady=2)
+            ttk.Checkbutton(
+                controls,
+                text=f"启用 {world} 覆盖",
+                variable=self.sponsor_enabled[profile],
+                command=lambda profile=profile: self._on_sponsor_toggle(profile),
+            ).pack(side=LEFT)
+            status = ttk.Label(controls, foreground="gray", font=("微软雅黑", 8))
+            status.pack(side=RIGHT)
+            self._sponsor_status_labels[profile] = status
+
+            name_row = ttk.Frame(panel)
+            name_row.pack(fill=X, pady=2)
+            ttk.Label(name_row, text="VRChat 名称：").pack(side=LEFT)
+            ttk.Entry(name_row, textvariable=self.sponsor_name[profile], width=20).pack(
+                side=LEFT, padx=(0, 5), fill=X, expand=True,
+            )
+            ttk.Button(name_row, text="保存", command=self._save_sponsor_config, width=6).pack(side=RIGHT)
+            ttk.Label(
+                panel,
+                text="启用后重新进入对应世界。每次只能启用一项赞助者覆盖。",
+                foreground="#7f8c8d",
+                font=("微软雅黑", 8),
+            ).pack(fill=X, pady=(2, 0))
+            self._refresh_sponsor_panel_button(profile)
 
     def _on_left_canvas_configure(self, event):
         self.left_canvas.itemconfigure(self.left_content_window, width=max(1, event.width))
@@ -3309,7 +1449,6 @@ class SlashCoMonitorCN:
         sync_scrollbar.pack(side=RIGHT, fill=Y)
         self.ecliptica_sync_tree.configure(yscrollcommand=sync_scrollbar.set)
 
-
     def _panel_mode_preference(self):
         label = self.panel_mode_var.get() if hasattr(self, "panel_mode_var") else PANEL_MODE_LABELS["auto"]
         return PANEL_MODE_KEYS.get(label, "auto")
@@ -3622,8 +1761,9 @@ class SlashCoMonitorCN:
         if rows == self._ecliptica_sync_player_rows:
             return
         self._ecliptica_sync_player_rows = rows
-        for item in tree.get_children():
-            tree.delete(item)
+        children = tree.get_children()
+        if children:
+            tree.delete(*children)
         for row in rows:
             tree.insert("", END, values=row)
 
@@ -3827,7 +1967,7 @@ class SlashCoMonitorCN:
                 text = "连跳中"
             else:
                 text = "按住空格开始连跳"
-            self.ecliptica_auto_jump_status_var.set(text)
+            set_var_if_changed(self.ecliptica_auto_jump_status_var, text)
         except Exception:
             pass
         try:
@@ -4190,7 +2330,7 @@ class SlashCoMonitorCN:
         selected_pid = int(getattr(self, "_current_log_pid", 0) or 0)
         if selected_pid:
             return foreground_pid == selected_pid
-        return is_hud_foreground()
+        return is_vrchat_foreground()
 
     def _should_show_ecliptica_hud(self):
         return (
@@ -4380,7 +2520,7 @@ class SlashCoMonitorCN:
             # 计算亮度 (Luma)
             yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000
             return yiq >= 128
-        except:
+        except Exception:
             return True
 
     def register_custom_tags(self):
@@ -4388,7 +2528,7 @@ class SlashCoMonitorCN:
         for hex_color in CUSTOM_ITEM_COLORS.values():
             if hex_color not in seen_colors:
                 tag_name = f"color_{hex_color.replace('#', '')}"
-                
+
                 # 新思路：修改背景颜色 (background)
                 # 根据背景色的深浅，自动选择文字颜色 (foreground) 以保证可读性
                 if self.is_light_color(hex_color):
@@ -4397,9 +2537,9 @@ class SlashCoMonitorCN:
                 else:
                     # 深色背景 -> 白色文字
                     text_color = "white"
-                
+
                 self.tree.tag_configure(tag_name, background=hex_color, foreground=text_color, font=("微软雅黑", 9, "bold"))
-                
+
                 seen_colors.add(hex_color)
 
     def on_resize_press(self, event):
@@ -4407,7 +2547,7 @@ class SlashCoMonitorCN:
         try:
             current = self.style.lookup("Treeview", "rowheight")
             self.start_row_height_on_drag = int(current)
-        except:
+        except Exception:
             self.start_row_height_on_drag = 25
 
     def on_resize_motion(self, event):
@@ -4454,11 +2594,11 @@ class SlashCoMonitorCN:
         if item_id in self.item_records:
             rec = self.item_records[item_id]
             target_text = rec["en"]  # 默认物品英文名
-            
+
             # 如果点击的是位置列（第3列）
             if self.current_click_col == "#3":
                 target_text = rec.get("pos_raw", "") or rec.get("pos", "")
-                
+
             if target_text:
                 self.root.clipboard_clear()
                 self.root.clipboard_append(target_text)
@@ -4509,7 +2649,6 @@ class SlashCoMonitorCN:
             self.root.clipboard_clear()
             self.root.clipboard_append(text)
             self.log(f"已复制列数据 ({len(data_list)} 条)")
-
 
     def export_untranslated(self):
         if not self.untranslated_locations:
@@ -4563,19 +2702,14 @@ class SlashCoMonitorCN:
                     enabled.set(False if has_enabled_profile else cfg.get(f"{prefix}enabled", False))
                     self.sponsor_name[profile].set(cfg.get(f"{prefix}name", ""))
                     has_enabled_profile |= enabled.get()
-                mode = cfg.get("mode", "mitm")
-                if HAS_SPONSOR_PROXY and hasattr(sponsor_caddy, "normalize_sponsor_mode"):
-                    mode = sponsor_caddy.normalize_sponsor_mode(mode)
-                self.sponsor_mode.set(mode if mode in ("mitm", "caddy") else "mitm")
+                self.sponsor_mode.set(sponsor_mitm.normalize_sponsor_mode(cfg.get("mode")))
         except Exception:
             pass
 
     def _save_sponsor_config(self):
         """保存赞助者配置"""
         config_path = os.path.join(self.base_dir, "sponsor_config.json")
-        mode = self.sponsor_mode.get() if hasattr(self, "sponsor_mode") else "mitm"
-        if HAS_SPONSOR_PROXY and hasattr(sponsor_caddy, "normalize_sponsor_mode"):
-            mode = sponsor_caddy.normalize_sponsor_mode(mode)
+        mode = sponsor_mitm.normalize_sponsor_mode(self.sponsor_mode.get())
         cfg = {"mode": mode}
         for profile, enabled in self.sponsor_enabled.items():
             prefix = "" if profile == "slashco" else f"{profile}_"
@@ -4591,54 +2725,11 @@ class SlashCoMonitorCN:
         except Exception as e:
             self.log(f"保存赞助者设置失败: {e}")
 
-    def _select_sponsor_proxy_port(self):
-        blocked = set(COMMON_ACCELERATOR_PORTS)
-        try:
-            proxy_settings = sponsor_caddy._get_proxy_settings()
-        except Exception:
-            proxy_settings = {}
-
-        if proxy_settings and proxy_settings.get("ProxyEnable") == 1:
-            upstream_port = _parse_port_from_proxy_server(proxy_settings.get("ProxyServer"))
-            if upstream_port:
-                blocked.add(upstream_port)
-
-        for port in _build_sponsor_proxy_port_candidates():
-            if port in blocked:
-                continue
-            if _is_local_port_available(port):
-                return port
-
-        current_default = _parse_port(getattr(sponsor_caddy, "PROXY_PORT", DEFAULT_SPONSOR_PROXY_PORT))
-        return current_default or DEFAULT_SPONSOR_PROXY_PORT
-
-    def _prepare_sponsor_proxy_port(self):
-        selected_port = self._select_sponsor_proxy_port()
-        current_port = _parse_port(getattr(sponsor_caddy, "PROXY_PORT", DEFAULT_SPONSOR_PROXY_PORT))
-        sponsor_caddy.PROXY_PORT = selected_port
-        if selected_port != current_port:
-            self.log(f"代理端口预设为: {selected_port}")
-        return selected_port
-
     def _force_cleanup_sponsor_proxy(self):
-        if not HAS_SPONSOR_PROXY:
-            return
-
         try:
-            force_cleanup = getattr(sponsor_caddy, "force_cleanup", None)
-            if callable(force_cleanup):
-                force_cleanup(log_func=None)
-                return
+            sponsor_mitm.force_cleanup(log_func=None)
         except Exception:
             pass
-
-        for fn_name in ("_restore_proxy", "_stop_mitmdump", "_cleanup_old_caddy_residuals"):
-            try:
-                fn = getattr(sponsor_caddy, fn_name, None)
-                if callable(fn):
-                    fn(log_func=None)
-            except Exception:
-                pass
 
     def _on_sponsor_toggle(self, profile):
         enabled = self.sponsor_enabled[profile].get()
@@ -4673,20 +2764,18 @@ class SlashCoMonitorCN:
             if self._is_shutting_down or request != self._sponsor_request:
                 return
             try:
-                if sponsor_caddy.is_running():
-                    sponsor_caddy.stop_sponsor_override(log_func=self.log)
+                if sponsor_mitm.is_running():
+                    sponsor_mitm.stop_sponsor_override(log_func=self.log)
                 if self._is_shutting_down or request != self._sponsor_request:
                     return
                 success, message = True, ""
                 if enabled:
-                    if mode == "mitm":
-                        self._prepare_sponsor_proxy_port()
                     if profile == "slashco":
-                        success, message = sponsor_caddy.start_sponsor_override(name, log_func=self.log, mode=mode)
+                        success, message = sponsor_mitm.start_sponsor_override(name, log_func=self.log, mode=mode)
                     elif profile == "demo_lobby":
-                        success, message = sponsor_caddy.start_demo_lobby_override(name, log_func=self.log)
+                        success, message = sponsor_mitm.start_demo_lobby_override(name, log_func=self.log)
                     else:
-                        success, message = sponsor_caddy.start_se_override(name, log_func=self.log)
+                        success, message = sponsor_mitm.start_se_override(name, log_func=self.log)
             except Exception as exc:
                 success, message = False, str(exc)
             self._ui_after(self._finish_sponsor_override, request, profile, enabled, mode, success, message)
@@ -4702,7 +2791,7 @@ class SlashCoMonitorCN:
             self._refresh_sponsor_panel_button(profile)
             self._save_sponsor_config()
         elif enabled:
-            mode_label = sponsor_caddy.get_sponsor_mode_label(mode)
+            mode_label = sponsor_mitm.get_sponsor_mode_label(mode)
             self._update_sponsor_status(profile, f"运行中 ✓ ({mode_label})", "#27ae60")
         else:
             self._update_sponsor_status(profile, "已停止", "gray")
@@ -4710,12 +2799,8 @@ class SlashCoMonitorCN:
     def _force_stop_sponsor_process(self):
         """关闭时兜底终止 mitmdump 进程，避免阻塞主线程。"""
         try:
-            try:
-                self._force_cleanup_sponsor_proxy()
-            except Exception:
-                pass
-
-            proc = getattr(sponsor_caddy, "_mitm_process", None)
+            self._force_cleanup_sponsor_proxy()
+            proc = sponsor_mitm._mitm_process
             if not proc:
                 return
             pid = None
@@ -4755,7 +2840,7 @@ class SlashCoMonitorCN:
         def _worker():
             try:
                 with self._sponsor_op_lock:
-                    sponsor_caddy.stop_sponsor_override(log_func=None)
+                    sponsor_mitm.stop_sponsor_override(log_func=None)
             finally:
                 done.set()
 
@@ -4793,7 +2878,6 @@ class SlashCoMonitorCN:
             )
         self._refresh_sponsor_panel_button(profile)
 
-
     def load_fixed_height_image(self):
         if not os.path.exists(IMAGE_FILENAME):
             self.lbl_image.configure(text=f"图片文件 {IMAGE_FILENAME} 不存在")
@@ -4804,8 +2888,6 @@ class SlashCoMonitorCN:
             self.lbl_image.configure(image=self.tk_img, text="")
         except Exception as e:
             self.lbl_image.configure(text=f"图片加载失败: {e}\n(请确保图片已手动调整为高度550像素)")
-
-
 
     def log(self, msg: str):
         if self._is_shutting_down:
@@ -4942,8 +3024,6 @@ class SlashCoMonitorCN:
                 pass
             self._tree_rebuild_after_id = None
         self.item_records.clear()
-        self.group_order = {"地图": [], "玩家": [], "未知": []}
-        self.groups = {"地图": {}, "玩家": {}, "未知": {}}
         self.rebuild_item_tree()
         self.game_stats = {"fuel_base": 0, "fuel_extra": 0, "item_out": 0, "item_in": 0, "players": 0, "free_fuel": 0, "sealed_rooms": None}
         self.fuel_added_count = 0
@@ -4951,22 +3031,16 @@ class SlashCoMonitorCN:
         self.update_fuel_ui()
         self.update_stats_ui()
         self.stop_round_timer()
-        self.held_items.clear()
         self.consumed_fuel_items.clear()
         self._cancel_pending_fuel_hibernations()
         for gid in self.gens:
-            self.gens[gid] = {"battery": False, "battery_pending": False, "pending_since": 0.0}
+            self.gens[gid] = {"battery": False}
             self.last_battery_event[gid] = 0.0
             self.update_gen_ui(gid)
-        self.last_pending_gid = None
-        self.last_pending_time = 0.0
 
     def update_gen_ui(self, gid: str):
         data = self.gens[gid]
         ui = self.ui_gens[gid]
-        if data.get("battery_pending", False) and not data.get("battery", False):
-            ui["bat"].configure(text="[安装中]", foreground="orange")
-            return
         if data["battery"]:
             ui["bat"].configure(text="[有电池]", foreground="green")
         else:
@@ -5058,16 +3132,6 @@ class SlashCoMonitorCN:
         except Exception:
             self._confirm_fuel_hibernation(iid_norm)
 
-    def set_battery_pending(self, gid: str, reason: str = ""):
-        if gid not in self.gens: return
-        if self.gens[gid].get("battery", False): return
-        self.gens[gid]["battery_pending"] = True
-        self.gens[gid]["pending_since"] = time.time()
-        self.last_pending_gid = gid
-        self.last_pending_time = time.time()
-        self.update_gen_ui(gid)
-        self.log(f"{gid} 电池安装中 {reason}".strip())
-
     def set_battery_state(self, gid: str, state: bool, reason: str = ""):
         if gid not in self.gens: return
         now = time.time()
@@ -5076,42 +3140,8 @@ class SlashCoMonitorCN:
             return
         self.last_battery_event[gid] = now
         self.gens[gid]["battery"] = state
-        self.gens[gid]["battery_pending"] = False
-        self.gens[gid]["pending_since"] = 0.0
         self.update_gen_ui(gid)
         self.log(f"{gid} 电池状态 => {state} {reason}".strip())
-
-    def fail_pending_battery_if_any(self, reason: str = ""):
-        now = time.time()
-        if self.last_pending_gid and (now - self.last_pending_time <= PENDING_ASSOCIATE_WINDOW_SECONDS):
-            gid = self.last_pending_gid
-            if self.gens.get(gid, {}).get("battery_pending", False):
-                self.set_battery_state(gid, False, reason=reason)
-            return
-        for gid in self.gens:
-            if self.gens[gid].get("battery_pending", False):
-                self.set_battery_state(gid, False, reason=reason)
-                return
-
-    def pending_timeout_tick(self):
-        if self._is_shutting_down:
-            self._pending_tick_after_id = None
-            return
-        now = time.time()
-        for gid in self.gens:
-            if self.gens[gid].get("battery_pending", False):
-                if now - self.gens[gid].get("pending_since", 0.0) > PENDING_TIMEOUT_SECONDS:
-                    self.gens[gid]["battery_pending"] = False
-                    self.gens[gid]["pending_since"] = 0.0
-                    self.update_gen_ui(gid)
-                    self.log(f"{gid} 电池安装中超时，已自动清理。")
-        if self._is_shutting_down:
-            self._pending_tick_after_id = None
-            return
-        try:
-            self._pending_tick_after_id = self.root.after(1000, self.pending_timeout_tick)
-        except Exception:
-            self._pending_tick_after_id = None
 
     def update_stats_ui(self):
         base = self.game_stats["fuel_base"]
@@ -5128,14 +3158,14 @@ class SlashCoMonitorCN:
             self.lbl_stats_item.configure(text=f"物品：共有 {total} 个，其中 {in_n} 个在上锁的房间")
         else:
             self.lbl_stats_item.configure(text="物品：等待检测...")
-        
+
         # 显示封锁房间数
         sealed = self.game_stats["sealed_rooms"]
         if sealed is not None:
             self.lbl_stats_sealed.configure(text=f"有 {sealed} 个门被锁上")
         else:
             self.lbl_stats_sealed.configure(text="")
-        
+
         # 显示玩家优惠（只有检测到可少加油时才显示）
         players = self.game_stats["players"]
         free_fuel = self.game_stats["free_fuel"]
@@ -5151,128 +3181,102 @@ class SlashCoMonitorCN:
 
     def add_item_record(self, iid_norm: str, cn: str, en: str):
         if iid_norm in self.item_records: return
-        source = self.classify_source(iid_norm)
-        group_key = en
-        self.item_records[iid_norm] = {"cn": cn, "en": en, "source": source, "group": group_key, "pos": "", "pos_raw": ""}
-        if group_key not in self.groups[source]:
-            self.groups[source][group_key] = []
-            self.group_order[source].append(group_key)
-        self.groups[source][group_key].append(iid_norm)
+        self.item_records[iid_norm] = {
+            "cn": cn, "en": en, "source": self.classify_source(iid_norm), "pos": "", "pos_raw": "",
+        }
 
     def get_sort_key(self, iid):
         rec = self.item_records.get(iid)
         if not rec: return (100, 0)
-        
+
         # 优先级：油桶 > 电池 > 607型主锁 > 玻璃瓶 > 其他
         name = rec["en"]
         cn_name = rec["cn"]
-        
+
         prio = 10  # 默认其他
         if "Fuel" in name or "燃料" in cn_name: prio = 0
         elif "Battery" in name or "电池" in cn_name: prio = 1
         elif "Master" in name and "Lock" in name: prio = 2 # Master Lock 607 / MasterLock
         elif name == "MasterLock": prio = 2
         elif "Glass" in name and "Bottle" in name: prio = 3
-        
+
         # 提取ID数字 SC_Item123 -> 123
         num_id = item_numeric_id(iid)
-        
+
         return (prio, num_id)
 
-    def update_item_position(self, iid_norm: str, pos_name: str):
-        clean_pos = re.sub(r'\s*\(\d+\)$', '', pos_name)
-        clean_pos = re.sub(r'(?i)_?collider_?', '', clean_pos)
-        clean_pos = clean_pos.strip(" _")
-        clean_pos = clean_pos.replace("__", "_")
-        final_pos = clean_pos
+    def _translate_position(self, clean_pos: str):
+        """返回 (显示文本, 是否已翻译)，结果按清洗后的位置名缓存。"""
+        cache = self._position_cache
+        cached = cache.get(clean_pos)
+        if cached is not None:
+            return cached
 
-        is_translated = False
-        gen_match = re.match(r"(?i)^SC_generator(\d+)$", clean_pos)
+        result = (clean_pos, False)
+        gen_match = _GENERATOR_POSITION_RE.match(clean_pos)
         if clean_pos == "已加油":
-            is_translated = True
+            result = (clean_pos, True)
         elif gen_match:
-            final_pos = f"已安装到发电机 {gen_match.group(1)}"
-            is_translated = True
+            result = (f"已安装到发电机 {gen_match.group(1)}", True)
         elif clean_pos in LOCATION_TRANSLATION:
-            final_pos = LOCATION_TRANSLATION[clean_pos]
-            is_translated = True
+            result = (LOCATION_TRANSLATION[clean_pos], True)
         else:
             for pattern, trans_template, _ in self.wildcard_patterns:
                 match = pattern.match(clean_pos)
                 if match:
-                    groups = match.groups()
-                    result = trans_template
-                    for g in groups:
-                        result = result.replace("X", g, 1)
-                    final_pos = result
-                    is_translated = True
+                    translated = trans_template
+                    for group in match.groups():
+                        translated = translated.replace("X", group, 1)
+                    result = (translated, True)
                     break
+        cache[clean_pos] = result
+        return result
 
-        if not is_translated and clean_pos.strip():
-            if clean_pos not in self.untranslated_locations:
-                self.untranslated_locations.add(clean_pos)
-                self.log(f"[未翻译] 发现新位置: {clean_pos}")
+    def update_item_position(self, iid_norm: str, pos_name: str):
+        clean_pos = _POSITION_INDEX_SUFFIX_RE.sub('', pos_name)
+        clean_pos = _POSITION_COLLIDER_RE.sub('', clean_pos)
+        clean_pos = clean_pos.strip(" _").replace("__", "_")
+        final_pos, is_translated = self._translate_position(clean_pos)
 
-        if iid_norm in self.item_records:
-            self.item_records[iid_norm]["pos"] = final_pos
-            self.item_records[iid_norm]["pos_raw"] = clean_pos  # 保存原始位置名
-            for child in self.tree.get_children():
-                vals = self.tree.item(child, "values")
-                if vals and vals[0] == iid_norm:
-                    new_vals = (vals[0], vals[1], final_pos)
-                    self.tree.item(child, values=new_vals)
-                    break
+        if not is_translated and clean_pos.strip() and clean_pos not in self.untranslated_locations:
+            self.untranslated_locations.add(clean_pos)
+            self.log(f"[未翻译] 发现新位置: {clean_pos}")
+
+        record = self.item_records.get(iid_norm)
+        if record is None:
+            return
+        record["pos_raw"] = clean_pos  # 保存原始位置名
+        if record["pos"] == final_pos:
+            return
+        record["pos"] = final_pos
+        # 行以物品 ID 作为 iid 插入；尚未重建进树的记录由下次重建带上位置。
+        if self.tree.exists(iid_norm):
+            self.tree.set(iid_norm, "Pos", final_pos)
 
     def rebuild_item_tree(self):
-        for it in self.tree.get_children():
-            self.tree.delete(it)
-        def insert_section(title: str):
-            self.tree.insert("", END, values=("", title, ""), tags=("section",))
-        def insert_blank():
-            self.tree.insert("", END, values=("", "", ""), tags=("blank",))
-            
-        insert_section("【地图物品】")
-        
-        # 获取并排序地图物品
-        map_items = []
-        if "地图" in self.groups:
-            for g in self.groups["地图"].values():
-                map_items.extend(g)
-        
+        tree = self.tree
+        children = tree.get_children()
+        if children:
+            tree.delete(*children)
+
+        tree.insert("", END, values=("", "【地图物品】", ""), tags=("section",))
+        records = self.item_records
+        map_items = [iid for iid, rec in records.items() if rec["source"] == "地图"]
         map_items.sort(key=self.get_sort_key)
-        
         for iid in map_items:
-            rec = self.item_records.get(iid)
-            if not rec: continue
-            
-            tags = []
-            # 应用颜色（仅限地图物品）
-            color_hex = CUSTOM_ITEM_COLORS.get(rec["en"])
-            if not color_hex:
-                color_hex = CUSTOM_ITEM_COLORS.get(rec["cn"])
-            
-            if color_hex:
-                tag_name = f"color_{color_hex.replace('#', '')}"
-                tags.append(tag_name)
-                
-            self.tree.insert("", END, iid=iid, values=(iid, rec["cn"], rec["pos"]), tags=tuple(tags))
-            
-        insert_blank()
-        insert_section("【玩家物品】")
-        
-        # 获取并排序玩家物品（按ID排序）
-        player_items = []
-        if "玩家" in self.groups:
-            for g in self.groups["玩家"].values():
-                player_items.extend(g)
-        
-        player_items.sort(key=lambda x: item_numeric_id(x))
-        
+            rec = records[iid]
+            # 颜色标签仅用于地图物品
+            color_hex = CUSTOM_ITEM_COLORS.get(rec["en"]) or CUSTOM_ITEM_COLORS.get(rec["cn"])
+            tags = (f"color_{color_hex.replace('#', '')}",) if color_hex else ()
+            tree.insert("", END, iid=iid, values=(iid, rec["cn"], rec["pos"]), tags=tags)
+
+        tree.insert("", END, values=("", "", ""), tags=("blank",))
+        tree.insert("", END, values=("", "【玩家物品】", ""), tags=("section",))
+        player_items = [iid for iid, rec in records.items() if rec["source"] == "玩家"]
+        player_items.sort(key=item_numeric_id)
         for iid in player_items:
-            rec = self.item_records.get(iid)
-            if not rec: continue
-            # 玩家物品保持默认颜色，不添加特别的 tags
-            self.tree.insert("", END, iid=iid, values=(iid, rec["cn"], rec["pos"]), tags=())
+            rec = records[iid]
+            tree.insert("", END, iid=iid, values=(iid, rec["cn"], rec["pos"]))
 
     def _flush_rebuild_item_tree(self):
         self._tree_rebuild_after_id = None
@@ -5371,7 +3375,6 @@ class SlashCoMonitorCN:
         if event.kind == "map_landing":
             map_name = event.groups[0].strip()
             self.begin_round(f"新地图加载: {map_name}")
-            # OCR 已改为通过 game_end 后的轮询机制触发，此处不再单独启动
             return
 
         if event.kind == "map_slashco":
@@ -5394,28 +3397,15 @@ class SlashCoMonitorCN:
             self.add_fuel_from_consumed_item(normalize_item_id(event.groups[0]))
             return
 
-        if event.kind == "pickup_item":
-            self.held_items.add(normalize_item_id(event.groups[0]))
-            return
-
-        if event.kind in ("drop_item", "holster_item"):
-            self.held_items.discard(normalize_item_id(event.groups[0]))
-            return
-
         if event.kind == "item_hibernated":
             iid = normalize_item_id(event.groups[0])
             item_type = event.groups[1].strip().lower()
             if self.round_active and item_type == "fuel":
                 self._schedule_fuel_hibernation(iid)
-            self.held_items.discard(iid)
             return
 
         if event.kind == "battery_progress":
             self.set_battery_state(event.groups[0], event.groups[1].lower() == "true", reason="(ProgressCheck)")
-            return
-
-        if event.kind == "battery_skillcheck_failed":
-            self.fail_pending_battery_if_any(reason="(SkillcheckFailed)")
             return
 
         if event.kind == "battery_fixing":
@@ -5424,7 +3414,7 @@ class SlashCoMonitorCN:
 
         if event.kind == "game_end":
             now = time.time()
-            if now - self.last_game_end_time >= self.GAME_END_DEBOUNCE_SECONDS:
+            if now - self.last_game_end_time >= GAME_END_DEBOUNCE_SECONDS:
                 self.last_game_end_time = now
                 self.reset_game(force=True, reason=f"检测到结束信号: {event.groups[0]}")
             return
@@ -5443,7 +3433,6 @@ class SlashCoMonitorCN:
 
         if event.kind == "slashco_loading":
             self.log("检测到数据加载 (SLASHCO now loading data)")
-            # OCR现在由音频匹配触发，不再使用日志触发
             return
 
     def get_latest_log_file(self):
@@ -5467,24 +3456,15 @@ class SlashCoMonitorCN:
                 latest_identity = event
         return latest_identity
 
-    def _is_round_start_line(self, line: str) -> bool:
-        return is_round_start_line(line)
-
-    def _is_round_end_line(self, line: str) -> bool:
-        return is_round_end_line(line)
-
     def _line_might_affect_state(self, line: str) -> bool:
         return line_might_affect_state(line) or line_might_affect_ecliptica_state(line)
 
-    def _read_log_tail_text(self, path: str):
+    def _get_active_round_recovery_lines(self, path: str):
         try:
-            return read_log_tail(path, LOG_TAIL_SCAN_BYTES)
+            text, start_offset, file_size = read_log_tail(path, LOG_TAIL_SCAN_BYTES)
         except Exception as e:
             self.log(f"读取日志尾部失败: {e}")
-            return "", 0, 0
-
-    def _get_active_round_recovery_lines(self, path: str):
-        text, start_offset, file_size = self._read_log_tail_text(path)
+            text, start_offset, file_size = "", 0, 0
         self._log_recovery_offset = file_size
         if not text:
             return []
@@ -5521,9 +3501,9 @@ class SlashCoMonitorCN:
                     "lobby",
                 }:
                     last_ecliptica_pos = pos
-                if self._is_round_start_line(line):
+                if is_round_start_line(line):
                     last_start_pos = pos
-                if self._is_round_end_line(line):
+                if is_round_end_line(line):
                     last_end_pos = pos
             pos += len(raw_line)
 
@@ -5765,7 +3745,6 @@ class SlashCoMonitorCN:
                 self.log(f"监控异常: {e}")
                 self._monitor_stop_event.wait(2)
 
-
     # === 图片系统实现 ===
     GITHUB_BASE_URL = "https://github.com/h1czvk0/slsc/raw/refs/heads/main"
     GH_PROXIES = [
@@ -5793,13 +3772,13 @@ class SlashCoMonitorCN:
     def _download_file_with_proxy(self, relative_path, best_proxy=None):
         """尝试使用代理下载文件，返回 (content, worked_proxy)"""
         url_suffix = f"{self.GITHUB_BASE_URL}/{relative_path}"
-        
+
         # 如果有确定的最佳代理，优先尝试
         proxies_to_try = self.GH_PROXIES.copy()
         if best_proxy in proxies_to_try:
             proxies_to_try.remove(best_proxy)
             proxies_to_try.insert(0, best_proxy)
-            
+
         for proxy in proxies_to_try:
             try:
                 full_url = f"{proxy}{url_suffix}"
@@ -5807,37 +3786,33 @@ class SlashCoMonitorCN:
                 resp = requests.get(full_url, timeout=5) # 5秒超时测速
                 if resp.status_code == 200:
                     return resp.content, proxy
-            except:
+            except Exception:
                 continue
         return None, None
 
     def start_image_sync(self):
-        if not HAS_REQUESTS:
-            self.log("未安装 requests 库，跳过图片同步")
-            return
-
         try:
             self.log("正在检查图片更新...")
-            
+
             # 1. 下载 images.json 并确定最佳代理
             content, best_proxy = self._download_file_with_proxy(IMG_JSON)
             if not content:
                 self.log("无法连接到图片服务器 (images.json 下载失败)")
                 return
-            
+
             # self.log(f"连接成功，使用代理: {best_proxy if best_proxy else '直连'}")
-            
+
             remote_data = json.loads(content.decode('utf-8'))
             remote_mappings = remote_data.get("mappings", {})
             remote_notes = remote_data.get("notes", {})
-            
+
             # 2. 更新本地映射
             self.img_mappings.update(remote_mappings)
             if isinstance(remote_notes, dict):
                 self.img_notes.update(remote_notes)
             with atomic_open(self.img_json_path) as f:
                 json.dump({"mappings": self.img_mappings, "notes": self.img_notes}, f, ensure_ascii=False, indent=4)
-            
+
             # 3. 计算差异 (支持 list 类型的值)
             needed_files = set()
             for val in self.img_mappings.values():
@@ -5850,42 +3825,38 @@ class SlashCoMonitorCN:
             local_files = set()
             if os.path.exists(self.img_dir):
                 local_files = set(os.listdir(self.img_dir))
-                
+
             # 清理废弃图片
             for f in local_files:
                 if f not in needed_files:
                     try: os.remove(os.path.join(self.img_dir, f))
-                    except: pass
-            
+                    except Exception: pass
+
             files_to_download = [f for f in needed_files if f not in local_files]
-            
+
             if not files_to_download:
                 self.log("图片已是最新")
                 return
 
             self.log(f"发现 {len(files_to_download)} 张新图片，开始同步...")
-            
+
             # 4. 并行下载
-            self.download_completed_count = 0
-            self.download_total_count = len(files_to_download)
-            
+            total = len(files_to_download)
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                futures = []
-                for fname in files_to_download:
-                    local_path = os.path.join(self.img_dir, fname)
-                    futures.append(executor.submit(self._download_image_worker, fname, local_path, best_proxy))
-                
-                # 监控进度
-                completed = 0
-                for f in concurrent.futures.as_completed(futures):
-                    completed += 1
-                    if completed % 5 == 0 or completed == self.download_total_count:
-                        self._ui_after(self.log, f"图片同步进度: {completed}/{self.download_total_count}")
-            
+                futures = [
+                    executor.submit(
+                        self._download_image_worker, fname, os.path.join(self.img_dir, fname), best_proxy,
+                    )
+                    for fname in files_to_download
+                ]
+                for completed, _future in enumerate(concurrent.futures.as_completed(futures), 1):
+                    if completed % 5 == 0 or completed == total:
+                        self.log(f"图片同步进度: {completed}/{total}")
+
             self.log("图片同步完成")
-                
+
         except Exception as e:
-            self._ui_after(self.log, f"同步流程错误: {e}")
+            self.log(f"同步流程错误: {e}")
 
     def _download_image_worker(self, fname, local_path, best_proxy):
         try:
@@ -5893,7 +3864,7 @@ class SlashCoMonitorCN:
             if content:
                 with atomic_open(local_path, 'wb') as f:
                     f.write(content)
-        except:
+        except Exception:
             pass
 
     def _get_image_path_for_item(self, item_id):
@@ -5908,7 +3879,7 @@ class SlashCoMonitorCN:
 
         rec = self.item_records[item_id]
         pos_raw = rec.get("pos_raw", "")
-        
+
         img_names = self.img_mappings.get(pos_raw)
 
         # 如果没有精确位置图片，尝试通用 Wildcard 映射。
@@ -5918,54 +3889,53 @@ class SlashCoMonitorCN:
                     img_names = self.img_mappings.get(w_key)
                     if img_names:
                         break
-        
+
         if not img_names:
             return []
-        
+
         # 兼容: 字符串转列表
         if isinstance(img_names, str):
             img_names = [img_names]
-        
+
         # 构建完整路径并过滤不存在的文件
         result = []
         for name in img_names:
             path = os.path.join(self.img_dir, name)
             if os.path.exists(path):
                 result.append(path)
-        
+
         return result
 
     def on_tree_motion(self, event):
         try:
             item_id = self.tree.identify_row(event.y)
             col = self.tree.identify_column(event.x)
-            
+
             # 判断是否应该显示：
             # 1. 悬停在第3列 ("位置"列)
             # 2. 或者悬停的行就是当前选中的行 (无论哪一列)
             selection = self.tree.selection()
             is_selected_row = (selection and selection[0] == item_id)
-            
+
             if not item_id or (col != "#3" and not is_selected_row):
                 self.hide_img_tooltip()
                 self.last_tooltip_row = None
                 return
 
             if item_id == self.last_tooltip_row:
-                return 
+                return
             self.last_tooltip_row = item_id
 
             # 使用提取的公共逻辑查找图片
             img_path = self._get_image_path_for_item(item_id)
-            
+
             if img_path:
                 self.show_img_tooltip(img_path, event.x_root, event.y_root)
                 return
-            
-            self.hide_img_tooltip()
-        except:
-            pass
 
+            self.hide_img_tooltip()
+        except Exception:
+            pass
 
     def on_tree_leave(self, event):
         self.hide_img_tooltip()
@@ -5974,25 +3944,25 @@ class SlashCoMonitorCN:
     def on_tree_select(self, event):
         """处理列表选中逻辑：有图片时显示全屏画廊覆盖层"""
         selection = self.tree.selection()
-        if not selection: 
+        if not selection:
             return
 
         item_id = selection[0]
-        
+
         # 更新记录，让 hover 逻辑知道这是选中行
-        if hasattr(self, 'last_tooltip_row') and self.last_tooltip_row != item_id:
-             self.last_tooltip_row = None
-        
+        if self.last_tooltip_row != item_id:
+            self.last_tooltip_row = None
+
         # 获取所有图片路径
         img_paths = self._get_all_image_paths_for_item(item_id)
-        
+
         if not img_paths:
             self.hide_img_tooltip()
             return
-        
+
         # 隐藏 tooltip
         self.hide_img_tooltip()
-        
+
         # 显示全屏画廊覆盖层
         rec = self.item_records.get(item_id, {})
         cn_name = rec.get("cn", "")
@@ -6003,38 +3973,38 @@ class SlashCoMonitorCN:
         """显示全屏画廊覆盖层"""
         # 先销毁旧的覆盖层
         self.hide_gallery_overlay()
-        
+
         # 创建覆盖层 Frame，覆盖整个 paned 区域
         self.gallery_overlay = Frame(self.root, bg="#f5f5f5")
         self.gallery_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
-        
+
         # 顶部栏：标题和返回按钮
         top_bar = Frame(self.gallery_overlay, bg="#ffffff", height=50)
         top_bar.pack(fill=X, side=TOP)
         top_bar.pack_propagate(False)
-        
+
         title = cn_name if cn_name else pos_raw
-        Label(top_bar, text=f"📍 {title} ({len(img_paths)}张图片)", 
+        Label(top_bar, text=f"📍 {title} ({len(img_paths)}张图片)",
               font=("微软雅黑", 14, "bold"), bg="#ffffff").pack(side=LEFT, padx=20, pady=10)
-        
+
         ttk.Button(top_bar, text="← 返回", command=self.hide_gallery_overlay).pack(side=RIGHT, padx=20, pady=10)
-        
+
         # 图片展示区域 (可滚动)
         canvas_frame = Frame(self.gallery_overlay, bg="#f5f5f5")
         canvas_frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
-        
+
         canvas = Canvas(canvas_frame, bg="#f5f5f5", highlightthickness=0)
         v_scroll = ttk.Scrollbar(canvas_frame, orient=VERTICAL, command=canvas.yview)
         h_scroll = ttk.Scrollbar(canvas_frame, orient=HORIZONTAL, command=canvas.xview)
         canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-        
+
         v_scroll.pack(side=RIGHT, fill=Y)
         h_scroll.pack(side=BOTTOM, fill=X)
         canvas.pack(fill=BOTH, expand=True)
-        
+
         inner = Frame(canvas, bg="#f5f5f5")
         canvas.create_window((0, 0), window=inner, anchor=NW)
-        
+
         # 计算网格布局
         num = len(img_paths)
         if num == 1:
@@ -6043,11 +4013,11 @@ class SlashCoMonitorCN:
             cols = 2
         else:
             cols = 3
-        
+
         # 加载并显示图片
         self.gallery_photo_refs = []
         max_size = 350
-        
+
         for i, path in enumerate(img_paths):
             row = i // cols
             col = i % cols
@@ -6056,32 +4026,32 @@ class SlashCoMonitorCN:
                 img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
                 photo = ImageTk.PhotoImage(img)
                 self.gallery_photo_refs.append(photo)
-                
+
                 cell = Frame(inner, bd=2, relief=SOLID, bg="white")
                 cell.grid(row=row, column=col, padx=10, pady=10)
-                
+
                 lbl = Label(cell, image=photo, bg="white")
                 lbl.pack(padx=5, pady=5)
-                
+
                 # 显示文件名
                 fname = os.path.basename(path)
                 Label(cell, text=fname[:25], font=("Consolas", 8), fg="#666", bg="white").pack()
-                
+
                 # 显示备注（如果有）
-                note = getattr(self, 'img_notes', {}).get(fname, "")
+                note = self.img_notes.get(fname, "")
                 if note:
-                    Label(cell, text=f"📝 {note}", font=("微软雅黑", 9), fg="#333", bg="#fffacd", 
+                    Label(cell, text=f"📝 {note}", font=("微软雅黑", 9), fg="#333", bg="#fffacd",
                           wraplength=max_size-20).pack(fill=X, padx=3, pady=3)
             except Exception:
                 pass
-        
+
         # 更新滚动区域
         inner.update_idletasks()
         canvas.config(scrollregion=canvas.bbox("all"))
-        
-        # 绑定鼠标滚轮
+
+        # 绑定鼠标滚轮（全局绑定，关闭覆盖层时解除）
         canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-1*(e.delta//120), "units"))
-        
+
         # ESC 返回
         self.gallery_overlay.bind("<Escape>", lambda e: self.hide_gallery_overlay())
         self.gallery_overlay.focus_set()
@@ -6089,20 +4059,21 @@ class SlashCoMonitorCN:
     def hide_gallery_overlay(self):
         """隐藏全屏画廊覆盖层"""
         if self.gallery_overlay:
+            # 解除画廊的全局滚轮绑定，避免关闭后每次滚轮都回调已销毁的画布。
+            self.root.unbind_all("<MouseWheel>")
             self.gallery_overlay.destroy()
             self.gallery_overlay = None
         self.gallery_photo_refs.clear()
 
-
     def show_img_tooltip(self, img_path, x, y):
         # 销毁旧窗口
         self.hide_img_tooltip()
-        
+
         self.tooltip_window = Toplevel(self.root)
         self.tooltip_window.wm_overrideredirect(True)
         self.tooltip_window.wm_geometry(f"+{x+20}+{y+20}")
         self.tooltip_window.attributes("-topmost", True)
-        
+
         try:
             pil_img = Image.open(img_path)
             # 限制大小，例如最大高度300
@@ -6111,7 +4082,7 @@ class SlashCoMonitorCN:
                 ratio = max_h / pil_img.height
                 new_w = int(pil_img.width * ratio)
                 pil_img = pil_img.resize((new_w, max_h), Image.Resampling.LANCZOS)
-            
+
             self.tooltip_img = ImageTk.PhotoImage(pil_img)
             lbl = Label(self.tooltip_window, image=self.tooltip_img, bg="#333333", bd=1, relief="solid")
             lbl.pack()
@@ -6121,10 +4092,8 @@ class SlashCoMonitorCN:
     def hide_img_tooltip(self):
         if self.tooltip_window:
             try: self.tooltip_window.destroy()
-            except: pass
+            except Exception: pass
         self.tooltip_window = None
-
-
 
     def on_close(self):
         """窗口关闭处理 - 优雅退出并释放资源"""
@@ -6154,22 +4123,16 @@ class SlashCoMonitorCN:
         except Exception:
             pass
 
-        if HAS_SPONSOR_PROXY:
-            try:
-                self._stop_sponsor_server_with_timeout(timeout_seconds=1.8)
-            except Exception:
-                pass
-            try:
-                self._force_cleanup_sponsor_proxy()
-            except Exception:
-                pass
+        try:
+            self._stop_sponsor_server_with_timeout(timeout_seconds=1.8)
+        except Exception:
+            pass
 
         # 取消周期性 after 任务
         for attr in (
             "_ui_callback_after_id",
             "_log_queue_after_id",
             "_log_lines_after_id",
-            "_pending_tick_after_id",
             "_tree_rebuild_after_id",
             "_round_timer_after_id",
             "_ecliptica_hud_after_id",

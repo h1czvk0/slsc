@@ -13,7 +13,6 @@ a = Analysis(
         ('tools/mitmdump.exe', 'tools'),
         ('tools/caddy/caddy.exe', 'tools/caddy'),
         ('tools/cleanup_hosts.py', 'tools'),
-        ('tools/reset_network.py', 'tools'),
     ],
     hiddenimports=[
         'cryptography',

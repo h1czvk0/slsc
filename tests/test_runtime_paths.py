@@ -1,7 +1,6 @@
 import os
 import importlib.util
 import json
-import socket
 import subprocess
 import sys
 import tempfile
@@ -115,30 +114,6 @@ class RuntimePathTests(unittest.TestCase):
         }
         upstream, _ = sponsor_mitm._detect_upstream_proxy(settings)
         self.assertIsNone(upstream)
-
-    def test_stale_local_proxy_detection_skips_accelerator_and_live_ports(self):
-        accelerator_settings = {
-            "ProxyEnable": 1,
-            "ProxyServer": "http=127.0.0.1:7890;https=127.0.0.1:7890",
-        }
-        self.assertFalse(sponsor_mitm._looks_like_stale_local_proxy(accelerator_settings))
-
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind(("127.0.0.1", 0))
-            sock.listen(1)
-            live_port = sock.getsockname()[1]
-            live_settings = {
-                "ProxyEnable": 1,
-                "ProxyServer": f"http=127.0.0.1:{live_port};https=127.0.0.1:{live_port}",
-            }
-            self.assertFalse(sponsor_mitm._looks_like_stale_local_proxy(live_settings))
-
-        stale_port = live_port
-        stale_settings = {
-            "ProxyEnable": 1,
-            "ProxyServer": f"http=127.0.0.1:{stale_port};https=127.0.0.1:{stale_port}",
-        }
-        self.assertTrue(sponsor_mitm._looks_like_stale_local_proxy(stale_settings))
 
     def test_caddy_proxy_override_merge_preserves_existing_entries(self):
         merged = sponsor_mitm._merge_proxy_override("<local>;example.com;pastebin.com")
