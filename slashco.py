@@ -75,12 +75,14 @@ from slashco_log_parser import (
 )
 from slashco_updater import (
     APP_VERSION,
+    UPDATE_FAILED_ENV,
     download_update,
     fetch_latest_release,
     get_update_download_path,
     is_frozen_app,
     launch_updater_and_exit,
     parse_update_info,
+    remove_legacy_backup,
 )
 from vrchat_log_selector import VrchatLogSelector, foreground_process_id
 
@@ -454,6 +456,10 @@ class SlashCoMonitorCN:
 
         threading.Thread(target=self._check_app_update_worker, daemon=True).start()
 
+        if is_frozen_app():
+            # 旧版更新脚本可能在 exe 旁边留下 .old 备份，后台清理掉。
+            threading.Thread(target=remove_legacy_backup, args=(sys.executable,), daemon=True).start()
+
         # 启动更新检查线程
         threading.Thread(target=self.check_and_update_translations, daemon=True).start()
 
@@ -575,6 +581,8 @@ class SlashCoMonitorCN:
         self._ui_after(self._set_update_status, f"正在下载新版本... {pct:.0f}%", pct)
 
     def _check_app_update_worker(self):
+        # 更新脚本替换失败后会带着这个标记重新启动旧程序；取出后不再传给子进程。
+        previous_update_failed = os.environ.pop(UPDATE_FAILED_ENV, "") == "1"
         try:
             release_data = fetch_latest_release(requests.get)
             update_info = parse_update_info(release_data, APP_VERSION)
@@ -597,12 +605,23 @@ class SlashCoMonitorCN:
                 )
                 return
 
+            if previous_update_failed:
+                # 避免“下载 → 替换失败 → 重启 → 再下载”的循环，交给用户手动处理。
+                self._ui_after(
+                    self._set_update_status,
+                    f"新版本 {update_info.tag_name} 自动替换失败，请手动下载覆盖",
+                    0,
+                )
+                self._ui_after(self.log, "上次自动更新未能替换程序文件，本次启动不再重试")
+                return
+
             download_path = get_update_download_path()
             download_update(
                 requests.get,
                 update_info.download_url,
                 download_path,
                 progress_callback=self._download_update_progress,
+                expected_sha256=update_info.sha256,
             )
             self._ui_after(self._set_update_status, "下载完成，准备重启更新...", 100)
             self._ui_after(self._schedule_apply_downloaded_update, download_path)
