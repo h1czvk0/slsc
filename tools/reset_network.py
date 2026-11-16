@@ -1,7 +1,5 @@
-import winreg
 import ctypes
-import os
-import sys
+import winreg
 
 def reset_network_settings():
     print("正在重置网络代理设置...")

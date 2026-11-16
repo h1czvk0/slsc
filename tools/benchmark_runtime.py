@@ -9,8 +9,9 @@ import tempfile
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from slashco import EclipticaDesktopHud, SlashCoMonitorCN
+from ecliptica_hud import EclipticaDesktopHud
 from ecliptica_log_parser import EclipticaState
+from slashco import SlashCoMonitorCN
 from vrchat_log_selector import VrchatLogSelector, VrchatProcess, log_boot_timestamp, match_processes_to_logs
 
 

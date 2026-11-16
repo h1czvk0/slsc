@@ -14,15 +14,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ecliptica_log_parser import EclipticaState, parse_ecliptica_line  # noqa: E402
-from slashco import (  # noqa: E402
+from ecliptica_hud import (  # noqa: E402
     EclipticaDesktopHud,
     HUD_DISPLAY_LABELS,
     HUD_DEFAULT_PRESET_FIELDS,
     HUD_DEFAULT_PRESET_ORDER,
     HUD_DEFAULT_PRESET_VERSION,
-    LOG_RECOVERY_SYNC_TIMEOUT_SECONDS,
-    PANEL_MODE_LABELS,
-    SlashCoMonitorCN,
     _hud_text_runs,
     _hud_text_width,
     _fit_hud_font_to_width,
@@ -32,7 +29,6 @@ from slashco import (  # noqa: E402
     format_ecliptica_clock_hms,
     format_ecliptica_duration,
     hud_default_preset_layout,
-    main_window_geometry,
     normalize_hud_display_mode,
     normalize_hud_display_panels,
     normalize_hud_damage_fields,
@@ -42,6 +38,12 @@ from slashco import (  # noqa: E402
     normalize_hud_opacity,
     normalize_hud_transparency,
     pending_hud_default_preset,
+)
+from slashco import (  # noqa: E402
+    LOG_RECOVERY_SYNC_TIMEOUT_SECONDS,
+    PANEL_MODE_LABELS,
+    SlashCoMonitorCN,
+    main_window_geometry,
 )
 
 
