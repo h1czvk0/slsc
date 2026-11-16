@@ -18,6 +18,14 @@
 
 `sponsor_mitm.py` 自行选择代理端口（跳过常见加速器端口和上游代理端口），界面层不再预选端口。`admin_helper.py` 只保留 `mitm_ca_trust`、`sponsor_hosts_add`、`sponsor_hosts_remove` 三种提权模式。
 
+## 自动更新
+
+`slashco_updater.py` 生成的 `apply_update.bat` 通过“能否以追加方式打开 exe”判断旧进程（包括单文件引导进程）是否已退出，最多等 60 秒；随后把旧 exe 备份到临时目录，再用 `copy /b /y` 原地覆盖。原文件不改名、不删除，文件 ID 不变，资源管理器只收到“已修改”通知，桌面图标位置因此保留。
+
+覆盖失败时从备份还原，并设置环境变量 `SLASHCO_UPDATE_FAILED=1` 后重启旧程序；主程序读到该标记后只提示手动下载，避免反复下载和重启。脚本在启动新程序前删除下载文件和备份，最后删除自身和空的临时目录。
+
+更新脚本由**当前已安装的版本**生成，所以这套流程从“装有新脚本的版本”升级到再下一个版本时才生效。旧版脚本可能在 exe 旁边留下 `SlashCoSense.exe.old`，新版启动后由 `remove_legacy_backup` 在后台清理。
+
 ## 依赖与构建
 
 - Python 3.12；所有 Python 命令使用项目 `.venv`。
