@@ -23,6 +23,7 @@ import subprocess
 import threading
 import time
 import atexit
+import filecmp
 import shutil
 import socket
 import json
@@ -1089,7 +1090,7 @@ def _get_mitmdump_path():
             os.makedirs(data_tools, exist_ok=True)
             need_copy = (
                 not os.path.exists(data_mitmdump)
-                or os.path.getsize(data_mitmdump) != os.path.getsize(resource_tools)
+                or not filecmp.cmp(data_mitmdump, resource_tools, shallow=False)
             )
             if need_copy:
                 shutil.copy2(resource_tools, data_mitmdump)
@@ -1311,7 +1312,7 @@ def _get_caddy_path():
             os.makedirs(CADDY_DIR, exist_ok=True)
             need_copy = (
                 not os.path.exists(data_caddy)
-                or os.path.getsize(data_caddy) != os.path.getsize(resource_caddy)
+                or not filecmp.cmp(data_caddy, resource_caddy, shallow=False)
             )
             if need_copy:
                 shutil.copy2(resource_caddy, data_caddy)

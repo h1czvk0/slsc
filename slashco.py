@@ -73,9 +73,11 @@ from slashco_log_parser import (
     normalize_item_id,
     parse_log_line,
 )
+from slashco_portable import APP_EXE, LAUNCHED_ENV, RESTART_EXIT_CODE, get_data_dir
 from slashco_updater import (
     APP_VERSION,
     UPDATE_FAILED_ENV,
+    download_portable_update,
     download_update,
     fetch_latest_release,
     get_update_download_path,
@@ -151,12 +153,7 @@ def set_var_if_changed(variable, value):
 PLAYER_ITEM_ID_THRESHOLD = 29
 IMAGE_FILENAME = resource_path("cover.png")
 
-APP_NAME = "SlashCoMonitor"
-if os.name == 'nt': # Windows
-    # 通常是 C:\Users\用户名\AppData\Local\SlashCoMonitor
-    DATA_DIR = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), APP_NAME)
-else: # Mac/Linux 备用
-    DATA_DIR = os.path.join(os.path.expanduser('~'), '.local', 'share', APP_NAME)
+DATA_DIR = os.fspath(get_data_dir())
 
 LOCAL_JSON_FILENAME = os.path.join(DATA_DIR, "locations.json")
 
@@ -324,6 +321,7 @@ class SlashCoMonitorCN:
 
         # 关闭流程状态
         self._is_shutting_down = False
+        self.restart_after_update = False
         self._log_queue_after_id = None
         self._round_timer_after_id = None
         self._ecliptica_hud_after_id = None
@@ -580,6 +578,11 @@ class SlashCoMonitorCN:
         pct = downloaded * 100.0 / total
         self._ui_after(self._set_update_status, f"正在下载新版本... {pct:.0f}%", pct)
 
+    def _download_portable_progress(self, name, downloaded, total):
+        label = {"app": "程序", "runtime": "运行库", "mitmdump": "mitmdump", "caddy": "Caddy"}[name]
+        pct = downloaded * 100.0 / total
+        self._ui_after(self._set_update_status, f"正在下载{label}更新... {pct:.0f}%", pct)
+
     def _check_app_update_worker(self):
         # 更新脚本替换失败后会带着这个标记重新启动旧程序；取出后不再传给子进程。
         previous_update_failed = os.environ.pop(UPDATE_FAILED_ENV, "") == "1"
@@ -615,6 +618,15 @@ class SlashCoMonitorCN:
                 self._ui_after(self.log, "上次自动更新未能替换程序文件，本次启动不再重试")
                 return
 
+            if os.path.basename(sys.executable).lower() == APP_EXE.lower():
+                download_portable_update(
+                    requests.get, release_data, update_info.version,
+                    get_data_dir() / "portable", self._download_portable_progress,
+                )
+                self._ui_after(self._set_update_status, "下载完成，准备重启更新...", 100)
+                self._ui_after(self._schedule_apply_downloaded_update, None)
+                return
+
             download_path = get_update_download_path()
             download_update(
                 requests.get,
@@ -641,7 +653,13 @@ class SlashCoMonitorCN:
         if self._is_shutting_down:
             return
         try:
-            launch_updater_and_exit(sys.executable, download_path, app_args=sys.argv[1:])
+            if download_path is None:
+                if os.environ.get(LAUNCHED_ENV) != "1":
+                    self._set_update_status("更新已就绪，下次打开 SlashCoSense.exe 时生效", 100)
+                    return
+                self.restart_after_update = True
+            else:
+                launch_updater_and_exit(sys.executable, download_path, app_args=sys.argv[1:])
             self.on_close()
         except Exception as e:
             self._set_update_status(f"应用更新失败: {e}", 100)
@@ -4220,3 +4238,5 @@ if __name__ == "__main__":
         app._force_cleanup_sponsor_proxy()
     except Exception:
         pass
+    if app.restart_after_update:
+        sys.exit(RESTART_EXIT_CODE)

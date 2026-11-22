@@ -20,21 +20,21 @@
 - 支持赞助者名单覆盖，可在 `mitmdump` 系统代理模式和 `hosts + Caddy` 模式之间切换，并在停止时恢复对应网络设置。
 - 支持单独覆盖 Demo Lobby 的 `Mega Patreon` 名称；只拦截该世界的 VRCLinking 数据地址，与原赞助者名单覆盖互斥，启用后重新进入世界即可生效。
 - 在赞助者名单覆盖区展开 `S E`，填写 VRChat 显示名并启用覆盖，再重新进入 Stillwoods Execution。S E 使用 mitmdump，保留原名单并把输入名称加入 `Mega Supporters`，与 SlashCo 和 JZU 覆盖互斥。
-- 支持单 exe 后台自动更新：有新版本时显示更新状态并自动下载替换。
+- 支持免安装和后台增量更新，自动下载有变化的程序组件。
 
 ## 下载和使用
 
-从 GitHub Releases 下载最新版本后直接运行即可，不需要安装。
+从 GitHub Releases 下载 `SlashCoSense.exe` 后双击运行，无需安装或手动解压。程序文件首次运行时会自动展开到现有缓存目录 `%LOCALAPPDATA%\SlashCoMonitor\portable`。
 
 建议先启动 VRChat，再启动本工具。程序会把日志启动时间与 VRChat 进程启动时间对应起来，并优先锁定正在 Ecliptica 中的实例。若多个账号同时在 Ecliptica 且无法可靠判断，可在“同局伤害同步”区域手动选择。选定的进程退出后，程序会停止读取对应日志。
 
 ## 自动更新
 
-程序启动后会在后台检查 GitHub Releases 最新版本。无更新时不会显示更新区域；发现新版本后会在界面显示状态、自动下载新 exe，并在下载完成后使用临时 updater 替换原路径程序。
+程序启动后会在后台检查 GitHub Releases。发现新版本时，会校验发布清单，并只下载有变化或本地缺失的组件。主程序、运行库、mitmdump 和 Caddy 各自独立更新。组件验证并准备完成后，应用会自动重启。原来的 `SlashCoSense.exe` 和快捷方式可以继续使用。
 
-替换时会等旧程序完全退出，再原地覆盖原 exe，不改名也不移动，所以放在桌面上的图标位置和指向它的快捷方式都保持不变；备份只放在临时目录，exe 旁边不会留下 `.old` 文件。覆盖失败时自动还原旧程序并重新启动，本次不再重复下载。
+使用旧版单文件程序的用户会先完整更新一次，以便切换到免安装启动器。此后删除程序缓存时，启动器可以用 EXE 里的离线副本恢复运行文件，再检查更新。
 
-更新请求会优先使用 GitHub 镜像地址，全部失败后再访问 GitHub 原始地址。下载内容会核对大小、exe 文件头和 Release 提供的 SHA-256，不符时换下一个地址。
+更新请求优先使用 GitHub 镜像地址，全部失败后再访问 GitHub 原始地址。清单和组件均校验下载大小及 SHA-256。下载或校验失败时，当前版本可以继续运行。
 
 ## 开发环境
 
@@ -73,12 +73,14 @@ python -m venv .venv
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
 .\.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm slashco.spec
+.\.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm slashco_launcher.spec
+.\.venv\Scripts\python.exe tools\build_portable.py
 ```
 
 打包完成后主程序位于：
 
 ```text
-dist
+dist\release\SlashCoSense.exe
 ```
 
 ## 仓库布局与维护
@@ -96,7 +98,7 @@ dist
 
 ## GitHub Releases 发布
 
-仓库只通过 `.github/workflows/release.yml` 的手动 `workflow_dispatch` 发布版本，不会因普通提交、推送或 Tag 自动发布。只有明确决定发布到 Releases 时，才输入 `RELEASE` 触发工作流；工作流会校验版本、运行测试、构建 EXE、核对附件摘要，然后发布为 Latest Release。
+仓库只通过 `.github/workflows/release.yml` 的手动 `workflow_dispatch` 发布版本，不会因普通提交、推送或 Tag 自动发布。只有明确决定发布到 Releases 时，才输入 `RELEASE` 触发工作流。工作流会校验版本、运行测试、构建 EXE 与更新组件、核对附件摘要，然后发布为 Latest Release。
 
 ## 注意事项
 

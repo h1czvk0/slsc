@@ -8,6 +8,9 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
+
+from slashco_portable import MANIFEST_ASSET, MANIFEST_MAX_BYTES, PACKAGE_ASSETS, Manifest, install_runtime
 
 
 APP_VERSION = "3.9.37"
@@ -131,11 +134,22 @@ def download_update(
     request_get, download_url, destination, progress_callback=None, timeout=15, expected_sha256="",
 ):
     """下载新版本并校验完整性；某个地址返回的文件不完整或摘要不符时换下一个地址。"""
+    return _download_release_file(
+        request_get, download_url, destination, progress_callback, timeout,
+        expected_sha256, header_bytes=b"MZ",
+    )
+
+
+def _download_release_file(
+    request_get, download_url, destination, progress_callback=None, timeout=15,
+    expected_sha256="", *, expected_size=None, header_bytes=None,
+):
+    destination = os.fspath(destination)
     os.makedirs(os.path.dirname(destination), exist_ok=True)
     tmp_path = destination + ".download"
     expected_sha256 = str(expected_sha256 or "").strip().lower()
     last_error = None
-    headers = {"User-Agent": "SlashCoSense-Updater"}
+    headers = {"User-Agent": "SlashCoSense-Updater", "Accept-Encoding": "identity"}
 
     for url in build_github_url_candidates(download_url):
         try:
@@ -145,6 +159,8 @@ def download_update(
                     continue
 
                 total = int(resp.headers.get("Content-Length") or 0)
+                if expected_size is not None and total and total != expected_size:
+                    raise RuntimeError("下载文件大小与发布信息不一致")
                 downloaded = 0
                 digest = hashlib.sha256()
                 header = b""
@@ -152,17 +168,21 @@ def download_update(
                     for chunk in resp.iter_content(chunk_size=1024 * 256):
                         if not chunk:
                             continue
+                        downloaded += len(chunk)
+                        if expected_size is not None and downloaded > expected_size:
+                            raise RuntimeError("下载文件大小与发布信息不一致")
                         f.write(chunk)
                         digest.update(chunk)
-                        if len(header) < 2:
-                            header = (header + chunk)[:2]
-                        downloaded += len(chunk)
-                        if progress_callback and total:
-                            progress_callback(downloaded, total)
+                        if header_bytes and len(header) < len(header_bytes):
+                            header = (header + chunk)[:len(header_bytes)]
+                        if progress_callback and (total or expected_size):
+                            progress_callback(downloaded, total or expected_size)
 
             if total and downloaded != total:
                 raise RuntimeError(f"下载不完整（{downloaded}/{total} 字节）")
-            if header != b"MZ":
+            if expected_size is not None and downloaded != expected_size:
+                raise RuntimeError("下载文件大小与发布信息不一致")
+            if header_bytes and header != header_bytes:
                 raise RuntimeError("下载内容不是有效的 exe 文件")
             if expected_sha256 and digest.hexdigest() != expected_sha256:
                 raise RuntimeError("下载文件的 SHA-256 与发布信息不一致")
@@ -180,6 +200,50 @@ def download_update(
                 pass
 
     raise RuntimeError(last_error or "下载更新失败")
+
+
+def download_portable_update(request_get, release_data, version, cache, progress_callback=None):
+    base_url = f"https://github.com/h1czvk0/slsc/releases/download/v{version}/"
+    assets = {
+        asset["name"]: asset for asset in release_data.get("assets", [])
+        if asset.get("name") and asset.get("browser_download_url") == base_url + asset["name"]
+    }
+    asset = assets.get(MANIFEST_ASSET)
+    if asset is None:
+        raise RuntimeError("新版本缺少便携版更新清单")
+    size = asset.get("size")
+    digest = asset.get("digest") or ""
+    if (
+        type(size) is not int or not 0 < size <= MANIFEST_MAX_BYTES
+        or not isinstance(digest, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest)
+    ):
+        raise RuntimeError("便携版更新清单缺少有效的大小或 SHA-256")
+
+    with tempfile.TemporaryDirectory() as temporary:
+        manifest_path = Path(temporary) / MANIFEST_ASSET
+        _download_release_file(
+            request_get, asset["browser_download_url"], manifest_path,
+            expected_sha256=digest.removeprefix("sha256:"), expected_size=size,
+        )
+        manifest = Manifest.from_bytes(manifest_path.read_bytes())
+    if manifest.version != version:
+        raise RuntimeError("便携版清单版本与发布版本不一致")
+
+    def fetch_package(name, package, path):
+        asset = assets.get(PACKAGE_ASSETS[name])
+        if asset is None or asset.get("size") != package.size:
+            raise RuntimeError(f"发布附件与组件 {name} 的清单不一致")
+
+        def show_progress(downloaded, total):
+            if progress_callback:
+                progress_callback(name, downloaded, total)
+
+        _download_release_file(
+            request_get, asset["browser_download_url"], path, show_progress,
+            expected_sha256=package.sha256, expected_size=package.size,
+        )
+
+    install_runtime(cache, manifest, fetch_package)
 
 
 def _bat_text(value):

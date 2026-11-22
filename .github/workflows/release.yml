@@ -97,27 +97,30 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .venv\Scripts\python.exe -m pip check
 
-      - name: 使用 PyInstaller 构建 EXE
+      - name: 构建免安装 EXE 和更新组件
         shell: pwsh
-        run: .venv\Scripts\pyinstaller.exe --clean --noconfirm slashco.spec
+        run: |
+          .venv\Scripts\pyinstaller.exe --clean --noconfirm slashco.spec
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .venv\Scripts\pyinstaller.exe --clean --noconfirm slashco_launcher.spec
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .venv\Scripts\python.exe tools/build_portable.py
 
       - name: 计算并记录 SHA-256
         shell: pwsh
         run: |
-          $exe = Get-Item dist\SlashCoSense.exe
+          $exe = Get-Item dist\release\SlashCoSense.exe
           if ($exe.Length -le 0) {
             throw "构建产物为空。"
           }
           $hash = (Get-FileHash -Algorithm SHA256 $exe.FullName).Hash.ToUpperInvariant()
           Add-Content -Encoding UTF8 release-notes.md "`nSHA-256：$hash"
-          "EXE_SHA256=$hash" >> $env:GITHUB_ENV
-          "EXE_SIZE=$($exe.Length)" >> $env:GITHUB_ENV
 
       - name: 保存工作流构建产物
         uses: actions/upload-artifact@v4
         with:
           name: SlashCoSense-${{ steps.version.outputs.version }}
-          path: dist/SlashCoSense.exe
+          path: dist/release/
           if-no-files-found: error
           retention-days: 7
 
@@ -153,25 +156,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload $env:RELEASE_TAG dist\SlashCoSense.exe `
+          $files = @(Get-ChildItem dist\release -File)
+          $paths = @($files | ForEach-Object { $_.FullName })
+          gh release upload $env:RELEASE_TAG @paths `
             --repo $env:GITHUB_REPOSITORY `
             --clobber
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           $release = gh release view $env:RELEASE_TAG `
             --repo $env:GITHUB_REPOSITORY `
             --json assets | ConvertFrom-Json
-          $asset = $release.assets | Where-Object { $_.name -eq 'SlashCoSense.exe' }
-          if ($null -eq $asset) {
-            throw "Release 附件上传后不存在。"
-          }
-          if ($asset.state -ne 'uploaded') {
-            throw "Release 附件状态不是 uploaded：$($asset.state)"
-          }
-          if ([int64]$asset.size -ne [int64]$env:EXE_SIZE) {
-            throw "Release 附件大小与本地构建产物不一致。"
-          }
-          if ($asset.digest -and $asset.digest -ne "sha256:$($env:EXE_SHA256.ToLowerInvariant())") {
-            throw "Release 附件 SHA-256 与本地构建产物不一致。"
+          foreach ($file in $files) {
+            $asset = $release.assets | Where-Object { $_.name -eq $file.Name }
+            if ($null -eq $asset -or $asset.state -ne 'uploaded') {
+              throw "Release 附件未上传：$($file.Name)"
+            }
+            if ([int64]$asset.size -ne $file.Length) {
+              throw "Release 附件大小不一致：$($file.Name)"
+            }
+            $hash = (Get-FileHash -Algorithm SHA256 $file.FullName).Hash.ToLowerInvariant()
+            if ($asset.digest -ne "sha256:$hash") {
+              throw "Release 附件 SHA-256 缺失或不一致：$($file.Name)"
+            }
           }
 
       - name: 正式发布为 Latest Release

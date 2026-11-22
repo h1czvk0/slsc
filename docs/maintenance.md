@@ -20,11 +20,11 @@
 
 ## 自动更新
 
-`slashco_updater.py` 生成的 `apply_update.bat` 通过“能否以追加方式打开 exe”判断旧进程（包括单文件引导进程）是否已退出，最多等 60 秒；随后把旧 exe 备份到临时目录，再用 `copy /b /y` 原地覆盖。原文件不改名、不删除，文件 ID 不变，资源管理器只收到“已修改”通知，桌面图标位置因此保留。
+`SlashCoSense.exe` 带有离线运行文件。启动器从 `%LOCALAPPDATA%\SlashCoMonitor\portable` 选择最新的完整版本，首次运行时从 EXE 展开。主程序、运行库、mitmdump 和 Caddy 分别打包，`tools/build_portable.py` 为每个组件生成固定的 ZIP 元数据，便于按 SHA-256 复用内容相同的组件。
 
-覆盖失败时从备份还原，并设置环境变量 `SLASHCO_UPDATE_FAILED=1` 后重启旧程序；主程序读到该标记后只提示手动下载，避免反复下载和重启。脚本在启动新程序前删除下载文件和备份，最后删除自身和空的临时目录。
+主程序在后台检查更新，校验清单和组件后在缓存内组装新版。组装完成才会将新版目录切换为可启动状态。主程序正常清理退出后，启动器重启最新版。缓存保留最近两版，仍在运行的更旧版本会在后续启动时再清理。
 
-更新脚本由**当前已安装的版本**生成，所以这套流程从“装有新脚本的版本”升级到再下一个版本时才生效。旧版脚本可能在 exe 旁边留下 `SlashCoSense.exe.old`，新版启动后由 `remove_legacy_backup` 在后台清理。
+从旧单文件版迁移时，旧版更新脚本会等待程序退出并原地覆盖为新版启动器。`slashco_updater.py` 保留全量 EXE 下载和替换逻辑，兼容旧打包入口。
 
 ## 依赖与构建
 
@@ -47,7 +47,7 @@
 
 Git 历史保留，删除文件通过普通提交记录。历史版本中的大文件仍在完整克隆中；此次不重写提交历史。日常维护可使用 `git gc --no-prune`，不需要手动删除 `.git` 内容。
 
-本机缓存和构建中间文件可以重建；保留 `.venv` 和最近一次验证的 `dist/SlashCoSense.exe`，避免删除用户运行数据。
+本机缓存和构建中间文件可以重建。保留 `.venv`、最近一次验证的 `dist/release/SlashCoSense.exe` 和用户运行数据。
 
 ## 验证与性能测量
 
@@ -58,6 +58,8 @@ Git 历史保留，删除文件通过普通提交记录。历史版本中的大�
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe tools\benchmark_runtime.py --output benchmark-results.json
 .\.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm slashco.spec
+.\.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm slashco_launcher.spec
+.\.venv\Scripts\python.exe tools\build_portable.py
 ```
 
 基准默认构造 20003 行日志，并匹配 1440 个日志文件名，另外检查 HUD 重复绘制和结算表更新次数。输出各场景的中位耗时；`--log` 可切换为实际日志。合成基准结果用于比较对应代码路径，不能视为整个游戏场景的 CPU 占用降幅。
