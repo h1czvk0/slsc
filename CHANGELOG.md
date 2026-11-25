@@ -1,5 +1,10 @@
 # 更新日志
 
+## 3.9.39
+
+- 新增 Dayspring 世界的 `Super VIP` 名单覆盖：仅拦截该世界的 VRCLinking 主地址与备用镜像地址，返回包含 `GuildRoleMap` 与 `Super VIP` 成员的明文 JSON，启用后重新进入世界即可生效。
+- 赞助者名单覆盖区的其他世界入口调整为独立一行，支持 `JZU`、`S E`、`Dayspring` 互斥切换并分别保存配置。
+
 ## 3.9.38
 
 - 双击 `SlashCoSense.exe` 即可启动。首次运行会把程序文件展开到现有缓存目录 `%LOCALAPPDATA%\SlashCoMonitor\portable`，并支持离线启动。

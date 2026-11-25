@@ -164,6 +164,7 @@ GAME_END_DEBOUNCE_SECONDS = 2.0
 SPONSOR_WORLD_PANELS = {
     "demo_lobby": ("JZU", "Demo Lobby", "Mega Patreon"),
     "se": ("S E", "S E", "Mega Supporters"),
+    "dayspring": ("Dayspring", "Dayspring", "Super VIP"),
 }
 LOG_TAIL_SCAN_BYTES = 20 * 1024 * 1024
 LOG_LIVE_READ_BYTES = 1024 * 1024
@@ -943,13 +944,17 @@ class SlashCoMonitorCN:
         self._sponsor_status_labels = {"slashco": self.lbl_sponsor_status}
         self._sponsor_panel_buttons = {}
         self._sponsor_panels = {}
-        for profile in SPONSOR_WORLD_PANELS:
+
+        world_row = ttk.Frame(sponsor_frame)
+        world_row.pack(fill=X, pady=2)
+        ttk.Label(world_row, text="其他世界：").pack(side=LEFT)
+        for profile, (label, _, _) in SPONSOR_WORLD_PANELS.items():
             button = ttk.Button(
-                row1,
+                world_row,
                 command=lambda profile=profile: self._toggle_sponsor_panel(profile),
-                width=9,
+                width=max(9, len(label) + 4),
             )
-            button.pack(side=LEFT, padx=(8, 0))
+            button.pack(side=LEFT, padx=(0, 6))
             self._sponsor_panel_buttons[profile] = button
 
         row2 = ttk.Frame(sponsor_frame)
@@ -2811,8 +2816,12 @@ class SlashCoMonitorCN:
                         success, message = sponsor_mitm.start_sponsor_override(name, log_func=self.log, mode=mode)
                     elif profile == "demo_lobby":
                         success, message = sponsor_mitm.start_demo_lobby_override(name, log_func=self.log)
-                    else:
+                    elif profile == "se":
                         success, message = sponsor_mitm.start_se_override(name, log_func=self.log)
+                    elif profile == "dayspring":
+                        success, message = sponsor_mitm.start_dayspring_override(name, log_func=self.log)
+                    else:
+                        success, message = False, f"未知覆盖配置: {profile}"
             except Exception as exc:
                 success, message = False, str(exc)
             self._ui_after(self._finish_sponsor_override, request, profile, enabled, mode, success, message)

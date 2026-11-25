@@ -2,7 +2,7 @@
 """
 sponsor_mitm.py — 游戏名单覆盖 (mitmproxy / Caddy 方案)
 
-使用本地代理拦截 VRChat 的指定名单请求，支持 SlashCo、Demo Lobby 与 S E 配置。
+使用本地代理拦截 VRChat 的指定名单请求，支持 SlashCo、Demo Lobby、S E 与 Dayspring 配置。
 优势:
   - 无需修改 DNS / hosts 文件
   - 不需要端口 53
@@ -144,9 +144,19 @@ SE_GIST_URL = (
     "https://gist.githubusercontent.com/DISTROYER190/8f78b0adc79793d4ae18bf1bda4663cb/raw?w"
 )
 SE_GIST = urlsplit(SE_GIST_URL)
+DAYSPRING_MAIN_URL = (
+    "https://data.vrclinking.com/v2/01a06194-375c-713e-90f3-55c8498415cd"
+)
+DAYSPRING_FALLBACK_URL = (
+    "https://linkingbotvrchat.github.io/v2data/worlds/"
+    "01a06194-375c-713e-90f3-55c8498415cd"
+)
+DAYSPRING_SUPER_VIP_ROLE_ID = "1544674142530441226"
+DAYSPRING_SUPER_VIP_ROLE_NAME = "Super VIP"
 OVERRIDE_PROFILE_SLASHCO = "slashco"
 OVERRIDE_PROFILE_DEMO_LOBBY = "demo_lobby"
 OVERRIDE_PROFILE_SE = "se"
+OVERRIDE_PROFILE_DAYSPRING = "dayspring"
 OVERRIDE_TARGETS = {
     OVERRIDE_PROFILE_SLASHCO: (
         ("pastebin.com", "/raw/2WVJpW1N"),
@@ -160,6 +170,13 @@ OVERRIDE_TARGETS = {
         ),
     ),
     OVERRIDE_PROFILE_SE: ((SE_GIST.hostname, SE_GIST.path),),
+    OVERRIDE_PROFILE_DAYSPRING: (
+        ("data.vrclinking.com", "/v2/01a06194-375c-713e-90f3-55c8498415cd"),
+        (
+            "linkingbotvrchat.github.io",
+            "/v2data/worlds/01a06194-375c-713e-90f3-55c8498415cd",
+        ),
+    ),
 }
 OVERRIDE_ALLOWED_HOSTS = {
     OVERRIDE_PROFILE_SLASHCO: r"^(?:www\.)?pastebin\.com(?::\d+)?$",
@@ -167,6 +184,9 @@ OVERRIDE_ALLOWED_HOSTS = {
         r"^(?:data\.vrclinking\.com|linkingbotvrchat\.github\.io)(?::\d+)?$"
     ),
     OVERRIDE_PROFILE_SE: r"^gist\.githubusercontent\.com(?::\d+)?$",
+    OVERRIDE_PROFILE_DAYSPRING: (
+        r"^(?:data\.vrclinking\.com|linkingbotvrchat\.github\.io)(?::\d+)?$"
+    ),
 }
 SEPARATOR = "\u2674"  # ♴  (正确分隔符)
 WRONG_SEPARATORS = ["\u2634", "\u2734"]  # 旧代码使用的错误分隔符
@@ -175,6 +195,7 @@ WRONG_SEPARATORS = ["\u2634", "\u2734"]  # 旧代码使用的错误分隔符
 MODIFIED_CONTENT_FILE = os.path.join(_get_data_dir(), "sponsors.dat")
 DEMO_LOBBY_CONTENT_FILE = os.path.join(_get_data_dir(), "demo_lobby_mega_patreon.json")
 SE_CONTENT_FILE = os.path.join(_get_data_dir(), "se_mega_supporter.json")
+DAYSPRING_CONTENT_FILE = os.path.join(_get_data_dir(), "dayspring_super_vip.json")
 ADDON_SCRIPT_FILE = os.path.join(_get_data_dir(), "tools", "mitm_addon.py")
 HIT_LOG_FILE = os.path.join(_get_data_dir(), "tools", "sponsor_override_hits.log")
 CA_INSTALLED_FLAG = os.path.join(_get_data_dir(), "tools", ".mitm_ca_trusted")
@@ -486,6 +507,30 @@ def build_demo_lobby_payload(display_name, last_updated=None):
 
 def build_demo_lobby_content(display_name, last_updated=None):
     payload = build_demo_lobby_payload(display_name, last_updated=last_updated)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def build_dayspring_payload(display_name, last_updated=None):
+    """构建 Dayspring 的最小 VRCLinking Super VIP 数据（含 GuildRoleMap）。"""
+    name = str(display_name or "").strip()
+    if not name:
+        raise ValueError("display_name 不能为空")
+    updated_at = last_updated or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return {
+        "Version": "2.0",
+        "LastUpdated": updated_at,
+        "MemberCount": 1,
+        "GuildRoleMap": {
+            DAYSPRING_SUPER_VIP_ROLE_ID: DAYSPRING_SUPER_VIP_ROLE_NAME,
+        },
+        "GuildUsers": {
+            DAYSPRING_SUPER_VIP_ROLE_NAME: [name],
+        },
+    }
+
+
+def build_dayspring_content(display_name, last_updated=None):
+    payload = build_dayspring_payload(display_name, last_updated=last_updated)
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -1011,6 +1056,59 @@ def _self_test_demo_lobby_override(proxy_port, expected_name, log_func=None):
             return False
 
     _log("Demo Lobby 代理自检通过 (主地址和备用地址)", log_func)
+    return True
+
+
+def _self_test_dayspring_override(proxy_port, expected_name, log_func=None):
+    """验证 Dayspring VRCLinking 响应包含正确的 Super VIP Role ID 映射与名称。"""
+    name = str(expected_name or "").strip()
+    if not name:
+        return False
+
+    try:
+        import ssl
+        import urllib.request
+    except Exception as e:
+        _log(f"Dayspring 代理自检失败: 无法导入 urllib ({e})", log_func)
+        return False
+
+    proxy = f"http://127.0.0.1:{int(proxy_port)}"
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
+        urllib.request.HTTPSHandler(context=ssl._create_unverified_context()),
+    )
+    urls = (DAYSPRING_MAIN_URL, DAYSPRING_FALLBACK_URL)
+    for idx, url in enumerate(urls, start=1):
+        try:
+            req = urllib.request.Request(
+                f"{url}?_ts={int(time.time() * 1000)}",
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                },
+            )
+            with opener.open(req, timeout=10) as resp:
+                override_header = resp.headers.get("X-SlashCo-Override")
+                body = resp.read().decode("utf-8", errors="strict")
+            if override_header != OVERRIDE_PROFILE_DAYSPRING or not body.startswith("{"):
+                _log(f"Dayspring 代理自检响应格式不匹配 (地址 {idx})", log_func)
+                return False
+            payload = json.loads(body)
+            role_name = payload.get("GuildRoleMap", {}).get(DAYSPRING_SUPER_VIP_ROLE_ID)
+            members = payload.get("GuildUsers", {}).get(role_name, [])
+            if (
+                role_name != DAYSPRING_SUPER_VIP_ROLE_NAME
+                or members != [name]
+                or not all(k in payload for k in ("Version", "LastUpdated", "MemberCount"))
+            ):
+                _log(f"Dayspring 代理自检名单不匹配 (地址 {idx})", log_func)
+                return False
+        except Exception as e:
+            _log(f"Dayspring 代理自检请求失败 (地址 {idx}): {e}", log_func)
+            return False
+
+    _log("Dayspring 代理自检通过 (主地址和备用地址)", log_func)
     return True
 
 
@@ -1740,6 +1838,19 @@ def _prepare_se_content(display_name, log_func=None):
     return True, ""
 
 
+def _prepare_dayspring_content(display_name, log_func=None):
+    _log("步骤 1/5: 构建 Dayspring Super VIP 数据...", log_func)
+    try:
+        content = build_dayspring_content(display_name)
+        os.makedirs(os.path.dirname(DAYSPRING_CONTENT_FILE), exist_ok=True)
+        with open(DAYSPRING_CONTENT_FILE, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception as e:
+        return False, f"无法生成 Dayspring 数据: {e}"
+    _log(f"Dayspring 数据已保存 ({len(content)} 字符)", log_func)
+    return True, ""
+
+
 def start_sponsor_override(name, log_func=None, mode=SPONSOR_MODE_MITM):
     selected_mode = normalize_sponsor_mode(mode)
     if selected_mode == SPONSOR_MODE_CADDY:
@@ -1759,6 +1870,15 @@ def start_demo_lobby_override(name, log_func=None):
 def start_se_override(name, log_func=None):
     """启动 S E Mega Supporters 覆盖。"""
     return _start_mitm_override(name, log_func=log_func, profile=OVERRIDE_PROFILE_SE)
+
+
+def start_dayspring_override(name, log_func=None):
+    """启动 Dayspring Super VIP 覆盖；该配置仅使用 mitmdump。"""
+    return _start_mitm_override(
+        name,
+        log_func=log_func,
+        profile=OVERRIDE_PROFILE_DAYSPRING,
+    )
 
 
 def _start_sponsor_override_mitm(name, log_func=None):
@@ -1801,6 +1921,7 @@ def _start_mitm_override(name, log_func=None, profile=OVERRIDE_PROFILE_SLASHCO):
         OVERRIDE_PROFILE_SLASHCO: "赞助者名单",
         OVERRIDE_PROFILE_DEMO_LOBBY: "Demo Lobby Mega Patreon",
         OVERRIDE_PROFILE_SE: "S E",
+        OVERRIDE_PROFILE_DAYSPRING: "Dayspring Super VIP",
     }[profile]
     _log(f"启动{profile_label}覆盖: {name_display}", log_func)
 
@@ -1831,6 +1952,9 @@ def _start_mitm_override(name, log_func=None, profile=OVERRIDE_PROFILE_SLASHCO):
     elif profile == OVERRIDE_PROFILE_SE:
         ok, message = _prepare_se_content(display_name, log_func)
         content_file = SE_CONTENT_FILE
+    elif profile == OVERRIDE_PROFILE_DAYSPRING:
+        ok, message = _prepare_dayspring_content(display_name, log_func)
+        content_file = DAYSPRING_CONTENT_FILE
     else:
         ok, message = _prepare_modified_sponsor_content(name_list, log_func)
         content_file = MODIFIED_CONTENT_FILE
@@ -1928,6 +2052,8 @@ def _start_mitm_override(name, log_func=None, profile=OVERRIDE_PROFILE_SLASHCO):
         self_test_ok = _self_test_demo_lobby_override(selected_port, display_name, log_func)
     elif profile == OVERRIDE_PROFILE_SE:
         self_test_ok = _self_test_se_override(selected_port, log_func)
+    elif profile == OVERRIDE_PROFILE_DAYSPRING:
+        self_test_ok = _self_test_dayspring_override(selected_port, display_name, log_func)
     else:
         self_test_ok = _self_test_override(selected_port, name_list, log_func)
     if not self_test_ok:

@@ -291,6 +291,90 @@ class RuntimePathTests(unittest.TestCase):
             self.assertEqual(flow.response.content, content.encode("utf-8"))
             self.assertEqual(flow.response.headers["X-SlashCo-Override"], "se")
 
+    def test_dayspring_payload_contains_role_map_and_super_vip_name(self):
+        payload = sponsor_mitm.build_dayspring_payload(
+            "  h1czvko  ",
+            last_updated="2026-11-26T00:00:00Z",
+        )
+
+        self.assertEqual(payload["Version"], "2.0")
+        self.assertEqual(payload["MemberCount"], 1)
+        self.assertEqual(payload["LastUpdated"], "2026-11-26T00:00:00Z")
+        self.assertEqual(
+            payload["GuildRoleMap"],
+            {sponsor_mitm.DAYSPRING_SUPER_VIP_ROLE_ID: sponsor_mitm.DAYSPRING_SUPER_VIP_ROLE_NAME},
+        )
+        self.assertEqual(
+            payload["GuildUsers"],
+            {sponsor_mitm.DAYSPRING_SUPER_VIP_ROLE_NAME: ["h1czvko"]},
+        )
+        content = sponsor_mitm.build_dayspring_content("h1czvko", last_updated="2026-11-26T00:00:00Z")
+        self.assertTrue(content.startswith("{"))
+        with self.assertRaises(ValueError):
+            sponsor_mitm.build_dayspring_payload("   ")
+
+    def test_dayspring_addon_only_targets_dayspring_vrclinking_urls(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            content_file = os.path.join(tmp_dir, "dayspring.json")
+            addon_file = os.path.join(tmp_dir, "addon.py")
+            hit_log = os.path.join(tmp_dir, "hits.log")
+            content = sponsor_mitm.build_dayspring_content("h1czvko")
+            with open(content_file, "w", encoding="utf-8") as f:
+                f.write(content)
+
+            with mock.patch.object(sponsor_mitm, "ADDON_SCRIPT_FILE", addon_file):
+                generated = sponsor_mitm._generate_addon_script(
+                    content_file,
+                    hit_log,
+                    profile=sponsor_mitm.OVERRIDE_PROFILE_DAYSPRING,
+                )
+
+            spec = importlib.util.spec_from_file_location("dayspring_test_addon", generated)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+
+            # Should not intercept Demo Lobby VRCLinking URL
+            other_flow = mock.Mock(response=None)
+            other_flow.request.host = "data.vrclinking.com"
+            other_flow.request.path = "/v2/0195cfe7-f085-75f4-ac19-9d5e08b21c05?cache=0"
+            module.addons[0].request(other_flow)
+            self.assertIsNone(other_flow.response)
+
+            # Should intercept Dayspring main URL
+            main_flow = mock.Mock(response=None)
+            main_flow.request.host = "data.vrclinking.com"
+            main_flow.request.path = "/v2/01a06194-375c-713e-90f3-55c8498415cd?cache=0"
+            module.addons[0].request(main_flow)
+            self.assertIsNotNone(main_flow.response)
+            self.assertEqual(main_flow.response.status_code, 200)
+            self.assertEqual(main_flow.response.headers["X-SlashCo-Override"], "dayspring")
+            main_payload = json.loads(main_flow.response.content.decode("utf-8"))
+            role_name = main_payload["GuildRoleMap"][sponsor_mitm.DAYSPRING_SUPER_VIP_ROLE_ID]
+            self.assertEqual(main_payload["GuildUsers"][role_name], ["h1czvko"])
+
+            # Should intercept Dayspring fallback URL
+            fb_flow = mock.Mock(response=None)
+            fb_flow.request.host = "linkingbotvrchat.github.io"
+            fb_flow.request.path = "/v2data/worlds/01a06194-375c-713e-90f3-55c8498415cd/"
+            module.addons[0].request(fb_flow)
+            self.assertIsNotNone(fb_flow.response)
+            self.assertEqual(fb_flow.response.status_code, 200)
+            self.assertEqual(fb_flow.response.headers["X-SlashCo-Override"], "dayspring")
+
+    def test_dayspring_override_mutex_and_panel_registration(self):
+        self.assertIn("dayspring", slashco.SPONSOR_WORLD_PANELS)
+        old_running = sponsor_mitm._running
+        old_profile = sponsor_mitm._active_profile
+        try:
+            sponsor_mitm._running = True
+            sponsor_mitm._active_profile = sponsor_mitm.OVERRIDE_PROFILE_DEMO_LOBBY
+            success, message = sponsor_mitm.start_dayspring_override("h1czvko")
+            self.assertFalse(success)
+            self.assertIn("另一个名单覆盖", message)
+        finally:
+            sponsor_mitm._running = old_running
+            sponsor_mitm._active_profile = old_profile
+
     def test_generate_caddyfile_uses_generated_cert_and_content_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             content_file = os.path.join(tmp_dir, "sponsors.dat")
