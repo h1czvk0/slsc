@@ -13,7 +13,7 @@ from pathlib import Path
 from slashco_portable import MANIFEST_ASSET, MANIFEST_MAX_BYTES, PACKAGE_ASSETS, Manifest, install_runtime
 
 
-APP_VERSION = "3.9.39"
+APP_VERSION = "3.9.40"
 GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/h1czvk0/slsc/releases/latest"
 GITHUB_PROXY_PREFIXES = (
     "https://gh-proxy.org/",

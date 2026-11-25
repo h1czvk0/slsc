@@ -180,16 +180,16 @@ class RuntimePathTests(unittest.TestCase):
 
     def test_demo_lobby_payload_contains_only_requested_mega_patreon_name(self):
         payload = sponsor_mitm.build_demo_lobby_payload(
-            "  h1czvko  ",
+            "  h1czvko , Land-Buy-One，h1czvko  ",
             last_updated="2026-09-04T00:00:00Z",
         )
 
         self.assertEqual(payload["Version"], "2.0")
-        self.assertEqual(payload["MemberCount"], 1)
+        self.assertEqual(payload["MemberCount"], 2)
         self.assertEqual(payload["LastUpdated"], "2026-09-04T00:00:00Z")
         self.assertEqual(
             payload["GuildUsers"],
-            {sponsor_mitm.DEMO_LOBBY_ROLE_NAME: ["h1czvko"]},
+            {sponsor_mitm.DEMO_LOBBY_ROLE_NAME: ["h1czvko", "Land-Buy-One"]},
         )
 
     def test_demo_lobby_addon_only_targets_vrclinking_urls(self):
@@ -293,12 +293,12 @@ class RuntimePathTests(unittest.TestCase):
 
     def test_dayspring_payload_contains_role_map_and_super_vip_name(self):
         payload = sponsor_mitm.build_dayspring_payload(
-            "  h1czvko  ",
+            "  h1czvko,Land-Buy-One  ",
             last_updated="2026-11-26T00:00:00Z",
         )
 
         self.assertEqual(payload["Version"], "2.0")
-        self.assertEqual(payload["MemberCount"], 1)
+        self.assertEqual(payload["MemberCount"], 2)
         self.assertEqual(payload["LastUpdated"], "2026-11-26T00:00:00Z")
         self.assertEqual(
             payload["GuildRoleMap"],
@@ -306,12 +306,22 @@ class RuntimePathTests(unittest.TestCase):
         )
         self.assertEqual(
             payload["GuildUsers"],
-            {sponsor_mitm.DAYSPRING_SUPER_VIP_ROLE_NAME: ["h1czvko"]},
+            {sponsor_mitm.DAYSPRING_SUPER_VIP_ROLE_NAME: ["h1czvko", "Land-Buy-One"]},
         )
-        content = sponsor_mitm.build_dayspring_content("h1czvko", last_updated="2026-11-26T00:00:00Z")
+        content = sponsor_mitm.build_dayspring_content("h1czvko,Land-Buy-One", last_updated="2026-11-26T00:00:00Z")
         self.assertTrue(content.startswith("{"))
         with self.assertRaises(ValueError):
-            sponsor_mitm.build_dayspring_payload("   ")
+            sponsor_mitm.build_dayspring_payload(" , ")
+
+    def test_se_content_supports_multiple_comma_separated_names(self):
+        content = sponsor_mitm.build_se_content(SE_SAMPLE, "h1czvko, Land-Buy-One，ExampleSupport")
+        payload = json.loads(content)
+        self.assertEqual(payload["data"]["h1czvko"], 2)
+        self.assertEqual(payload["data"]["Land-Buy-One"], 2)
+        self.assertEqual(payload["data"]["ExampleSupport"], 2)
+        self.assertEqual(payload["data"]["ExampleFree"], 0)
+        data_text = json.dumps(payload["data"], ensure_ascii=False, separators=(",", ":"))
+        self.assertEqual(payload["signature"], sponsor_mitm._se_signature(data_text))
 
     def test_dayspring_addon_only_targets_dayspring_vrclinking_urls(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

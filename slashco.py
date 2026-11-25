@@ -960,7 +960,7 @@ class SlashCoMonitorCN:
         row2 = ttk.Frame(sponsor_frame)
         row2.pack(fill=X, pady=2)
         ttk.Label(row2, text="\u663e\u793a\u540d\u79f0\uff1a").pack(side=LEFT)
-        self.entry_sponsor_name = ttk.Entry(row2, textvariable=self.sponsor_name["slashco"], width=20)
+        self.entry_sponsor_name = ttk.Entry(row2, textvariable=self.sponsor_name, width=20)
         self.entry_sponsor_name.pack(side=LEFT, padx=(0, 5), fill=X, expand=True)
         ttk.Button(row2, text="\u4fdd\u5b58", command=self._save_sponsor_config, width=6).pack(side=RIGHT)
 
@@ -1003,16 +1003,9 @@ class SlashCoMonitorCN:
             status.pack(side=RIGHT)
             self._sponsor_status_labels[profile] = status
 
-            name_row = ttk.Frame(panel)
-            name_row.pack(fill=X, pady=2)
-            ttk.Label(name_row, text="VRChat 名称：").pack(side=LEFT)
-            ttk.Entry(name_row, textvariable=self.sponsor_name[profile], width=20).pack(
-                side=LEFT, padx=(0, 5), fill=X, expand=True,
-            )
-            ttk.Button(name_row, text="保存", command=self._save_sponsor_config, width=6).pack(side=RIGHT)
             ttk.Label(
                 panel,
-                text="启用后重新进入对应世界。每次只能启用一项赞助者覆盖。",
+                text="复用上方显示名称（多个名称可用逗号分隔），启用后重新进入对应世界。每次只能启用一项赞助者覆盖。",
                 foreground="#7f8c8d",
                 font=("微软雅黑", 8),
             ).pack(fill=X, pady=(2, 0))
@@ -2729,7 +2722,7 @@ class SlashCoMonitorCN:
         """加载赞助者配置"""
         profiles = ("slashco", *SPONSOR_WORLD_PANELS)
         self.sponsor_enabled = {profile: BooleanVar(value=False) for profile in profiles}
-        self.sponsor_name = {profile: StringVar(value="") for profile in profiles}
+        self.sponsor_name = StringVar(value="")
         self.sponsor_mode = StringVar(value="mitm")
 
         config_path = os.path.join(self.base_dir, "sponsor_config.json")
@@ -2742,8 +2735,15 @@ class SlashCoMonitorCN:
                     prefix = "" if profile == "slashco" else f"{profile}_"
                     enabled = self.sponsor_enabled[profile]
                     enabled.set(False if has_enabled_profile else cfg.get(f"{prefix}enabled", False))
-                    self.sponsor_name[profile].set(cfg.get(f"{prefix}name", ""))
                     has_enabled_profile |= enabled.get()
+                shared_name = str(cfg.get("name") or "").strip()
+                if not shared_name:
+                    for profile in SPONSOR_WORLD_PANELS:
+                        fallback_name = str(cfg.get(f"{profile}_name") or "").strip()
+                        if fallback_name:
+                            shared_name = fallback_name
+                            break
+                self.sponsor_name.set(shared_name)
                 self.sponsor_mode.set(sponsor_mitm.normalize_sponsor_mode(cfg.get("mode")))
         except Exception:
             pass
@@ -2752,18 +2752,16 @@ class SlashCoMonitorCN:
         """保存赞助者配置"""
         config_path = os.path.join(self.base_dir, "sponsor_config.json")
         mode = sponsor_mitm.normalize_sponsor_mode(self.sponsor_mode.get())
-        cfg = {"mode": mode}
+        shared_name = self.sponsor_name.get().strip()
+        cfg = {"mode": mode, "name": shared_name}
         for profile, enabled in self.sponsor_enabled.items():
             prefix = "" if profile == "slashco" else f"{profile}_"
             cfg[f"{prefix}enabled"] = enabled.get()
-            cfg[f"{prefix}name"] = self.sponsor_name[profile].get().strip()
         try:
             with atomic_open(config_path) as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
             mode_label = "hosts + Caddy" if cfg["mode"] == "caddy" else "mitmdump"
             self.log(f"赞助者设置已保存 (名称: {cfg['name'] or '未设置'}, 模式: {mode_label})")
-            for profile, (_, world, _) in SPONSOR_WORLD_PANELS.items():
-                self.log(f"{world} 设置已保存 (名称: {cfg[f'{profile}_name'] or '未设置'})")
         except Exception as e:
             self.log(f"保存赞助者设置失败: {e}")
 
@@ -2775,12 +2773,12 @@ class SlashCoMonitorCN:
 
     def _on_sponsor_toggle(self, profile):
         enabled = self.sponsor_enabled[profile].get()
-        name = self.sponsor_name[profile].get().strip()
-        if enabled and not name:
+        name = self.sponsor_name.get().strip()
+        if enabled and not sponsor_mitm._parse_sponsor_names(name):
             self.sponsor_enabled[profile].set(False)
             self._refresh_sponsor_panel_button(profile)
             self._save_sponsor_config()
-            messagebox.showwarning("提示", "请先输入 VRChat 名称")
+            messagebox.showwarning("提示", "请先输入显示名称")
             return
 
         if enabled:

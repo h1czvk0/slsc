@@ -2,7 +2,7 @@
 
 这是一个本地日志辅助工具。它通过读取本机日志，显示本局物品、位置、进度、房间统计，并提供中文翻译、图片参考和名单覆盖等功能。
 
-当前版本：`3.9.39`
+当前版本：`3.9.40`
 
 ## 主要功能
 
@@ -18,9 +18,7 @@
 - 显示关键进度状态，以及本局资源和物品刷新统计。
 - 支持本地翻译缓存、在线翻译更新、图片参考和图片资源更新。
 - 支持赞助者名单覆盖，可在 `mitmdump` 系统代理模式和 `hosts + Caddy` 模式之间切换，并在停止时恢复对应网络设置。
-- 支持单独覆盖 Demo Lobby 的 `Mega Patreon` 名称；只拦截该世界的 VRCLinking 数据地址，与原赞助者名单覆盖互斥，启用后重新进入世界即可生效。
-- 在赞助者名单覆盖区展开 `S E`，填写 VRChat 显示名并启用覆盖，再重新进入 Stillwoods Execution。S E 使用 mitmdump，保留原名单并把输入名称加入 `Mega Supporters`，与 SlashCo、JZU 和 Dayspring 覆盖互斥。
-- 在赞助者名单覆盖区展开 `Dayspring`，填写 VRChat 显示名并启用覆盖，再重新进入 Dayspring。Dayspring 使用 mitmdump，只拦截该世界的 VRCLinking 主/备数据地址并返回包含 `GuildRoleMap` 与 `Super VIP` 成员的明文 JSON，与其他世界覆盖互斥。
+- `JZU`（Demo Lobby `Mega Patreon`）、`S E`（Stillwoods Execution `Mega Supporters`）与 `Dayspring`（`Super VIP`）共用赞助者名单覆盖区的「显示名称」输入框（支持英文或中文逗号分隔多个名称），均使用 `mitmdump` 仅拦截对应世界的数据地址，与 SlashCo 覆盖互斥，启用后重新进入世界即可生效。
 - 支持免安装和后台增量更新，自动下载有变化的程序组件。
 
 ## 下载和使用

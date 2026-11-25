@@ -384,8 +384,17 @@ def _parse_sponsor_names(name):
     if isinstance(name, str):
         if not name.strip():
             return []
-        return [n.strip() for n in name.replace("，", ",").split(",") if n.strip()]
-    return [str(n).strip() for n in (name or ()) if str(n).strip()]
+        raw_names = name.replace("，", ",").split(",")
+    else:
+        raw_names = name or ()
+    names = []
+    seen = set()
+    for item in raw_names:
+        cleaned = str(item or "").strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            names.append(cleaned)
+    return names
 
 
 def _wait_for_flag(flag_file, timeout_seconds=30):
@@ -491,16 +500,16 @@ def build_modified_content(original, names):
 
 def build_demo_lobby_payload(display_name, last_updated=None):
     """构建 Demo Lobby 的最小 VRCLinking Mega Patreon 数据。"""
-    name = str(display_name or "").strip()
-    if not name:
+    names = _parse_sponsor_names(display_name)
+    if not names:
         raise ValueError("display_name 不能为空")
     updated_at = last_updated or datetime.now(timezone.utc).isoformat(timespec="seconds")
     return {
         "Version": "2.0",
         "LastUpdated": updated_at,
-        "MemberCount": 1,
+        "MemberCount": len(names),
         "GuildUsers": {
-            DEMO_LOBBY_ROLE_NAME: [name],
+            DEMO_LOBBY_ROLE_NAME: names,
         },
     }
 
@@ -512,19 +521,19 @@ def build_demo_lobby_content(display_name, last_updated=None):
 
 def build_dayspring_payload(display_name, last_updated=None):
     """构建 Dayspring 的最小 VRCLinking Super VIP 数据（含 GuildRoleMap）。"""
-    name = str(display_name or "").strip()
-    if not name:
+    names = _parse_sponsor_names(display_name)
+    if not names:
         raise ValueError("display_name 不能为空")
     updated_at = last_updated or datetime.now(timezone.utc).isoformat(timespec="seconds")
     return {
         "Version": "2.0",
         "LastUpdated": updated_at,
-        "MemberCount": 1,
+        "MemberCount": len(names),
         "GuildRoleMap": {
             DAYSPRING_SUPER_VIP_ROLE_ID: DAYSPRING_SUPER_VIP_ROLE_NAME,
         },
         "GuildUsers": {
-            DAYSPRING_SUPER_VIP_ROLE_NAME: [name],
+            DAYSPRING_SUPER_VIP_ROLE_NAME: names,
         },
     }
 
@@ -545,8 +554,8 @@ def _se_signature(data_text):
 
 def build_se_content(original, display_name):
     """保留 S E 原名单，将指定名称加入 Mega Supporters 并重签。"""
-    name = str(display_name or "").strip()
-    if not name:
+    names = _parse_sponsor_names(display_name)
+    if not names:
         raise ValueError("display_name 不能为空")
 
     payload = json.loads(original)
@@ -564,7 +573,8 @@ def build_se_content(original, display_name):
         raise ValueError("S E 原名单签名校验失败")
 
     data = payload["data"]
-    data[name] = 2
+    for name in names:
+        data[name] = 2
     data_text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     return f'{{"data":{data_text},"signature":{_se_signature(data_text)}}}'
 
@@ -1017,8 +1027,8 @@ def _self_test_override(proxy_port, expected_names, log_func=None):
 
 def _self_test_demo_lobby_override(proxy_port, expected_name, log_func=None):
     """验证 Demo Lobby VRCLinking 响应中只包含指定的 Mega Patreon 名称。"""
-    name = str(expected_name or "").strip()
-    if not name:
+    expected_names = _parse_sponsor_names(expected_name)
+    if not expected_names:
         return False
 
     try:
@@ -1048,7 +1058,7 @@ def _self_test_demo_lobby_override(proxy_port, expected_name, log_func=None):
                 body = resp.read().decode("utf-8", errors="strict")
             payload = json.loads(body)
             members = payload.get("GuildUsers", {}).get(DEMO_LOBBY_ROLE_NAME, [])
-            if members != [name]:
+            if members != expected_names:
                 _log(f"Demo Lobby 代理自检名单不匹配 (地址 {idx})", log_func)
                 return False
         except Exception as e:
@@ -1061,8 +1071,8 @@ def _self_test_demo_lobby_override(proxy_port, expected_name, log_func=None):
 
 def _self_test_dayspring_override(proxy_port, expected_name, log_func=None):
     """验证 Dayspring VRCLinking 响应包含正确的 Super VIP Role ID 映射与名称。"""
-    name = str(expected_name or "").strip()
-    if not name:
+    expected_names = _parse_sponsor_names(expected_name)
+    if not expected_names:
         return False
 
     try:
@@ -1099,7 +1109,7 @@ def _self_test_dayspring_override(proxy_port, expected_name, log_func=None):
             members = payload.get("GuildUsers", {}).get(role_name, [])
             if (
                 role_name != DAYSPRING_SUPER_VIP_ROLE_NAME
-                or members != [name]
+                or members != expected_names
                 or not all(k in payload for k in ("Version", "LastUpdated", "MemberCount"))
             ):
                 _log(f"Dayspring 代理自检名单不匹配 (地址 {idx})", log_func)
@@ -1906,12 +1916,7 @@ def _start_mitm_override(name, log_func=None, profile=OVERRIDE_PROFILE_SLASHCO):
     if not name:
         return False, "请先输入显示名称"
 
-    if profile == OVERRIDE_PROFILE_SLASHCO:
-        name_list = _parse_sponsor_names(name)
-        display_name = name_list[0] if name_list else ""
-    else:
-        display_name = str(name).strip()
-        name_list = [display_name] if display_name else []
+    name_list = _parse_sponsor_names(name)
     if not name_list:
         return False, "请先输入显示名称"
 
@@ -1947,13 +1952,13 @@ def _start_mitm_override(name, log_func=None, profile=OVERRIDE_PROFILE_SLASHCO):
         _log("保留当前系统代理设置，稍后用于停止恢复和上游代理", log_func)
 
     if profile == OVERRIDE_PROFILE_DEMO_LOBBY:
-        ok, message = _prepare_demo_lobby_content(display_name, log_func)
+        ok, message = _prepare_demo_lobby_content(name_list, log_func)
         content_file = DEMO_LOBBY_CONTENT_FILE
     elif profile == OVERRIDE_PROFILE_SE:
-        ok, message = _prepare_se_content(display_name, log_func)
+        ok, message = _prepare_se_content(name_list, log_func)
         content_file = SE_CONTENT_FILE
     elif profile == OVERRIDE_PROFILE_DAYSPRING:
-        ok, message = _prepare_dayspring_content(display_name, log_func)
+        ok, message = _prepare_dayspring_content(name_list, log_func)
         content_file = DAYSPRING_CONTENT_FILE
     else:
         ok, message = _prepare_modified_sponsor_content(name_list, log_func)
@@ -2049,11 +2054,11 @@ def _start_mitm_override(name, log_func=None, profile=OVERRIDE_PROFILE_SLASHCO):
     # 5. 自检代理链路
     _log("步骤 5/5: 验证拦截链路...", log_func)
     if profile == OVERRIDE_PROFILE_DEMO_LOBBY:
-        self_test_ok = _self_test_demo_lobby_override(selected_port, display_name, log_func)
+        self_test_ok = _self_test_demo_lobby_override(selected_port, name_list, log_func)
     elif profile == OVERRIDE_PROFILE_SE:
         self_test_ok = _self_test_se_override(selected_port, log_func)
     elif profile == OVERRIDE_PROFILE_DAYSPRING:
-        self_test_ok = _self_test_dayspring_override(selected_port, display_name, log_func)
+        self_test_ok = _self_test_dayspring_override(selected_port, name_list, log_func)
     else:
         self_test_ok = _self_test_override(selected_port, name_list, log_func)
     if not self_test_ok:
